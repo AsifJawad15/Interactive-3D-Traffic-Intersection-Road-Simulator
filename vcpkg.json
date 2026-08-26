@@ -1,0 +1,15 @@
+{
+  "name": "opengl-traffic-intersection",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "glfw3",
+    "glm",
+    {
+      "name": "glad",
+      "features": [
+        "gl-api-33"
+      ]
+    },
+    "stb"
+  ]
+}

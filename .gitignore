@@ -1,0 +1,22 @@
+# Visual Studio user settings and caches
+.vs/
+*.user
+*.suo
+
+# Build output and intermediate files
+x64/
+Debug/
+Release/
+OpenGLMi.*/
+*.obj
+*.pdb
+*.ilk
+*.tlog
+*.log
+
+# Dependencies restored by vcpkg
+vcpkg_installed/
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db
