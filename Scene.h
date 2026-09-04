@@ -25,7 +25,8 @@ public:
         const DayNight& dayNight,
         int shadingMode,
         bool driverView,
-        std::size_t selectedVehicleIndex);
+        std::size_t selectedVehicleIndex,
+        float elapsedSeconds);
 
 private:
     Shader shader_;
@@ -34,6 +35,14 @@ private:
     Mesh buildingMesh_;
     Mesh carCabin_;
     Mesh cylinder_;
+
+    // Lab 5 surfaces of revolution. Each is one Bezier profile swept about the
+    // Y axis by Mesh::makeBezierRevolution.
+    Mesh fountainBasin_;
+    Mesh fountainColumn_;
+    Mesh treeTrunk_;
+    Mesh treeCanopy_;
+    Mesh lampPost_;
 
     Texture white_;
     Texture asphalt_;
@@ -72,11 +81,19 @@ private:
         float shininess = 24.0f,
         const glm::vec3& emissive = {0.0f, 0.0f, 0.0f});
 
+    float waveAmplitude_ = 0.0f;
+    float elapsedSeconds_ = 0.0f;
+
     void drawRoads();
-    void drawRoadMarkings();
+    void drawRoadMarkings(float islandHeight);
     void drawBuildings();
     void drawStreetLamp(const glm::vec3& position, bool illuminated);
-    void drawTrafficSignal(const glm::vec3& position, float yawDegrees, SignalState state);
+    void drawTrafficSignal(
+        const glm::vec3& position, float yawDegrees, SignalState state, bool signalsLive);
+    void drawIsland(float islandHeight);
+    void drawFountain(float islandHeight);
+    void drawWaterJets(const glm::vec3& origin, float islandHeight);
+    void drawTrees();
     void drawVehicle(const Vehicle& vehicle);
     void drawDriverCockpit(const Vehicle& vehicle);
 };

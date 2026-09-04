@@ -5,6 +5,8 @@
 
 #include <array>
 #include <cmath>
+#include <numbers>
+#include <vector>
 
 namespace
 {
@@ -13,6 +15,53 @@ namespace
         glm::mat4 model(1.0f);
         model = glm::translate(model, position);
         return glm::scale(model, scale);
+    }
+
+    // Bezier control points for the surfaces of revolution, written as
+    // (radius, height) pairs in metres. In Lab 5 these were picked with the
+    // mouse and saved to a file; here they are simply written down, and the
+    // same Bernstein polynomial turns each list into a curved solid.
+    const std::vector<glm::vec2>& fountainBasinProfile()
+    {
+        static const std::vector<glm::vec2> profile = {
+            {0.00f, 0.00f}, {1.90f, 0.06f}, {1.45f, 0.32f},
+            {1.90f, 0.78f}, {2.10f, 1.06f}
+        };
+        return profile;
+    }
+
+    const std::vector<glm::vec2>& fountainColumnProfile()
+    {
+        static const std::vector<glm::vec2> profile = {
+            {0.46f, 0.00f}, {0.20f, 0.72f}, {0.22f, 1.32f},
+            {0.78f, 1.70f}, {0.86f, 1.96f}, {0.12f, 2.06f}
+        };
+        return profile;
+    }
+
+    const std::vector<glm::vec2>& treeTrunkProfile()
+    {
+        static const std::vector<glm::vec2> profile = {
+            {0.30f, 0.00f}, {0.15f, 0.90f}, {0.13f, 1.90f}, {0.20f, 2.60f}
+        };
+        return profile;
+    }
+
+    const std::vector<glm::vec2>& treeCanopyProfile()
+    {
+        static const std::vector<glm::vec2> profile = {
+            {0.00f, 0.00f}, {1.95f, 0.35f}, {2.10f, 1.60f},
+            {1.20f, 2.60f}, {0.00f, 2.95f}
+        };
+        return profile;
+    }
+
+    const std::vector<glm::vec2>& lampPostProfile()
+    {
+        static const std::vector<glm::vec2> profile = {
+            {0.17f, 0.00f}, {0.10f, 1.60f}, {0.085f, 4.00f}, {0.075f, 5.60f}
+        };
+        return profile;
     }
 }
 
@@ -23,6 +72,11 @@ Scene::Scene()
       buildingMesh_(Mesh::makeBeveledCube(0.025f)),
       carCabin_(Mesh::makeCarCabin()),
       cylinder_(Mesh::makeCylinder(32)),
+      fountainBasin_(Mesh::makeBezierRevolution(fountainBasinProfile(), 22, 28)),
+      fountainColumn_(Mesh::makeBezierRevolution(fountainColumnProfile(), 22, 24)),
+      treeTrunk_(Mesh::makeBezierRevolution(treeTrunkProfile(), 12, 12)),
+      treeCanopy_(Mesh::makeBezierRevolution(treeCanopyProfile(), 16, 16)),
+      lampPost_(Mesh::makeBezierRevolution(lampPostProfile(), 12, 12)),
       white_(Texture::makeWhite()),
       asphalt_(Texture::fromFile("assets/asphalt-photoreal.png")),
       grass_(Texture::makeGrass()),
@@ -41,9 +95,13 @@ void Scene::render(
     const DayNight& dayNight,
     int shadingMode,
     bool driverView,
-    std::size_t selectedVehicleIndex)
+    std::size_t selectedVehicleIndex,
+    float elapsedSeconds)
 {
+    elapsedSeconds_ = elapsedSeconds;
+
     shader_.use();
+    shader_.setFloat("uTime", elapsedSeconds);
     shader_.setMat4("uView", view);
     shader_.setMat4("uProjection", projection);
     shader_.setVec3("uViewPosition", cameraPosition);
@@ -68,8 +126,13 @@ void Scene::render(
 
     drawCube(transformed({0.0f, -0.30f, 0.0f}, {82.0f, 0.5f, 82.0f}), {0.72f, 0.86f, 0.72f}, grass_, {32.0f, 32.0f}, 6.0f);
     drawRoads();
-    drawRoadMarkings();
+    const float islandHeight = traffic.islandHeight();
+    drawRoadMarkings(islandHeight);
+    drawIsland(islandHeight);
+    drawFountain(islandHeight);
+
     drawBuildings();
+    drawTrees();
 
     for (const glm::vec3 position : std::array<glm::vec3, 4>{
              glm::vec3{-11.0f, 0.0f, -11.0f}, glm::vec3{11.0f, 0.0f, -11.0f},
@@ -78,10 +141,13 @@ void Scene::render(
         drawStreetLamp(position, dayNight.streetLampsOn());
     }
 
-    drawTrafficSignal({-7.0f, 0.0f, -8.2f}, 0.0f, traffic.signalFor(Lane::Northbound));
-    drawTrafficSignal({7.0f, 0.0f, 8.2f}, 180.0f, traffic.signalFor(Lane::Southbound));
-    drawTrafficSignal({-8.2f, 0.0f, 7.0f}, 90.0f, traffic.signalFor(Lane::Eastbound));
-    drawTrafficSignal({8.2f, 0.0f, -7.0f}, -90.0f, traffic.signalFor(Lane::Westbound));
+    // The signal heads go dark when the roundabout takes over: give-way rules
+    // replace them, so leaving the lenses lit would be misleading.
+    const bool signalsActive = islandHeight < 0.5f;
+    drawTrafficSignal({-7.0f, 0.0f, -8.2f}, 0.0f, traffic.signalFor(Lane::Northbound), signalsActive);
+    drawTrafficSignal({7.0f, 0.0f, 8.2f}, 180.0f, traffic.signalFor(Lane::Southbound), signalsActive);
+    drawTrafficSignal({-8.2f, 0.0f, 7.0f}, 90.0f, traffic.signalFor(Lane::Eastbound), signalsActive);
+    drawTrafficSignal({8.2f, 0.0f, -7.0f}, -90.0f, traffic.signalFor(Lane::Westbound), signalsActive);
 
     const auto& vehicles = traffic.vehicles();
     for (std::size_t index = 0; index < vehicles.size(); ++index)
@@ -109,6 +175,7 @@ void Scene::drawMesh(
     shader_.setVec3("uEmissiveColor", emissive);
     shader_.setVec2("uUvScale", uvScale);
     shader_.setFloat("uShininess", shininess);
+    shader_.setFloat("uWaveAmplitude", waveAmplitude_);
     texture.bind();
     mesh.draw();
 }
@@ -157,7 +224,7 @@ void Scene::drawRoads()
         drawCube(transformed(center, {32.0f, 0.20f, 32.0f}), {0.92f, 0.92f, 0.92f}, sidewalk_, {8.0f, 8.0f}, 12.0f);
 }
 
-void Scene::drawRoadMarkings()
+void Scene::drawRoadMarkings(float islandHeight)
 {
     const glm::vec3 white {0.96f, 0.96f, 0.90f};
     const glm::vec3 yellow {0.95f, 0.72f, 0.08f};
@@ -175,12 +242,17 @@ void Scene::drawRoadMarkings()
     drawCube(transformed({0.0f, 0.10f, -5.7f}, {80.0f, 0.035f, 0.12f}), white, white_, {1, 1}, 4.0f);
     drawCube(transformed({0.0f, 0.10f, 5.7f}, {80.0f, 0.035f, 0.12f}), white, white_, {1, 1}, 4.0f);
 
+    // Pedestrian crossings sit just behind the stop line while the signals are
+    // running, and slide outboard of the circulating ring in roundabout mode so
+    // that traffic never drives across them.
+    const float crossing = glm::mix(7.2f, 13.6f, islandHeight);
     for (int stripe = -5; stripe <= 5; stripe += 2)
     {
-        drawCube(transformed({static_cast<float>(stripe), 0.115f, -7.2f}, {0.75f, 0.035f, 2.2f}), white, white_, {1, 1}, 4.0f);
-        drawCube(transformed({static_cast<float>(stripe), 0.115f, 7.2f}, {0.75f, 0.035f, 2.2f}), white, white_, {1, 1}, 4.0f);
-        drawCube(transformed({-7.2f, 0.12f, static_cast<float>(stripe)}, {2.2f, 0.035f, 0.75f}), white, white_, {1, 1}, 4.0f);
-        drawCube(transformed({7.2f, 0.12f, static_cast<float>(stripe)}, {2.2f, 0.035f, 0.75f}), white, white_, {1, 1}, 4.0f);
+        const float offset = static_cast<float>(stripe);
+        drawCube(transformed({offset, 0.115f, -crossing}, {0.75f, 0.035f, 2.2f}), white, white_, {1, 1}, 4.0f);
+        drawCube(transformed({offset, 0.115f, crossing}, {0.75f, 0.035f, 2.2f}), white, white_, {1, 1}, 4.0f);
+        drawCube(transformed({-crossing, 0.12f, offset}, {2.2f, 0.035f, 0.75f}), white, white_, {1, 1}, 4.0f);
+        drawCube(transformed({crossing, 0.12f, offset}, {2.2f, 0.035f, 0.75f}), white, white_, {1, 1}, 4.0f);
     }
 }
 
@@ -232,12 +304,144 @@ void Scene::drawBuildings()
     }
 }
 
+void Scene::drawIsland(float islandHeight)
+{
+    if (islandHeight <= 0.001f)
+        return;
+
+    const float radius = TrafficSystem::islandRadius;
+
+    // A circular asphalt apron grows out from the middle, covering the lane
+    // markings that a roundabout would not have.
+    const float apronRadius = 10.5f * islandHeight;
+    drawMesh(
+        cylinder_,
+        transformed({0.0f, 0.115f, 0.0f}, {apronRadius * 2.0f, 0.03f, apronRadius * 2.0f}),
+        {0.86f, 0.86f, 0.88f}, asphalt_, {6.0f, 6.0f}, 8.0f, glm::vec3{0.0f});
+
+    // The island itself rises out of the road rather than popping into place.
+    const float lift = glm::mix(-0.60f, 0.24f, islandHeight);
+
+    drawMesh(
+        cylinder_,
+        transformed({0.0f, lift, 0.0f}, {radius * 2.0f + 0.7f, 0.42f, radius * 2.0f + 0.7f}),
+        {0.80f, 0.80f, 0.82f}, sidewalk_, {5.0f, 5.0f}, 16.0f, glm::vec3{0.0f});
+
+    drawMesh(
+        cylinder_,
+        transformed({0.0f, lift + 0.12f, 0.0f}, {radius * 2.0f, 0.42f, radius * 2.0f}),
+        {0.60f, 0.80f, 0.55f}, grass_, {4.0f, 4.0f}, 6.0f, glm::vec3{0.0f});
+}
+
+void Scene::drawFountain(float islandHeight)
+{
+    if (islandHeight <= 0.001f)
+        return;
+
+    const float base = glm::mix(-1.4f, 0.32f, islandHeight);
+    const glm::vec3 origin {0.0f, base, 0.0f};
+
+    // Basin and column are Bezier surfaces of revolution, drawn at their
+    // authored size because the control points are already in metres.
+    drawMesh(fountainBasin_, glm::translate(glm::mat4(1.0f), origin),
+             {0.86f, 0.84f, 0.78f}, sidewalk_, {3.0f, 2.0f}, 46.0f, glm::vec3{0.0f});
+
+    drawMesh(fountainColumn_, glm::translate(glm::mat4(1.0f), origin + glm::vec3(0.0f, 0.55f, 0.0f)),
+             {0.90f, 0.88f, 0.82f}, sidewalk_, {2.0f, 2.0f}, 58.0f, glm::vec3{0.0f});
+
+    // The water surface in the basin. Its vertices ripple in the vertex shader,
+    // so the animation costs one uniform rather than a mesh rebuild.
+    waveAmplitude_ = 0.035f;
+    drawMesh(
+        cylinder_,
+        transformed(origin + glm::vec3(0.0f, 0.80f, 0.0f), {3.55f, 0.10f, 3.55f}),
+        {0.35f, 0.62f, 0.78f}, white_, {1.0f, 1.0f}, 110.0f, glm::vec3{0.03f, 0.07f, 0.10f});
+    waveAmplitude_ = 0.0f;
+
+    drawWaterJets(origin + glm::vec3(0.0f, 2.45f, 0.0f), islandHeight);
+}
+
+void Scene::drawWaterJets(const glm::vec3& origin, float islandHeight)
+{
+    // Each droplet follows the projectile equation p = p0 + v0 t + 0.5 g t^2.
+    // Giving the droplets of one jet evenly spaced ages turns a handful of
+    // cubes into a continuous stream.
+    constexpr int jets = 5;
+    constexpr int dropletsPerJet = 10;
+    constexpr float gravity = -9.81f;
+
+    for (int jet = 0; jet < jets; ++jet)
+    {
+        glm::vec3 velocity {0.0f, 4.30f, 0.0f};
+        if (jet > 0)
+        {
+            const float angle = static_cast<float>(jet - 1) * 0.5f * std::numbers::pi_v<float>;
+            velocity = glm::vec3{1.85f * std::cos(angle), 3.55f, 1.85f * std::sin(angle)};
+        }
+
+        // Time for the droplet to fall back to the height it started from.
+        const float flightTime = -2.0f * velocity.y / gravity;
+
+        for (int droplet = 0; droplet < dropletsPerJet; ++droplet)
+        {
+            const float phase = static_cast<float>(droplet) / static_cast<float>(dropletsPerJet);
+            float age = std::fmod(elapsedSeconds_ + phase * flightTime, flightTime);
+            if (age < 0.0f)
+                age += flightTime;
+
+            const glm::vec3 position = origin + velocity * age +
+                glm::vec3{0.0f, 0.5f * gravity * age * age, 0.0f};
+
+            const float size = 0.10f - 0.03f * (age / flightTime);
+            drawCube(
+                transformed(position, glm::vec3(size)),
+                {0.72f, 0.88f, 0.98f}, white_, {1.0f, 1.0f}, 120.0f,
+                glm::vec3{0.22f, 0.34f, 0.42f} * islandHeight);
+        }
+    }
+}
+
+void Scene::drawTrees()
+{
+    // Trees line the four approaches, clear of the carriageway and of the
+    // pavements the buildings sit on.
+    static const std::array<glm::vec2, 12> positions = {
+        glm::vec2{-9.5f, -16.0f}, glm::vec2{9.5f, -16.0f},
+        glm::vec2{-9.5f, 16.0f},  glm::vec2{9.5f, 16.0f},
+        glm::vec2{-16.0f, -9.5f}, glm::vec2{-16.0f, 9.5f},
+        glm::vec2{16.0f, -9.5f},  glm::vec2{16.0f, 9.5f},
+        glm::vec2{-9.5f, -27.0f}, glm::vec2{9.5f, 27.0f},
+        glm::vec2{-27.0f, 9.5f},  glm::vec2{27.0f, -9.5f}
+    };
+
+    for (std::size_t index = 0; index < positions.size(); ++index)
+    {
+        const glm::vec3 root {positions[index].x, 0.22f, positions[index].y};
+
+        // A small per-tree scale and twist stops twelve identical copies from
+        // reading as wallpaper.
+        const float variation = 0.86f + 0.06f * static_cast<float>(index % 4);
+        const float twist = static_cast<float>(index) * 37.0f;
+
+        glm::mat4 trunk = glm::translate(glm::mat4(1.0f), root);
+        trunk = glm::rotate(trunk, glm::radians(twist), {0.0f, 1.0f, 0.0f});
+        trunk = glm::scale(trunk, {variation, variation, variation});
+        drawMesh(treeTrunk_, trunk, {0.34f, 0.24f, 0.16f}, white_, {1.0f, 1.0f}, 12.0f, glm::vec3{0.0f});
+
+        glm::mat4 canopy = glm::translate(glm::mat4(1.0f), root + glm::vec3(0.0f, 2.15f * variation, 0.0f));
+        canopy = glm::rotate(canopy, glm::radians(twist * 1.7f), {0.0f, 1.0f, 0.0f});
+        canopy = glm::scale(canopy, {variation, variation, variation});
+        drawMesh(treeCanopy_, canopy, {0.20f, 0.44f, 0.20f}, grass_, {2.0f, 2.0f}, 8.0f, glm::vec3{0.0f});
+    }
+}
+
 void Scene::drawStreetLamp(const glm::vec3& position, bool illuminated)
 {
-    glm::mat4 pole(1.0f);
-    pole = glm::translate(pole, position + glm::vec3(0.0f, 2.8f, 0.0f));
-    pole = glm::scale(pole, {0.16f, 5.6f, 0.16f});
-    drawCylinder(pole, {0.08f, 0.09f, 0.11f}, 34.0f);
+    // The tapered post is another Bezier surface of revolution, authored in
+    // metres so it needs a translation and nothing else.
+    drawMesh(
+        lampPost_, glm::translate(glm::mat4(1.0f), position),
+        {0.08f, 0.09f, 0.11f}, white_, {1.0f, 1.0f}, 34.0f, glm::vec3{0.0f});
 
     drawBeveledCube(transformed(position + glm::vec3(0.0f, 5.75f, 0.0f), {0.75f, 0.28f, 0.75f}), {0.12f, 0.13f, 0.16f}, white_, {1, 1}, 40.0f);
     drawBeveledCube(
@@ -247,7 +451,8 @@ void Scene::drawStreetLamp(const glm::vec3& position, bool illuminated)
         illuminated ? glm::vec3{0.72f, 0.38f, 0.08f} : glm::vec3{0.0f});
 }
 
-void Scene::drawTrafficSignal(const glm::vec3& position, float yawDegrees, SignalState state)
+void Scene::drawTrafficSignal(
+    const glm::vec3& position, float yawDegrees, SignalState state, bool signalsLive)
 {
     glm::mat4 parent(1.0f);
     parent = glm::translate(parent, position);
@@ -269,11 +474,14 @@ void Scene::drawTrafficSignal(const glm::vec3& position, float yawDegrees, Signa
     };
     for (int index = 0; index < 3; ++index)
     {
-        const bool active = (index == 0 && state == SignalState::Red) ||
-                            (index == 1 && state == SignalState::Yellow) ||
-                            (index == 2 && state == SignalState::Green);
-        const glm::vec3 color = active ? activeColors[static_cast<size_t>(index)] : inactiveColors[static_cast<size_t>(index)];
-        const glm::vec3 emissive = active ? color * 0.62f : glm::vec3{0.0f};
+        // In roundabout mode every lens is dark, whatever the phase timer says.
+        const bool lit = signalsLive &&
+                         ((index == 0 && state == SignalState::Red) ||
+                          (index == 1 && state == SignalState::Yellow) ||
+                          (index == 2 && state == SignalState::Green));
+        const glm::vec3 color = lit ? activeColors[static_cast<size_t>(index)]
+                                    : inactiveColors[static_cast<size_t>(index)];
+        const glm::vec3 emissive = lit ? color * 0.62f : glm::vec3{0.0f};
 
         glm::mat4 lens = glm::translate(parent, {0.0f, 5.02f - index * 0.58f, -0.33f});
         lens = glm::rotate(lens, glm::radians(90.0f), {1.0f, 0.0f, 0.0f});
@@ -319,17 +527,18 @@ void Scene::drawVehicle(const Vehicle& vehicle)
     {
         for (float z : {-1.25f, 1.25f})
         {
-            glm::mat4 wheel = glm::translate(parent, {x, 0.42f, z});
-            wheel = glm::rotate(wheel, glm::radians(90.0f), {0.0f, 0.0f, 1.0f});
-            wheel = glm::rotate(wheel, glm::radians(vehicle.wheelAngleDegrees), {0.0f, 1.0f, 0.0f});
-            wheel = glm::scale(wheel, {0.68f, 0.28f, 0.68f});
-            drawCylinder(wheel, {0.025f, 0.028f, 0.03f}, 18.0f);
+            // Hierarchy: body -> wheel hub -> steering -> rolling axle. Only the
+            // front pair (positive z, the end the headlights are on) steers.
+            const bool frontWheel = z > 0.0f;
 
-            glm::mat4 rim = glm::translate(parent, {x, 0.42f, z});
-            rim = glm::rotate(rim, glm::radians(90.0f), {0.0f, 0.0f, 1.0f});
-            rim = glm::rotate(rim, glm::radians(vehicle.wheelAngleDegrees), {0.0f, 1.0f, 0.0f});
-            rim = glm::scale(rim, {0.39f, 0.31f, 0.39f});
-            drawCylinder(rim, {0.58f, 0.61f, 0.64f}, 72.0f);
+            glm::mat4 hub = glm::translate(parent, {x, 0.42f, z});
+            if (frontWheel)
+                hub = glm::rotate(hub, glm::radians(vehicle.steerAngleDegrees), {0.0f, 1.0f, 0.0f});
+            hub = glm::rotate(hub, glm::radians(90.0f), {0.0f, 0.0f, 1.0f});
+            hub = glm::rotate(hub, glm::radians(vehicle.wheelAngleDegrees), {0.0f, 1.0f, 0.0f});
+
+            drawCylinder(glm::scale(hub, {0.68f, 0.28f, 0.68f}), {0.025f, 0.028f, 0.03f}, 18.0f);
+            drawCylinder(glm::scale(hub, {0.39f, 0.31f, 0.39f}), {0.58f, 0.61f, 0.64f}, 72.0f);
         }
     }
 

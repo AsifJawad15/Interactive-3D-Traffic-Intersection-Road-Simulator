@@ -30,6 +30,9 @@
     <ClCompile Include="Overlay.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Route.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="Scene.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -48,6 +51,7 @@
     <ClInclude Include="DayNight.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Mesh.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Overlay.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Route.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Scene.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Shader.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Simulation.h"><Filter>Header Files</Filter></ClInclude>

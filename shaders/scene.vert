@@ -19,6 +19,11 @@ uniform vec3 uPointLightColors[4];
 uniform vec3 uViewPosition;
 uniform float uShininess;
 
+// Ripple animation for the fountain water. Zero for every other object, so a
+// single extra uniform buys the whole effect without a second shader.
+uniform float uWaveAmplitude;
+uniform float uTime;
+
 out vec3 vWorldPosition;
 out vec3 vNormal;
 out vec2 vTexCoord;
@@ -27,7 +32,14 @@ out vec3 vGouraudSpecular;
 
 void main()
 {
-    vec4 worldPosition = uModel * vec4(aPosition, 1.0);
+    vec3 localPosition = aPosition;
+    if (uWaveAmplitude > 0.0)
+    {
+        float ringDistance = length(localPosition.xz);
+        localPosition.y += uWaveAmplitude * sin(22.0 * ringDistance - 3.4 * uTime);
+    }
+
+    vec4 worldPosition = uModel * vec4(localPosition, 1.0);
     vec3 normal = normalize(uNormalMatrix * aNormal);
     vec3 lightDirection = normalize(-uLightDirection);
     vec3 viewDirection = normalize(uViewPosition - worldPosition.xyz);

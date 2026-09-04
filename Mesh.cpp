@@ -57,6 +57,48 @@ namespace
         vertices.push_back({d, normal, {0.0f, 1.0f}});
         indices.insert(indices.end(), {base, base + 1, base + 2, base, base + 2, base + 3});
     }
+
+    // ---- Lab 5: Bezier curve evaluation -------------------------------------
+    // Binomial coefficient, taken from the Lab 5 curve program. The division is
+    // exact at every step because the running product is always a binomial
+    // coefficient times a factorial prefix.
+    long long nCr(int n, int r)
+    {
+        if (r > n / 2)
+            r = n - r;   // C(n, r) == C(n, n - r)
+
+        long long answer = 1;
+        for (int i = 1; i <= r; ++i)
+        {
+            answer *= n - r + i;
+            answer /= i;
+        }
+        return answer;
+    }
+
+    // The Bernstein form of a Bezier curve of degree L:
+    //
+    //     P(t) = sum over i of  C(L, i) * (1 - t)^(L - i) * t^i * P_i
+    //
+    // evaluated in the (radius, height) plane. This is the same polynomial the
+    // Lab 5 program evaluates; only the control points differ, because here
+    // they are written down in the source instead of being picked with a mouse.
+    glm::vec2 bezierPoint(float t, const std::vector<glm::vec2>& control)
+    {
+        t = glm::clamp(t, 0.0f, 1.0f);
+        const int degree = static_cast<int>(control.size()) - 1;
+
+        glm::vec2 point {0.0f};
+        for (int i = 0; i <= degree; ++i)
+        {
+            const double coefficient =
+                static_cast<double>(nCr(degree, i)) *
+                std::pow(1.0 - static_cast<double>(t), static_cast<double>(degree - i)) *
+                std::pow(static_cast<double>(t), static_cast<double>(i));
+            point += static_cast<float>(coefficient) * control[static_cast<std::size_t>(i)];
+        }
+        return point;
+    }
 }
 
 Mesh::Mesh(const std::vector<Vertex>& vertices, const std::vector<unsigned int>& indices)
@@ -307,6 +349,77 @@ Mesh Mesh::makeCylinder(unsigned int segments)
     {
         indices.insert(indices.end(), {topCenter, topRing + i, topRing + i + 1});
         indices.insert(indices.end(), {bottomCenter, bottomRing + i + 1, bottomRing + i});
+    }
+
+    return Mesh(vertices, indices);
+}
+
+Mesh Mesh::makeBezierRevolution(
+    const std::vector<glm::vec2>& controlPoints, unsigned int stacks, unsigned int slices)
+{
+    if (controlPoints.size() < 2)
+        return Mesh();
+
+    stacks = stacks < 2 ? 2 : stacks;
+    slices = slices < 3 ? 3 : slices;
+
+    std::vector<Vertex> vertices;
+    std::vector<unsigned int> indices;
+    vertices.reserve(static_cast<std::size_t>(stacks + 1) * (slices + 1));
+
+    const float twoPi = 2.0f * std::numbers::pi_v<float>;
+    const float derivativeStep = 0.25f / static_cast<float>(stacks);
+
+    for (unsigned int stack = 0; stack <= stacks; ++stack)
+    {
+        const float t = static_cast<float>(stack) / static_cast<float>(stacks);
+
+        // Curve point: .x is the radius at this height, .y is the height.
+        const glm::vec2 profile = bezierPoint(t, controlPoints);
+
+        // Slope of the profile, by central difference. Lab 5 uses the radial
+        // direction as the normal, which is only correct for a straight-sided
+        // shape; taking the real tangent makes a curved bowl shade correctly.
+        const glm::vec2 tangent =
+            bezierPoint(t + derivativeStep, controlPoints) -
+            bezierPoint(t - derivativeStep, controlPoints);
+
+        for (unsigned int slice = 0; slice <= slices; ++slice)
+        {
+            const float u = static_cast<float>(slice) / static_cast<float>(slices);
+            const float theta = u * twoPi;
+            const float cosTheta = std::cos(theta);
+            const float sinTheta = std::sin(theta);
+
+            const glm::vec3 position {
+                profile.x * cosTheta, profile.y, profile.x * sinTheta
+            };
+
+            // The surface normal is the cross product of the tangent around the
+            // axis and the tangent along the profile, pointing outwards.
+            glm::vec3 normal {tangent.y * cosTheta, -tangent.x, tangent.y * sinTheta};
+            const float normalLength = glm::length(normal);
+            normal = normalLength > 1e-6f ? normal / normalLength : glm::vec3(0.0f, 1.0f, 0.0f);
+
+            vertices.push_back({position, normal, {u, t}});
+        }
+    }
+
+    // Stitch neighbouring rings into quads:
+    //
+    //     k1 --- k1+1
+    //      |   /  |
+    //     k2 --- k2+1
+    for (unsigned int stack = 0; stack < stacks; ++stack)
+    {
+        unsigned int k1 = stack * (slices + 1);
+        unsigned int k2 = k1 + slices + 1;
+
+        for (unsigned int slice = 0; slice < slices; ++slice, ++k1, ++k2)
+        {
+            indices.insert(indices.end(), {k1, k2, k1 + 1});
+            indices.insert(indices.end(), {k1 + 1, k2, k2 + 1});
+        }
     }
 
     return Mesh(vertices, indices);
