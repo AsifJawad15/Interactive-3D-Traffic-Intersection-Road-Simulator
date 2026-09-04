@@ -28,7 +28,14 @@ namespace
     }
 }
 
-Texture::Texture(int width, int height, const std::vector<unsigned char>& rgb, bool repeat)
+Texture::Texture(
+    int width,
+    int height,
+    const std::vector<unsigned char>& rgb,
+    GLenum wrapS,
+    GLenum wrapT,
+    GLenum minFilter,
+    GLenum magFilter)
 {
     glGenTextures(1, &id_);
     glBindTexture(GL_TEXTURE_2D, id_);
@@ -36,10 +43,10 @@ Texture::Texture(int width, int height, const std::vector<unsigned char>& rgb, b
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, rgb.data());
     glGenerateMipmap(GL_TEXTURE_2D);
 
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, repeat ? GL_REPEAT : GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, repeat ? GL_REPEAT : GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, static_cast<GLint>(wrapS));
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, static_cast<GLint>(wrapT));
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, static_cast<GLint>(minFilter));
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, static_cast<GLint>(magFilter));
 }
 
 Texture::~Texture()
@@ -69,7 +76,8 @@ void Texture::bind(unsigned int unit) const
     glBindTexture(GL_TEXTURE_2D, id_);
 }
 
-Texture Texture::fromFile(const std::string& path, bool repeat)
+Texture Texture::fromFile(
+    const std::string& path, GLenum wrapS, GLenum wrapT, GLenum minFilter, GLenum magFilter)
 {
     namespace fs = std::filesystem;
     const fs::path requested(path);
@@ -99,15 +107,33 @@ Texture Texture::fromFile(const std::string& path, bool repeat)
         const size_t byteCount = static_cast<size_t>(width) * static_cast<size_t>(height) * 3;
         std::vector<unsigned char> rgb(data, data + byteCount);
         stbi_image_free(data);
-        return Texture(width, height, rgb, repeat);
+        return Texture(width, height, rgb, wrapS, wrapT, minFilter, magFilter);
     }
 
     throw std::runtime_error("Texture file not found: " + path);
 }
 
+Texture Texture::fromFileOr(
+    const std::string& path,
+    Texture (*fallback)(int),
+    GLenum wrapS,
+    GLenum wrapT,
+    GLenum minFilter,
+    GLenum magFilter)
+{
+    try
+    {
+        return fromFile(path, wrapS, wrapT, minFilter, magFilter);
+    }
+    catch (const std::runtime_error&)
+    {
+        return fallback(128);
+    }
+}
+
 Texture Texture::makeWhite()
 {
-    return Texture(1, 1, {255, 255, 255}, false);
+    return Texture(1, 1, {255, 255, 255}, GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE, GL_NEAREST, GL_NEAREST);
 }
 
 Texture Texture::makeAsphalt(int size)

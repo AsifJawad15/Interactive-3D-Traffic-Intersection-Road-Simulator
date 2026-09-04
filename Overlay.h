@@ -29,7 +29,8 @@ public:
         const std::string& timeText,
         bool automaticDayNight,
         bool lampsOn,
-        std::size_t vehicleCount);
+        std::size_t vehicleCount,
+        bool showHelp);
 
 private:
     Shader shader_;

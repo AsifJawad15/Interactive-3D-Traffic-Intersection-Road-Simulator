@@ -24,6 +24,7 @@ namespace
         int framebufferWidth = 1280;
         int framebufferHeight = 720;
         bool paused = false;
+        bool showHelp = true;
         int shadingMode = 2;
         bool firstMouseEvent = true;
         double lastMouseX = 0.0;
@@ -94,6 +95,8 @@ namespace
             state->traffic->toggleMode();
         else if (key == GLFW_KEY_P)
             state->paused = !state->paused;
+        else if (key == GLFW_KEY_H)
+            state->showHelp = !state->showHelp;
         else if (key == GLFW_KEY_1)
             state->shadingMode = 0;
         else if (key == GLFW_KEY_2)
@@ -291,7 +294,8 @@ int main(int argc, char** argv)
                 dayNight.timeText(),
                 dayNight.automatic(),
                 dayNight.streetLampsOn(),
-                traffic.vehicles().size());
+                traffic.vehicles().size(),
+                state.showHelp);
 
             glfwSwapBuffers(window);
         }

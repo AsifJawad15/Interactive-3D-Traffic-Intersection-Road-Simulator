@@ -1,5 +1,6 @@
 #include "Scene.h"
 
+#include <glm/geometric.hpp>
 #include <glm/gtc/matrix_inverse.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -78,13 +79,28 @@ Scene::Scene()
       treeCanopy_(Mesh::makeBezierRevolution(treeCanopyProfile(), 16, 16)),
       lampPost_(Mesh::makeBezierRevolution(lampPostProfile(), 12, 12)),
       white_(Texture::makeWhite()),
-      asphalt_(Texture::fromFile("assets/asphalt-photoreal.png")),
+      // Road surface: GL_REPEAT so one tile covers eighty metres of carriageway,
+      // and a mipmapped minification filter so the distant road does not shimmer.
+      asphalt_(Texture::fromFileOr(
+          "assets/asphalt-photoreal.png", &Texture::makeAsphalt,
+          GL_REPEAT, GL_REPEAT, GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR)),
       grass_(Texture::makeGrass()),
       sidewalk_(Texture::makeSidewalk()),
-      facade_(Texture::makeFacade())
+      facade_(Texture::makeFacade()),
+      // The Lab 4 container pair. The specular map is the metal banding only,
+      // so the crate's painted panels stay matte while its edges catch a
+      // highlight - the whole point of a separate specular map.
+      crateDiffuse_(Texture::fromFileOr(
+          "assets/container2.png", &Texture::makeFacade,
+          GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE, GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR)),
+      crateSpecular_(Texture::fromFileOr(
+          "assets/container2_specular.png", &Texture::makeFacade,
+          GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE, GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR)),
+      signFace_(Texture::makeSidewalk())
 {
     shader_.use();
     shader_.setInt("uDiffuseTexture", 0);
+    shader_.setInt("uSpecularTexture", 1);
 }
 
 void Scene::render(
@@ -124,6 +140,18 @@ void Scene::render(
         shader_.setVec3("uPointLightColors[" + std::to_string(index) + "]", lampColor);
     }
 
+    // A single spot light on a floodlight mast, aimed at the middle of the
+    // intersection. Its cut-off angles are uploaded as cosines so the shader
+    // can test the cone with a dot product.
+    const glm::vec3 spotPosition {14.0f, 12.0f, 14.0f};
+    const glm::vec3 spotTarget {0.0f, 0.0f, 0.0f};
+    shader_.setVec3("uSpotPosition", spotPosition);
+    shader_.setVec3("uSpotDirection", glm::normalize(spotTarget - spotPosition));
+    shader_.setVec3("uSpotColor",
+        dayNight.streetLampsOn() ? glm::vec3{2.60f, 2.42f, 1.95f} : glm::vec3{0.0f});
+    shader_.setFloat("uSpotCutOff", std::cos(glm::radians(16.0f)));
+    shader_.setFloat("uSpotOuterCutOff", std::cos(glm::radians(24.0f)));
+
     drawCube(transformed({0.0f, -0.30f, 0.0f}, {82.0f, 0.5f, 82.0f}), {0.72f, 0.86f, 0.72f}, grass_, {32.0f, 32.0f}, 6.0f);
     drawRoads();
     const float islandHeight = traffic.islandHeight();
@@ -133,6 +161,8 @@ void Scene::render(
 
     drawBuildings();
     drawTrees();
+    drawStreetFurniture();
+    drawFloodlightMast(dayNight.streetLampsOn());
 
     for (const glm::vec3 position : std::array<glm::vec3, 4>{
              glm::vec3{-11.0f, 0.0f, -11.0f}, glm::vec3{11.0f, 0.0f, -11.0f},
@@ -167,7 +197,8 @@ void Scene::drawMesh(
     const Texture& texture,
     const glm::vec2& uvScale,
     float shininess,
-    const glm::vec3& emissive)
+    const glm::vec3& emissive,
+    const Texture* specularMap)
 {
     shader_.setMat4("uModel", model);
     shader_.setMat3("uNormalMatrix", glm::inverseTranspose(glm::mat3(model)));
@@ -176,7 +207,13 @@ void Scene::drawMesh(
     shader_.setVec2("uUvScale", uvScale);
     shader_.setFloat("uShininess", shininess);
     shader_.setFloat("uWaveAmplitude", waveAmplitude_);
-    texture.bind();
+
+    // Texture unit 0 is the diffuse map and unit 1 the specular map, matching
+    // the Lab 4 material. Objects with no specular map bind a white texture,
+    // which makes the specular term uniform across the surface.
+    texture.bind(0);
+    (specularMap != nullptr ? *specularMap : white_).bind(1);
+
     mesh.draw();
 }
 
@@ -433,6 +470,84 @@ void Scene::drawTrees()
         canopy = glm::scale(canopy, {variation, variation, variation});
         drawMesh(treeCanopy_, canopy, {0.20f, 0.44f, 0.20f}, grass_, {2.0f, 2.0f}, 8.0f, glm::vec3{0.0f});
     }
+}
+
+void Scene::drawStreetFurniture()
+{
+    // Roadside crates carrying the Lab 4 diffuse + specular pair. The specular
+    // map is the metal frame of the container, so the painted panels stay flat
+    // while the banding picks up the sun and the street lamps.
+    static const std::array<glm::vec3, 6> cratePositions = {
+        glm::vec3{-13.5f, 0.72f, -13.5f}, glm::vec3{-12.0f, 0.72f, -15.6f},
+        glm::vec3{13.5f, 0.72f, 13.5f},   glm::vec3{15.6f, 0.72f, 12.0f},
+        glm::vec3{-14.6f, 0.72f, 14.6f},  glm::vec3{14.6f, 0.72f, -14.6f}
+    };
+
+    for (std::size_t index = 0; index < cratePositions.size(); ++index)
+    {
+        glm::mat4 crate = glm::translate(glm::mat4(1.0f), cratePositions[index]);
+        crate = glm::rotate(crate, glm::radians(17.0f * static_cast<float>(index)), {0.0f, 1.0f, 0.0f});
+        crate = glm::scale(crate, {1.05f, 1.05f, 1.05f});
+        drawMesh(cube_, crate, {1.0f, 1.0f, 1.0f}, crateDiffuse_, {1.0f, 1.0f}, 64.0f,
+                 glm::vec3{0.0f}, &crateSpecular_);
+    }
+
+    // Road signs: a Bezier post carrying a plate that faces oncoming traffic.
+    struct Sign
+    {
+        glm::vec3 position;
+        float yawDegrees;
+        glm::vec3 color;
+    };
+
+    static const std::array<Sign, 4> signs = {
+        Sign{{-9.2f, 0.22f, -13.0f}, 0.0f, {0.86f, 0.16f, 0.12f}},
+        Sign{{9.2f, 0.22f, 13.0f}, 180.0f, {0.86f, 0.16f, 0.12f}},
+        Sign{{-13.0f, 0.22f, 9.2f}, 90.0f, {0.14f, 0.32f, 0.72f}},
+        Sign{{13.0f, 0.22f, -9.2f}, -90.0f, {0.14f, 0.32f, 0.72f}}
+    };
+
+    for (const Sign& sign : signs)
+    {
+        glm::mat4 parent = glm::translate(glm::mat4(1.0f), sign.position);
+        parent = glm::rotate(parent, glm::radians(sign.yawDegrees), {0.0f, 1.0f, 0.0f});
+
+        glm::mat4 post = glm::scale(parent, {0.42f, 0.42f, 0.42f});
+        drawMesh(lampPost_, post, {0.62f, 0.63f, 0.66f}, white_, {1.0f, 1.0f}, 48.0f, glm::vec3{0.0f});
+
+        glm::mat4 plate = glm::translate(parent, {0.0f, 2.15f, 0.0f});
+        plate = glm::scale(plate, {0.90f, 0.90f, 0.09f});
+        drawBeveledCube(plate, sign.color, signFace_, {1.0f, 1.0f}, 52.0f);
+
+        glm::mat4 band = glm::translate(parent, {0.0f, 2.15f, -0.06f});
+        band = glm::scale(band, {0.62f, 0.16f, 0.05f});
+        drawBeveledCube(band, {0.96f, 0.96f, 0.94f}, white_, {1.0f, 1.0f}, 60.0f);
+    }
+}
+
+void Scene::drawFloodlightMast(bool illuminated)
+{
+    // The mast that carries the spot light. Its head is tilted towards the
+    // middle of the intersection so the cone in the shader and the geometry
+    // the viewer sees agree with each other.
+    const glm::vec3 base {14.0f, 0.22f, 14.0f};
+
+    glm::mat4 mast = glm::translate(glm::mat4(1.0f), base);
+    mast = glm::scale(mast, {1.0f, 2.15f, 1.0f});
+    drawMesh(lampPost_, mast, {0.10f, 0.11f, 0.13f}, white_, {1.0f, 1.0f}, 34.0f, glm::vec3{0.0f});
+
+    glm::mat4 head = glm::translate(glm::mat4(1.0f), {14.0f, 12.0f, 14.0f});
+    head = glm::rotate(head, glm::radians(-135.0f), {0.0f, 1.0f, 0.0f});
+    head = glm::rotate(head, glm::radians(-38.0f), {1.0f, 0.0f, 0.0f});
+
+    drawBeveledCube(glm::scale(head, {1.10f, 0.55f, 0.40f}),
+                    {0.13f, 0.14f, 0.16f}, white_, {1.0f, 1.0f}, 40.0f);
+
+    drawBeveledCube(
+        glm::scale(glm::translate(head, {0.0f, 0.0f, 0.24f}), {0.94f, 0.42f, 0.08f}),
+        illuminated ? glm::vec3{1.0f, 0.96f, 0.82f} : glm::vec3{0.26f, 0.25f, 0.22f},
+        white_, {1.0f, 1.0f}, 96.0f,
+        illuminated ? glm::vec3{0.85f, 0.78f, 0.58f} : glm::vec3{0.0f});
 }
 
 void Scene::drawStreetLamp(const glm::vec3& position, bool illuminated)

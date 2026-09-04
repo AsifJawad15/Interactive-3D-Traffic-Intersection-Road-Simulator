@@ -7,6 +7,11 @@ in vec3 vGouraudDiffuse;
 in vec3 vGouraudSpecular;
 
 uniform sampler2D uDiffuseTexture;
+
+// Lab 4 pairs a diffuse map with a specular map, exactly as the lab's
+// Material struct does. Objects without a specular map bind a white texture,
+// which reduces to a plain uniform highlight.
+uniform sampler2D uSpecularTexture;
 uniform vec3 uBaseColor;
 uniform vec3 uEmissiveColor;
 uniform vec3 uAmbient;
@@ -15,13 +20,23 @@ uniform vec3 uLightColor;
 uniform int uPointLightCount;
 uniform vec3 uPointLightPositions[4];
 uniform vec3 uPointLightColors[4];
+
+// Lab 3 completes the illumination model with a spot light: a point light
+// whose intensity is gated by the angle between the fragment direction and the
+// axis of the cone. Both cut-off angles are stored as cosines so the test is a
+// dot product with no inverse trigonometry per fragment.
+uniform vec3 uSpotPosition;
+uniform vec3 uSpotDirection;
+uniform vec3 uSpotColor;
+uniform float uSpotCutOff;
+uniform float uSpotOuterCutOff;
 uniform vec3 uViewPosition;
 uniform float uShininess;
 uniform int uShadingMode;
 
 out vec4 fragmentColor;
 
-vec3 illuminate(vec3 normal, vec3 albedo)
+vec3 illuminate(vec3 normal, vec3 albedo, vec3 specularMap)
 {
     vec3 lightDirection = normalize(-uLightDirection);
     vec3 viewDirection = normalize(uViewPosition - vWorldPosition);
@@ -45,17 +60,42 @@ vec3 illuminate(vec3 normal, vec3 albedo)
         specularLighting += uPointLightColors[index] * pointSpecular * attenuation * 0.45;
     }
 
-    return albedo * diffuseLighting + specularLighting;
+
+    // Spot light.
+    {
+        vec3 toSpot = uSpotPosition - vWorldPosition;
+        float spotDistance = length(toSpot);
+        vec3 spotDirection = toSpot / max(spotDistance, 0.0001);
+
+        float theta = dot(spotDirection, normalize(-uSpotDirection));
+        float cone = clamp(
+            (theta - uSpotOuterCutOff) / max(uSpotCutOff - uSpotOuterCutOff, 0.0001), 0.0, 1.0);
+
+        // A floodlight is a long-throw fitting, so it uses much gentler
+        // attenuation constants than the short street lamps above.
+        float spotAttenuation = cone /
+            (1.0 + 0.014 * spotDistance + 0.0007 * spotDistance * spotDistance);
+
+        float spotDiffuse = max(dot(normal, spotDirection), 0.0);
+        vec3 spotReflection = reflect(-spotDirection, normal);
+        float spotSpecular = pow(max(dot(viewDirection, spotReflection), 0.0), uShininess);
+
+        diffuseLighting += uSpotColor * spotDiffuse * spotAttenuation;
+        specularLighting += uSpotColor * spotSpecular * spotAttenuation * 0.5;
+    }
+
+    return albedo * diffuseLighting + specularMap * specularLighting;
 }
 
 void main()
 {
     vec3 albedo = texture(uDiffuseTexture, vTexCoord).rgb * uBaseColor;
+    vec3 specularMap = texture(uSpecularTexture, vTexCoord).rgb;
     vec3 result;
 
     if (uShadingMode == 1)
     {
-        result = albedo * vGouraudDiffuse + vGouraudSpecular;
+        result = albedo * vGouraudDiffuse + specularMap * vGouraudSpecular;
     }
     else
     {
@@ -66,7 +106,7 @@ void main()
             if (dot(normal, vNormal) < 0.0)
                 normal = -normal;
         }
-        result = illuminate(normal, albedo);
+        result = illuminate(normal, albedo, specularMap);
     }
 
     result += uEmissiveColor;

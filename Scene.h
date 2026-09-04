@@ -50,6 +50,12 @@ private:
     Texture sidewalk_;
     Texture facade_;
 
+    // Lab 4 diffuse + specular pair, applied to the roadside crates so the two
+    // maps can be pointed at side by side during the demonstration.
+    Texture crateDiffuse_;
+    Texture crateSpecular_;
+    Texture signFace_;
+
     void drawMesh(
         const Mesh& mesh,
         const glm::mat4& model,
@@ -57,7 +63,8 @@ private:
         const Texture& texture,
         const glm::vec2& uvScale,
         float shininess,
-        const glm::vec3& emissive);
+        const glm::vec3& emissive,
+        const Texture* specularMap = nullptr);
 
     void drawCube(
         const glm::mat4& model,
@@ -94,6 +101,8 @@ private:
     void drawFountain(float islandHeight);
     void drawWaterJets(const glm::vec3& origin, float islandHeight);
     void drawTrees();
+    void drawStreetFurniture();
+    void drawFloodlightMast(bool illuminated);
     void drawVehicle(const Vehicle& vehicle);
     void drawDriverCockpit(const Vehicle& vehicle);
 };
