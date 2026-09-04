@@ -48,13 +48,17 @@ void Overlay::render(
     const std::string& timeText,
     bool automaticDayNight,
     bool lampsOn,
-    std::size_t vehicleCount)
+    std::size_t vehicleCount,
+    bool showHelp)
 {
     glDisable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    drawRectangle(14.0f, 14.0f, 455.0f, 455.0f, {0.015f, 0.025f, 0.045f, 0.90f}, width, height);
+    // The key list folds away with H so it does not cover the scene during a
+    // demonstration; the status lines always stay.
+    const float panelHeight = showHelp ? 500.0f : 152.0f;
+    drawRectangle(14.0f, 14.0f, 455.0f, panelHeight, {0.015f, 0.025f, 0.045f, 0.90f}, width, height);
     drawRectangle(14.0f, 14.0f, 455.0f, 34.0f, {0.02f, 0.08f, 0.12f, 0.97f}, width, height);
 
     std::array<char, 96> statusText {};
@@ -78,37 +82,46 @@ void Overlay::render(
         {0.82f, 0.70f, 1.0f, 1.0f}, width, height);
     line += 21.0f;
     drawText(left, line, 1.13f, "AUTONOMOUS TRAFFIC - NO PLAYER CAR", {0.70f, 0.76f, 0.82f, 1.0f}, width, height);
-    line += 29.0f;
+    line += 21.0f;
+
+    if (!showHelp)
+    {
+        drawText(left, line, 1.08f, "H   SHOW CONTROLS", {0.58f, 0.70f, 0.78f, 1.0f}, width, height);
+        glDisable(GL_BLEND);
+        glEnable(GL_DEPTH_TEST);
+        return;
+    }
+
+    line += 8.0f;
     drawText(left, line, 1.28f, "INTERACTION OPTIONS", {1.0f, 0.82f, 0.08f, 1.0f}, width, height);
     line += 24.0f;
-    drawText(left, line, 1.18f, "W A S D   MOVE FREE CAMERA", {0.96f, 0.96f, 0.96f, 1.0f}, width, height);
-    line += 20.0f;
-    drawText(left, line, 1.18f, "Q / E     MOVE DOWN / UP", {0.96f, 0.96f, 0.96f, 1.0f}, width, height);
-    line += 20.0f;
-    drawText(left, line, 1.18f, "MOUSE     LOOK AROUND", {0.96f, 0.96f, 0.96f, 1.0f}, width, height);
-    line += 20.0f;
-    drawText(left, line, 1.12f, "C         FREE / TOP / FOLLOW / DRIVER", {0.96f, 0.96f, 0.96f, 1.0f}, width, height);
-    line += 20.0f;
-    drawText(left, line, 1.18f, "V         DRIVER VIEW / FREE VIEW", {0.96f, 0.96f, 0.96f, 1.0f}, width, height);
-    line += 20.0f;
-    drawText(left, line, 1.18f, "TAB       SELECT NEXT VIEW CAR", {0.96f, 0.96f, 0.96f, 1.0f}, width, height);
-    line += 20.0f;
-    drawText(left, line, 1.18f, "G         ADVANCE TRAFFIC SIGNAL", {0.96f, 0.96f, 0.96f, 1.0f}, width, height);
-    line += 20.0f;
-    drawText(left, line, 1.18f, "P         PAUSE / RESUME", {0.96f, 0.96f, 0.96f, 1.0f}, width, height);
-    line += 20.0f;
-    drawText(left, line, 1.18f, "1 / 2 / 3 FLAT / GOURAUD / PHONG", {0.96f, 0.96f, 0.96f, 1.0f}, width, height);
-    line += 20.0f;
-    drawText(left, line, 1.18f, "T         TOGGLE AUTO DAY / NIGHT", {0.96f, 0.96f, 0.96f, 1.0f}, width, height);
-    line += 20.0f;
-    drawText(left, line, 1.18f, "Y / N     SET DAY / NIGHT", {0.96f, 0.96f, 0.96f, 1.0f}, width, height);
-    line += 20.0f;
-    drawText(left, line, 1.18f, "L         TOGGLE STREET LAMPS", {0.96f, 0.96f, 0.96f, 1.0f}, width, height);
-    line += 20.0f;
-    drawText(left, line, 1.18f, "R         RESET CAMERA + TRAFFIC", {0.96f, 0.96f, 0.96f, 1.0f}, width, height);
-    line += 20.0f;
-    drawText(left, line, 1.18f, "ESC       EXIT", {0.96f, 0.96f, 0.96f, 1.0f}, width, height);
-    line += 24.0f;
+
+    static const std::array<const char*, 16> controls = {
+        "W A S D   MOVE FREE CAMERA",
+        "Q / E     MOVE DOWN / UP",
+        "MOUSE     LOOK AROUND",
+        "C         FREE / TOP / FOLLOW / DRIVER",
+        "V         DRIVER VIEW / FREE VIEW",
+        "TAB       SELECT NEXT VIEW CAR",
+        "M         SIGNALS / ROUNDABOUT MODE",
+        "G         ADVANCE TRAFFIC SIGNAL",
+        "P         PAUSE / RESUME",
+        "1 / 2 / 3 FLAT / GOURAUD / PHONG",
+        "T         TOGGLE AUTO DAY / NIGHT",
+        "Y / N     SET DAY / NIGHT",
+        "L         TOGGLE STREET LAMPS",
+        "R         RESET CAMERA + TRAFFIC",
+        "H         HIDE THIS PANEL",
+        "ESC       EXIT"
+    };
+
+    for (const char* control : controls)
+    {
+        drawText(left, line, 1.12f, control, {0.96f, 0.96f, 0.96f, 1.0f}, width, height);
+        line += 19.5f;
+    }
+
+    line += 6.0f;
     drawText(left, line, 1.08f, "OPENGL 3.3 CORE - REALTIME LIGHTING", {0.58f, 0.70f, 0.78f, 1.0f}, width, height);
 
     glDisable(GL_BLEND);

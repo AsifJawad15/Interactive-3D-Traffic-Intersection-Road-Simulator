@@ -25,7 +25,8 @@ public:
         const DayNight& dayNight,
         int shadingMode,
         bool driverView,
-        std::size_t selectedVehicleIndex);
+        std::size_t selectedVehicleIndex,
+        float elapsedSeconds);
 
 private:
     Shader shader_;
@@ -35,11 +36,25 @@ private:
     Mesh carCabin_;
     Mesh cylinder_;
 
+    // Lab 5 surfaces of revolution. Each is one Bezier profile swept about the
+    // Y axis by Mesh::makeBezierRevolution.
+    Mesh fountainBasin_;
+    Mesh fountainColumn_;
+    Mesh treeTrunk_;
+    Mesh treeCanopy_;
+    Mesh lampPost_;
+
     Texture white_;
     Texture asphalt_;
     Texture grass_;
     Texture sidewalk_;
     Texture facade_;
+
+    // Lab 4 diffuse + specular pair, applied to the roadside crates so the two
+    // maps can be pointed at side by side during the demonstration.
+    Texture crateDiffuse_;
+    Texture crateSpecular_;
+    Texture signFace_;
 
     void drawMesh(
         const Mesh& mesh,
@@ -48,7 +63,8 @@ private:
         const Texture& texture,
         const glm::vec2& uvScale,
         float shininess,
-        const glm::vec3& emissive);
+        const glm::vec3& emissive,
+        const Texture* specularMap = nullptr);
 
     void drawCube(
         const glm::mat4& model,
@@ -72,11 +88,21 @@ private:
         float shininess = 24.0f,
         const glm::vec3& emissive = {0.0f, 0.0f, 0.0f});
 
+    float waveAmplitude_ = 0.0f;
+    float elapsedSeconds_ = 0.0f;
+
     void drawRoads();
-    void drawRoadMarkings();
+    void drawRoadMarkings(float islandHeight);
     void drawBuildings();
     void drawStreetLamp(const glm::vec3& position, bool illuminated);
-    void drawTrafficSignal(const glm::vec3& position, float yawDegrees, SignalState state);
+    void drawTrafficSignal(
+        const glm::vec3& position, float yawDegrees, SignalState state, bool signalsLive);
+    void drawIsland(float islandHeight);
+    void drawFountain(float islandHeight);
+    void drawWaterJets(const glm::vec3& origin, float islandHeight);
+    void drawTrees();
+    void drawStreetFurniture();
+    void drawFloodlightMast(bool illuminated);
     void drawVehicle(const Vehicle& vehicle);
     void drawDriverCockpit(const Vehicle& vehicle);
 };

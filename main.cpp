@@ -9,8 +9,10 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <iostream>
+#include <string>
 
 namespace
 {
@@ -22,6 +24,7 @@ namespace
         int framebufferWidth = 1280;
         int framebufferHeight = 720;
         bool paused = false;
+        bool showHelp = true;
         int shadingMode = 2;
         bool firstMouseEvent = true;
         double lastMouseX = 0.0;
@@ -88,8 +91,12 @@ namespace
             state->camera->nextFollow(state->traffic->vehicles().size());
         else if (key == GLFW_KEY_G && state->traffic != nullptr)
             state->traffic->advancePhase();
+        else if (key == GLFW_KEY_M && state->traffic != nullptr)
+            state->traffic->toggleMode();
         else if (key == GLFW_KEY_P)
             state->paused = !state->paused;
+        else if (key == GLFW_KEY_H)
+            state->showHelp = !state->showHelp;
         else if (key == GLFW_KEY_1)
             state->shadingMode = 0;
         else if (key == GLFW_KEY_2)
@@ -143,8 +150,32 @@ namespace
     }
 }
 
-int main()
+int main(int argc, char** argv)
 {
+    // Geometry checks that need no window, so the route mathematics can be
+    // verified from the command line: OpenGLMiniProject.exe --self-test
+    for (int index = 1; index < argc; ++index)
+    {
+        if (std::strcmp(argv[index], "--self-test") != 0)
+            continue;
+
+        TrafficSystem traffic;
+        std::string report;
+        const bool passed = traffic.selfTest(report);
+        std::cout << report;
+        return passed ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+
+    for (int index = 1; index < argc; ++index)
+    {
+        if (std::strcmp(argv[index], "--plot") != 0)
+            continue;
+
+        TrafficSystem traffic;
+        std::cout << traffic.topDownPlot(false) << '\n' << traffic.topDownPlot(true);
+        return EXIT_SUCCESS;
+    }
+
     glfwSetErrorCallback(glfwErrorCallback);
     if (glfwInit() != GLFW_TRUE)
         return EXIT_FAILURE;
@@ -250,19 +281,21 @@ int main()
                 camera.viewMatrix(), camera.projectionMatrix(aspect), camera.position(),
                 traffic, dayNight, state.shadingMode,
                 camera.mode() == CameraMode::Driver,
-                camera.followedVehicleIndex());
+                camera.followedVehicleIndex(),
+                static_cast<float>(currentTime));
             overlay.render(
                 state.framebufferWidth,
                 state.framebufferHeight,
                 displayedFps,
                 state.paused,
                 camera.modeName(),
-                traffic.phaseName(),
+                traffic.phaseName() + " | " + traffic.modeName(),
                 shadingModeName(state.shadingMode),
                 dayNight.timeText(),
                 dayNight.automatic(),
                 dayNight.streetLampsOn(),
-                traffic.vehicles().size());
+                traffic.vehicles().size(),
+                state.showHelp);
 
             glfwSwapBuffers(window);
         }
