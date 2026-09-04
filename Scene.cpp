@@ -84,9 +84,18 @@ Scene::Scene()
       asphalt_(Texture::fromFileOr(
           "assets/asphalt-photoreal.png", &Texture::makeAsphalt,
           GL_REPEAT, GL_REPEAT, GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR)),
-      grass_(Texture::makeGrass()),
-      sidewalk_(Texture::makeSidewalk()),
-      facade_(Texture::makeFacade()),
+      // These three use an image file when one is present in assets/ and fall
+      // back to the generated pattern otherwise, so the project runs with no
+      // assets at all but can be re-skinned by dropping in a photograph.
+      grass_(Texture::fromFileOr(
+          "assets/grass.png", &Texture::makeGrass,
+          GL_REPEAT, GL_REPEAT, GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR)),
+      sidewalk_(Texture::fromFileOr(
+          "assets/sidewalk.png", &Texture::makeSidewalk,
+          GL_REPEAT, GL_REPEAT, GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR)),
+      facade_(Texture::fromFileOr(
+          "assets/facade.png", &Texture::makeFacade,
+          GL_REPEAT, GL_REPEAT, GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR)),
       // The Lab 4 container pair. The specular map is the metal banding only,
       // so the crate's painted panels stay matte while its edges catch a
       // highlight - the whole point of a separate specular map.
@@ -274,10 +283,26 @@ void Scene::drawRoadMarkings(float islandHeight)
         drawCube(transformed({static_cast<float>(value), 0.10f, 0.0f}, {3.0f, 0.035f, 0.14f}), yellow, white_, {1, 1}, 4.0f);
     }
 
-    drawCube(transformed({-5.7f, 0.09f, 0.0f}, {0.12f, 0.035f, 80.0f}), white, white_, {1, 1}, 4.0f);
-    drawCube(transformed({5.7f, 0.09f, 0.0f}, {0.12f, 0.035f, 80.0f}), white, white_, {1, 1}, 4.0f);
-    drawCube(transformed({0.0f, 0.10f, -5.7f}, {80.0f, 0.035f, 0.12f}), white, white_, {1, 1}, 4.0f);
-    drawCube(transformed({0.0f, 0.10f, 5.7f}, {80.0f, 0.035f, 0.12f}), white, white_, {1, 1}, 4.0f);
+    // Lane edge lines run the full length of each arm while the signals are in
+    // charge, and stop short of the circulating area in roundabout mode. Ending
+    // the strips is what removes the markings from the middle; nothing is ever
+    // laid over the carriageway, so the road surface stays perfectly flat.
+    const float clearRadius = glm::mix(0.0f, 11.0f, islandHeight);
+    const float armLength = 40.0f - clearRadius;
+    const float armCentre = (40.0f + clearRadius) * 0.5f;
+
+    for (float side : {-1.0f, 1.0f})
+    {
+        for (float edge : {-5.7f, 5.7f})
+        {
+            drawCube(
+                transformed({edge, 0.09f, side * armCentre}, {0.12f, 0.035f, armLength}),
+                white, white_, {1, 1}, 4.0f);
+            drawCube(
+                transformed({side * armCentre, 0.10f, edge}, {armLength, 0.035f, 0.12f}),
+                white, white_, {1, 1}, 4.0f);
+        }
+    }
 
     // Pedestrian crossings sit just behind the stop line while the signals are
     // running, and slide outboard of the circulating ring in roundabout mode so
@@ -348,25 +373,29 @@ void Scene::drawIsland(float islandHeight)
 
     const float radius = TrafficSystem::islandRadius;
 
-    // A circular asphalt apron grows out from the middle, covering the lane
-    // markings that a roundabout would not have.
-    const float apronRadius = 10.5f * islandHeight;
+    // Nothing is laid on top of the carriageway here. A roundabout has no lane
+    // markings through the middle, and drawRoadMarkings simply stops drawing
+    // them inside the circulating area, so the road surface itself stays flat.
+
+    // The island rises out of the road rather than popping into place. It
+    // stands only as proud of the carriageway as a real kerb does - about
+    // nineteen centimetres - so it reads as an island and not as raised road.
+    const float lift = glm::mix(-0.60f, 0.10f, islandHeight);
+    constexpr float kerbThickness = 0.30f;
+
+    // Kerb first: wider than the island but with its top face LOWER, so the
+    // grass disc that follows stands proud of it and the kerb is left showing
+    // as a rim rather than as a lid over the grass.
     drawMesh(
         cylinder_,
-        transformed({0.0f, 0.115f, 0.0f}, {apronRadius * 2.0f, 0.03f, apronRadius * 2.0f}),
-        {0.86f, 0.86f, 0.88f}, asphalt_, {6.0f, 6.0f}, 8.0f, glm::vec3{0.0f});
-
-    // The island itself rises out of the road rather than popping into place.
-    const float lift = glm::mix(-0.60f, 0.24f, islandHeight);
-
-    drawMesh(
-        cylinder_,
-        transformed({0.0f, lift, 0.0f}, {radius * 2.0f + 0.7f, 0.42f, radius * 2.0f + 0.7f}),
+        transformed({0.0f, lift, 0.0f},
+                    {radius * 2.0f + 0.6f, kerbThickness, radius * 2.0f + 0.6f}),
         {0.80f, 0.80f, 0.82f}, sidewalk_, {5.0f, 5.0f}, 16.0f, glm::vec3{0.0f});
 
     drawMesh(
         cylinder_,
-        transformed({0.0f, lift + 0.12f, 0.0f}, {radius * 2.0f, 0.42f, radius * 2.0f}),
+        transformed({0.0f, lift + 0.04f, 0.0f},
+                    {radius * 2.0f, kerbThickness, radius * 2.0f}),
         {0.60f, 0.80f, 0.55f}, grass_, {4.0f, 4.0f}, 6.0f, glm::vec3{0.0f});
 }
 
@@ -375,7 +404,9 @@ void Scene::drawFountain(float islandHeight)
     if (islandHeight <= 0.001f)
         return;
 
-    const float base = glm::mix(-1.4f, 0.32f, islandHeight);
+    // Sits on the top face of the island's grass disc: lift + 0.04 + half the
+    // kerb thickness, evaluated at a fully raised island.
+    const float base = glm::mix(-1.4f, 0.29f, islandHeight);
     const glm::vec3 origin {0.0f, base, 0.0f};
 
     // Basin and column are Bezier surfaces of revolution, drawn at their
