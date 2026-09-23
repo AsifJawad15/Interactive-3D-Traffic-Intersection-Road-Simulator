@@ -49,8 +49,29 @@ void Camera::processMouse(float xOffset, float yOffset)
     saveFreeCamera();
 }
 
-void Camera::update(float dt, const std::vector<Vehicle>& vehicles)
+namespace
 {
+    // Critically damped spring towards `target`, integrated exactly for any
+    // frame time (the "SmoothDamp" form, Game Programming Gems 4, 1.10).
+    // `smoothTime` is roughly the time it takes to close most of the gap.
+    glm::vec3 smoothDamp(const glm::vec3& current, const glm::vec3& target,
+                         glm::vec3& velocity, float smoothTime, float dt)
+    {
+        const float omega = 2.0f / smoothTime;
+        const float x = omega * dt;
+        const float decay = 1.0f / (1.0f + x + 0.48f * x * x + 0.235f * x * x * x);
+        const glm::vec3 change = current - target;
+        const glm::vec3 temp = (velocity + omega * change) * dt;
+        velocity = (velocity - omega * temp) * decay;
+        return target + (change + temp) * decay;
+    }
+}
+
+void Camera::update(float dt, const std::vector<VehiclePose>& vehicles)
+{
+    // A stalled frame (window dragged, breakpoint) must not fling the camera.
+    dt = glm::clamp(dt, 0.0f, 0.25f);
+
     if (mode_ == CameraMode::Top)
     {
         position_ = {0.0f, 48.0f, 0.01f};
@@ -59,25 +80,38 @@ void Camera::update(float dt, const std::vector<Vehicle>& vehicles)
     }
 
     if ((mode_ != CameraMode::Follow && mode_ != CameraMode::Driver) || vehicles.empty())
+    {
+        followSettled_ = false;
         return;
+    }
 
     followedVehicleIndex_ %= vehicles.size();
-    const Vehicle& vehicle = vehicles[followedVehicleIndex_];
+    const VehiclePose& vehicle = vehicles[followedVehicleIndex_];
     const float yaw = glm::radians(vehicle.yawDegrees);
     const glm::vec3 direction {std::sin(yaw), 0.0f, std::cos(yaw)};
 
     if (mode_ == CameraMode::Driver)
     {
+        // The driver's eye is rigidly part of the car: no smoothing, or the
+        // view would swim against the dashboard.
         position_ = vehicle.position + direction * 0.08f + glm::vec3{0.0f, 1.30f, 0.0f};
         const glm::vec3 target = vehicle.position + direction * 14.0f + glm::vec3{0.0f, 1.12f, 0.0f};
         front_ = glm::normalize(target - position_);
+        followSettled_ = false;
         return;
     }
 
     const glm::vec3 desiredPosition = vehicle.position - direction * 8.5f + glm::vec3{0.0f, 4.2f, 0.0f};
     const glm::vec3 target = vehicle.position + direction * 2.2f + glm::vec3{0.0f, 0.9f, 0.0f};
-    const float blend = 1.0f - std::exp(-5.0f * glm::clamp(dt, 0.0f, 0.05f));
-    position_ = glm::mix(position_, desiredPosition, blend);
+
+    // Entering follow mode (or switching car) starts the spring from where
+    // the camera already is, at rest.
+    if (!followSettled_)
+    {
+        followVelocity_ = glm::vec3 {0.0f};
+        followSettled_ = true;
+    }
+    position_ = smoothDamp(position_, desiredPosition, followVelocity_, 0.45f, dt);
     front_ = glm::normalize(target - position_);
 }
 

@@ -25,7 +25,9 @@ public:
 
     void processKeyboard(GLFWwindow* window, float dt);
     void processMouse(float xOffset, float yOffset);
-    void update(float dt, const std::vector<Vehicle>& vehicles);
+    // `vehicles` are the interpolated poses for this frame, so a camera that
+    // rides on a car moves exactly as smoothly as the car is drawn.
+    void update(float dt, const std::vector<VehiclePose>& vehicles);
     void cycleMode();
     void nextFollow(std::size_t vehicleCount);
     void toggleDriverView(std::size_t vehicleCount);
@@ -59,6 +61,13 @@ private:
     glm::vec3 savedFreePosition_ {20.0f, 17.0f, 24.0f};
     float savedFreeYaw_ = -130.0f;
     float savedFreePitch_ = -22.0f;
+
+    // Follow camera: a critically damped spring pulls the camera towards its
+    // spot behind the car. It settles as fast as possible without overshoot,
+    // and its velocity carries over from frame to frame, so a jerky frame time
+    // never makes the camera jerk.
+    glm::vec3 followVelocity_ {0.0f};
+    bool followSettled_ = false;
 
     void updateVectors();
     void saveFreeCamera();

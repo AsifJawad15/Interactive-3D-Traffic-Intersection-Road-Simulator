@@ -58,7 +58,14 @@ that `shaders/` and `assets/` resolve.
 | `L` | Toggle the street lamps and floodlight |
 | `R` | Reset camera, traffic and time |
 | `H` | Show / hide the control panel |
+| `F5` | Frame-time graph (last 240 frames) |
+| `F6` | Resolution: automatic / always native / always 720p inside the window |
+| `F7` | Frame pacing: steady (every second refresh on a 120 Hz+ screen) / full rate |
+| `F11` | Fullscreen |
 | `Esc` | Exit |
+
+The window opens at 1920×1080, or maximised when the screen is only 1080p tall
+(`F11` then gives true fullscreen 1080p; `--fullscreen` starts that way).
 
 ---
 
@@ -162,6 +169,23 @@ evenly, from `v² = v_c² + 2ad`. The **sigmoid easing** limits how quickly the
 acceleration itself may change (the jerk), and a hard clamp keeps every car at
 least 0.6 m behind the one in front whatever the model says.
 
+### Smooth motion
+
+The simulation always advances in fixed 1/60 s steps, so traffic behaves the
+same on any machine. Drawing that state directly made cars step unevenly on a
+144 Hz screen (moving on some frames, standing still on others). Each vehicle
+now keeps its pose from the previous step, and every frame draws the blend
+`previous + (current − previous)·α`, where `α` is how far the clock has run into
+the next step (**render interpolation**). The follow camera rides a critically
+damped spring, and the driver camera is rigidly attached to the blended pose.
+
+On a 120 Hz+ screen the default **steady pacing** draws on every second refresh:
+on this hybrid-GPU laptop, full-rate frames at 144 Hz often miss a refresh and
+alternate between 6.9 and 13.9 ms, which reads as stutter; every-second-refresh
+gives an even 72 FPS. `F7` switches to full rate. The scene can also be rendered
+at 67 % (720p inside a 1080p window) and scaled up with light sharpening; in
+automatic mode that happens only if the frame rate stays below 55 FPS for 3 s.
+
 ### Signals
 
 Each axis gets a protected **left-turn arrow** (only when someone at the front of
@@ -174,13 +198,24 @@ while anyone waits.
 
 ## Verification
 
-Three command-line modes run without opening a window:
+Four command-line modes run without opening a window:
 
 ```
 OpenGLMiniProject.exe --self-test
 OpenGLMiniProject.exe --plot
 OpenGLMiniProject.exe --soak 30 1 --cars 12 [--mode signals|roundabout|both] [--trace [T]]
+OpenGLMiniProject.exe --motion-test
 ```
+
+`--motion-test` replays the frame loop at 144, 60 and 75 Hz with realistically
+uneven frame times and measures judder (how much a car's on-screen speed jumps
+from frame to frame); it must stay below 0.01 with interpolation.
+
+`--capture out.png` renders a fixed view and saves it, and reports frame timing:
+average, 99th percentile, worst frame, frames over 25 ms, GPU time, and for each
+slow frame whether the time went into our own work or into the buffer swap.
+Options: `--view 0..3 --time H --shading 0..2 --roundabout --no-hud --frames N
+--size 1920x1080 --fullscreen --scale 0.67 --full-rate --graph`.
 
 `--self-test` checks all 24 routes, the conflict table and the signal logic:
 

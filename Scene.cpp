@@ -120,6 +120,8 @@ void Scene::render(
     const glm::mat4& projection,
     const glm::vec3& cameraPosition,
     const TrafficSystem& traffic,
+    const std::vector<VehiclePose>& vehicles,
+    float islandHeight,
     const DayNight& dayNight,
     int shadingMode,
     bool driverView,
@@ -149,10 +151,19 @@ void Scene::render(
     const glm::vec3 lampColor = dayNight.streetLampsOn()
         ? glm::vec3{1.65f, 0.92f, 0.36f}
         : glm::vec3{0.0f};
+    // Names written out once, so no string is built on every frame.
+    static constexpr std::array<const char*, 4> positionNames = {
+        "uPointLightPositions[0]", "uPointLightPositions[1]",
+        "uPointLightPositions[2]", "uPointLightPositions[3]"
+    };
+    static constexpr std::array<const char*, 4> colorNames = {
+        "uPointLightColors[0]", "uPointLightColors[1]",
+        "uPointLightColors[2]", "uPointLightColors[3]"
+    };
     for (std::size_t index = 0; index < lampPositions.size(); ++index)
     {
-        shader_.setVec3("uPointLightPositions[" + std::to_string(index) + "]", lampPositions[index]);
-        shader_.setVec3("uPointLightColors[" + std::to_string(index) + "]", lampColor);
+        shader_.setVec3(positionNames[index], lampPositions[index]);
+        shader_.setVec3(colorNames[index], lampColor);
     }
 
     // A single spot light on a floodlight mast, aimed at the middle of the
@@ -171,7 +182,6 @@ void Scene::render(
     // horizon; the old 82 m square ended in mid-air at the edge of the view.
     drawCube(transformed({0.0f, -0.30f, 0.0f}, {2000.0f, 0.5f, 2000.0f}), {0.72f, 0.86f, 0.72f}, grass_, {780.0f, 780.0f}, 6.0f);
     drawRoads();
-    const float islandHeight = traffic.islandHeight();
     drawRoadMarkings(islandHeight);
     drawIsland(islandHeight);
     drawFountain(islandHeight);
@@ -202,7 +212,6 @@ void Scene::render(
     }
 
     // Vehicles that have left the scene and wait to re-enter are not drawn.
-    const auto& vehicles = traffic.vehicles();
     for (std::size_t index = 0; index < vehicles.size(); ++index)
     {
         if (vehicles[index].active && (!driverView || index != selectedVehicleIndex))
@@ -675,7 +684,7 @@ void Scene::drawTrafficSignal(
     }
 }
 
-void Scene::drawVehicle(const Vehicle& vehicle)
+void Scene::drawVehicle(const VehiclePose& vehicle)
 {
     glm::mat4 parent(1.0f);
     parent = glm::translate(parent, vehicle.position);
@@ -747,7 +756,7 @@ void Scene::drawVehicle(const Vehicle& vehicle)
     drawBeveledCube(rearBumper, {0.09f, 0.10f, 0.11f}, white_, {1, 1}, 46.0f);
 }
 
-void Scene::drawDriverCockpit(const Vehicle& vehicle)
+void Scene::drawDriverCockpit(const VehiclePose& vehicle)
 {
     glm::mat4 parent(1.0f);
     parent = glm::translate(parent, vehicle.position);

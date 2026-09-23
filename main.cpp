@@ -3,6 +3,7 @@
 
 #include "Camera.h"
 #include "DayNight.h"
+#include "FrameStats.h"
 #include "Framebuffer.h"
 #include "Overlay.h"
 #include "PostProcess.h"
@@ -13,12 +14,14 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <iostream>
 #include <string>
+#include <vector>
 
 // On a laptop with both an integrated and a discrete GPU, these two exported
 // symbols ask the NVIDIA and AMD drivers to run this program on the discrete
@@ -43,6 +46,11 @@ namespace
         bool hideHud = false;
         bool roundabout = false;
         int shading = 2;
+        int width = 1280;             // --size WxH
+        int height = 720;
+        float scale = 1.0f;           // --scale 0.67 renders at 720p inside 1080p
+        bool graph = false;           // --graph shows the frame-time graph
+        bool fullRate = false;        // --full-rate draws on every refresh
     };
 
     // Camera poses for --view. Yaw 90 looks along +z (north), yaw 0 along +x.
@@ -70,7 +78,58 @@ namespace
         bool firstMouseEvent = true;
         double lastMouseX = 0.0;
         double lastMouseY = 0.0;
+        bool showFrameGraph = false;
+        bool fullscreenRequested = false;
+        RenderScaler* scaler = nullptr;
+
+        // Frame pacing: false = on a fast display (120 Hz or more) draw on every
+        // second refresh for perfectly even frame times; true = every refresh.
+        bool fullRatePacing = false;
+        bool pacingChanged = true;
+        int pacingHz = 60;
     };
+
+    // Where the window was before going fullscreen, to return it there.
+    struct WindowPlacement
+    {
+        int x = 100;
+        int y = 100;
+        int width = 1920;
+        int height = 1080;
+    };
+
+    void toggleFullscreen(GLFWwindow* window, WindowPlacement& placement)
+    {
+        if (glfwGetWindowMonitor(window) == nullptr)
+        {
+            glfwGetWindowPos(window, &placement.x, &placement.y);
+            glfwGetWindowSize(window, &placement.width, &placement.height);
+            GLFWmonitor* monitor = glfwGetPrimaryMonitor();
+            const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+            // The monitor's own mode, so the switch is instant and the refresh
+            // rate stays what the desktop uses.
+            glfwSetWindowMonitor(window, monitor, 0, 0, mode->width, mode->height, mode->refreshRate);
+        }
+        else
+        {
+            glfwSetWindowMonitor(window, nullptr, placement.x, placement.y,
+                                 placement.width, placement.height, 0);
+        }
+    }
+
+    // Sets the swap interval and returns the resulting frame rate. On a hybrid-
+    // GPU laptop at 144 Hz, frames every 6.9 ms often miss a refresh and land
+    // 13.9 ms apart instead, which reads as stutter. Drawing on every second
+    // refresh gives an even 72 FPS: every frame exactly 13.9 ms.
+    int applyPacing(GLFWwindow* window, bool fullRate)
+    {
+        GLFWmonitor* monitor = glfwGetWindowMonitor(window);
+        const GLFWvidmode* mode = glfwGetVideoMode(monitor != nullptr ? monitor : glfwGetPrimaryMonitor());
+        const int refresh = mode != nullptr && mode->refreshRate > 0 ? mode->refreshRate : 60;
+        const int interval = (!fullRate && refresh >= 120) ? 2 : 1;
+        glfwSwapInterval(interval);
+        return refresh / interval;
+    }
 
     void glfwErrorCallback(int code, const char* description)
     {
@@ -138,6 +197,17 @@ namespace
             state->paused = !state->paused;
         else if (key == GLFW_KEY_H)
             state->showHelp = !state->showHelp;
+        else if (key == GLFW_KEY_F5)
+            state->showFrameGraph = !state->showFrameGraph;
+        else if (key == GLFW_KEY_F6 && state->scaler != nullptr)
+            state->scaler->cycleMode();
+        else if (key == GLFW_KEY_F11)
+            state->fullscreenRequested = true;
+        else if (key == GLFW_KEY_F7)
+        {
+            state->fullRatePacing = !state->fullRatePacing;
+            state->pacingChanged = true;
+        }
         else if (key == GLFW_KEY_1)
             state->shadingMode = 0;
         else if (key == GLFW_KEY_2)
@@ -252,6 +322,93 @@ namespace
         }
         return allPassed ? EXIT_SUCCESS : EXIT_FAILURE;
     }
+
+    // Headless smoothness test. It replays the real frame loop (fixed 60 Hz
+    // simulation, rendering at the display's rate with slightly uneven frame
+    // times, as a real driver delivers them) and measures judder: how much a
+    // car's on-screen speed (movement divided by frame time) changes from one
+    // frame to the next, relative to its average speed. Smooth motion scores
+    // near 0; a car that moves on some frames and stands still on others
+    // scores 1 or more.
+    //     OpenGLMiniProject.exe --motion-test
+    int runMotionTest()
+    {
+        constexpr float simulationStep = 1.0f / 60.0f;
+        constexpr float testSeconds = 90.0f;
+        constexpr float allowedJudder = 0.01f;
+        bool allPassed = true;
+
+        for (const float refreshRate : {144.0f, 60.0f, 75.0f})
+        {
+            TrafficSystem traffic(8, 3);
+            std::vector<VehiclePose> smooth;
+            std::vector<VehiclePose> stepped;
+            std::vector<VehiclePose> previousSmooth;
+            std::vector<VehiclePose> previousStepped;
+            std::vector<float> lastMoveSmooth(8, -1.0f);
+            std::vector<float> lastMoveStepped(8, -1.0f);
+
+            double judderSmooth = 0.0;
+            double judderStepped = 0.0;
+            double travelled = 0.0;
+            float backlog = 0.0f;
+            const int frames = static_cast<int>(testSeconds * refreshRate);
+
+            for (int frame = 0; frame < frames; ++frame)
+            {
+                // Frame times wobble by about 3 %, as they do in practice.
+                const float frameSeconds = (1.0f / refreshRate) *
+                    (1.0f + 0.03f * std::sin(static_cast<float>(frame) * 1.7f));
+                backlog += frameSeconds;
+                while (backlog >= simulationStep)
+                {
+                    traffic.update(simulationStep);
+                    backlog -= simulationStep;
+                }
+                traffic.interpolatePoses(backlog / simulationStep, smooth);
+                traffic.interpolatePoses(1.0f, stepped);   // what the old renderer drew
+
+                if (!previousSmooth.empty())
+                {
+                    for (std::size_t index = 0; index < smooth.size(); ++index)
+                    {
+                        if (!smooth[index].active || !previousSmooth[index].active)
+                        {
+                            lastMoveSmooth[index] = lastMoveStepped[index] = -1.0f;
+                            continue;
+                        }
+                        const float distanceSmooth = glm::length(smooth[index].position - previousSmooth[index].position);
+                        const float distanceStepped = glm::length(stepped[index].position - previousStepped[index].position);
+                        const float moveSmooth = distanceSmooth / frameSeconds;     // on-screen speed
+                        const float moveStepped = distanceStepped / frameSeconds;
+                        if (distanceSmooth > 2.0f)   // re-entered at the edge: not motion
+                        {
+                            lastMoveSmooth[index] = lastMoveStepped[index] = -1.0f;
+                            continue;
+                        }
+                        if (lastMoveSmooth[index] >= 0.0f)
+                        {
+                            judderSmooth += std::abs(moveSmooth - lastMoveSmooth[index]);
+                            judderStepped += std::abs(moveStepped - lastMoveStepped[index]);
+                            travelled += moveSmooth;
+                        }
+                        lastMoveSmooth[index] = moveSmooth;
+                        lastMoveStepped[index] = moveStepped;
+                    }
+                }
+                previousSmooth = smooth;
+                previousStepped = stepped;
+            }
+
+            const float scoreSmooth = travelled > 0.0 ? static_cast<float>(judderSmooth / travelled) : 0.0f;
+            const float scoreStepped = travelled > 0.0 ? static_cast<float>(judderStepped / travelled) : 0.0f;
+            const bool passed = scoreSmooth <= allowedJudder;
+            allPassed = allPassed && passed;
+            std::printf("%3.0f Hz display | judder without interpolation %.3f | with interpolation %.4f | %s\n",
+                        refreshRate, scoreStepped, scoreSmooth, passed ? "PASS" : "FAIL");
+        }
+        return allPassed ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
 }
 
 int main(int argc, char** argv)
@@ -303,6 +460,12 @@ int main(int argc, char** argv)
 
     for (int index = 1; index < argc; ++index)
     {
+        if (std::strcmp(argv[index], "--motion-test") == 0)
+            return runMotionTest();
+    }
+
+    for (int index = 1; index < argc; ++index)
+    {
         if (std::strcmp(argv[index], "--plot") != 0)
             continue;
 
@@ -312,6 +475,7 @@ int main(int argc, char** argv)
     }
 
     CaptureOptions capture;
+    bool startFullscreen = false;
     for (int index = 1; index < argc; ++index)
     {
         const std::string argument = argv[index];
@@ -333,6 +497,26 @@ int main(int argc, char** argv)
             capture.roundabout = true;
         else if (argument == "--shading" && hasValue)
             capture.shading = std::clamp(std::atoi(argv[++index]), 0, 2);
+        else if (argument == "--size" && hasValue)
+        {
+            // WIDTHxHEIGHT, for example 1920x1080.
+            char* separator = nullptr;
+            const long width = std::strtol(argv[++index], &separator, 10);
+            const long height = (separator != nullptr && *separator == 'x') ? std::strtol(separator + 1, nullptr, 10) : 0;
+            if (width > 0 && height > 0)
+            {
+                capture.width = static_cast<int>(width);
+                capture.height = static_cast<int>(height);
+            }
+        }
+        else if (argument == "--scale" && hasValue)
+            capture.scale = static_cast<float>(std::atof(argv[++index])) < 0.9f ? RenderScaler::reducedScale : 1.0f;
+        else if (argument == "--full-rate")
+            capture.fullRate = true;
+        else if (argument == "--graph")
+            capture.graph = true;
+        else if (argument == "--fullscreen")
+            startFullscreen = true;
     }
 
     glfwSetErrorCallback(glfwErrorCallback);
@@ -346,9 +530,36 @@ int main(int argc, char** argv)
     // itself needs no multisampling.
     glfwWindowHint(GLFW_SAMPLES, 0);
 
+    // The window stays hidden until the first frame has been drawn, so the
+    // one-off costs of first use (shader and texture upload inside the driver)
+    // are paid before anything is on screen instead of as a visible hitch.
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+
+    // 1920x1080 when the desktop has room for it; on a 1080p laptop screen the
+    // window is maximised instead (F11 then gives true fullscreen 1080p).
+    int windowWidth = 1920;
+    int windowHeight = 1080;
+    bool maximise = false;
+    int workX = 0;
+    int workY = 0;
+    int workWidth = 1920;
+    int workHeight = 1080;
+    glfwGetMonitorWorkarea(glfwGetPrimaryMonitor(), &workX, &workY, &workWidth, &workHeight);
+    if (capture.enabled)
+    {
+        windowWidth = capture.width;
+        windowHeight = capture.height;
+    }
+    else if (workWidth < windowWidth || workHeight < windowHeight + 40)
+    {
+        maximise = true;
+        windowWidth = std::min(windowWidth, workWidth);
+        windowHeight = std::min(windowHeight, workHeight - 40);
+    }
+
     GLFWwindow* window = glfwCreateWindow(
-        1280,
-        720,
+        windowWidth,
+        windowHeight,
         "Interactive 3D Traffic Intersection Simulator",
         nullptr,
         nullptr);
@@ -358,6 +569,9 @@ int main(int argc, char** argv)
         glfwTerminate();
         return EXIT_FAILURE;
     }
+    glfwSetWindowPos(window,
+                     workX + std::max(0, (workWidth - windowWidth) / 2),
+                     workY + std::max(0, (workHeight - windowHeight) / 2));
 
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
@@ -388,23 +602,25 @@ int main(int argc, char** argv)
         Camera camera;
         TrafficSystem traffic(vehicleCount);
         DayNight dayNight;
+        RenderScaler scaler;
         ApplicationState state;
         state.camera = &camera;
         state.traffic = &traffic;
         state.dayNight = &dayNight;
-        glfwGetFramebufferSize(window, &state.framebufferWidth, &state.framebufferHeight);
+        state.scaler = &scaler;
         glfwSetWindowUserPointer(window, &state);
         glfwSetFramebufferSizeCallback(window, framebufferCallback);
         glfwSetCursorPosCallback(window, cursorCallback);
         glfwSetKeyCallback(window, keyCallback);
         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-        glViewport(0, 0, state.framebufferWidth, state.framebufferHeight);
 
         Scene scene;
         Overlay overlay;
         Sky sky;
         HdrTarget hdr;
         PostProcess postProcess;
+        FrameStats frameStats;
+        WindowPlacement placement;
 
         if (capture.enabled)
         {
@@ -415,103 +631,231 @@ int main(int argc, char** argv)
                 traffic.setMode(IntersectionMode::Roundabout);
             state.showHelp = !capture.hideHud;
             state.shadingMode = capture.shading;
+            state.showFrameGraph = capture.graph;
+            state.fullRatePacing = capture.fullRate;
+            scaler.setMode(capture.scale < 1.0f ? ResolutionMode::Reduced : ResolutionMode::Native);
         }
-        int capturedFrames = 0;
 
         // The simulation advances in fixed 1/60 s steps, independent of the
         // frame rate, so traffic behaves identically on a slow or a fast GPU.
+        // Rendering then blends between the last two steps (render
+        // interpolation), so motion is smooth at 60, 75, 144 Hz or anything else.
         constexpr float simulationStep = 1.0f / 60.0f;
+        constexpr int maximumStepsPerFrame = 8;
         float simulationBacklog = 0.0f;
+        std::vector<VehiclePose> poses;
+        poses.reserve(64);
+
+        // Everything one frame draws, from the current camera and poses.
+        const auto renderFrame = [&](float alpha, double timeSeconds)
+        {
+            glfwGetFramebufferSize(window, &state.framebufferWidth, &state.framebufferHeight);
+            const int outputWidth = std::max(state.framebufferWidth, 1);
+            const int outputHeight = std::max(state.framebufferHeight, 1);
+            const int renderWidth = std::max(1, static_cast<int>(std::lround(outputWidth * scaler.scale())));
+            const int renderHeight = std::max(1, static_cast<int>(std::lround(outputHeight * scaler.scale())));
+
+            frameStats.beginGpu();
+
+            // 1. Sky and scene into the multisampled HDR target.
+            hdr.resize(renderWidth, renderHeight);
+            hdr.bindForScene();
+            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+            const float aspect = static_cast<float>(outputWidth) / static_cast<float>(outputHeight);
+            const glm::mat4 view = camera.viewMatrix();
+            const glm::mat4 projection = camera.projectionMatrix(aspect);
+            sky.render(view, projection, camera.position(), dayNight, static_cast<float>(timeSeconds));
+            scene.render(
+                view, projection, camera.position(),
+                traffic, poses, traffic.islandHeight(alpha),
+                dayNight, state.shadingMode,
+                camera.mode() == CameraMode::Driver,
+                camera.followedVehicleIndex(),
+                static_cast<float>(timeSeconds));
+
+            // 2. Resolve the samples, then bloom and tone-map into the window,
+            //    scaling up if the scene was rendered smaller.
+            hdr.resolve();
+            postProcess.render(
+                hdr.colorTexture(), renderWidth, renderHeight,
+                outputWidth, outputHeight, dayNight.exposure());
+
+            // 3. The HUD is drawn last, straight onto the tone-mapped image.
+            if (!capture.hideHud)
+            {
+                PerformanceInfo performance;
+                performance.fps = frameStats.fps();
+                performance.frameMs = frameStats.frameMs();
+                performance.gpuMs = frameStats.gpuMs();
+                performance.renderWidth = renderWidth;
+                performance.renderHeight = renderHeight;
+                performance.scalePercent = static_cast<int>(std::lround(scaler.scale() * 100.0f));
+                performance.resolutionMode = scaler.modeName();
+                performance.showGraph = state.showFrameGraph;
+                performance.pacingHz = state.pacingHz;
+                performance.fullRatePacing = state.fullRatePacing;
+                performance.frameHistory = frameStats.frameHistory().data();
+                performance.historySize = frameStats.frameHistory().size();
+                performance.historyHead = frameStats.head();
+
+                overlay.render(
+                    outputWidth,
+                    outputHeight,
+                    state.paused,
+                    camera.modeName(),
+                    traffic.phaseName() + " | " + traffic.modeName(),
+                    shadingModeName(state.shadingMode),
+                    dayNight.timeText(),
+                    dayNight.automatic(),
+                    dayNight.streetLampsOn(),
+                    traffic.vehicles().size(),
+                    traffic.stats().overlapPairsNow,
+                    performance,
+                    state.showHelp);
+            }
+
+            frameStats.endGpu();
+        };
+
+        // Warm-up: draw one complete frame while the window is still hidden.
+        traffic.interpolatePoses(0.0f, poses);
+        camera.update(0.0f, poses);
+        renderFrame(0.0f, glfwGetTime());
+        glFinish();
+
+        glfwShowWindow(window);
+        if (maximise)
+            glfwMaximizeWindow(window);
+        if (startFullscreen)
+            toggleFullscreen(window, placement);
+
+        // Frame times for the --capture report (the first second is skipped:
+        // it includes window creation).
+        std::vector<float> captureFrameMs;
+        captureFrameMs.reserve(static_cast<std::size_t>(capture.frames) + 1);
+        double captureGpuMsTotal = 0.0;
+        int captureGpuSamples = 0;
+        int capturedFrames = 0;
+
+        // For each slow frame, where the time went: our own work (simulation
+        // and draw calls), the buffer swap (waiting on the GPU / display), or
+        // the window-event pump (the operating system).
+        struct Hitch
+        {
+            double atSeconds;
+            float frameMs;
+            float eventsMs;
+            float workMs;
+            float swapMs;
+        };
+        std::vector<Hitch> hitches;
+        hitches.reserve(16);
+        float lastEventsMs = 0.0f;
+        float lastWorkMs = 0.0f;
+        float lastSwapMs = 0.0f;
 
         double previousTime = glfwGetTime();
-        double fpsWindowStart = previousTime;
-        int renderedFrames = 0;
-        float displayedFps = 0.0f;
-
         while (glfwWindowShouldClose(window) == GLFW_FALSE)
         {
             const double currentTime = glfwGetTime();
-            const float dt = std::min(static_cast<float>(currentTime - previousTime), 0.05f);
+            const float frameSeconds = static_cast<float>(currentTime - previousTime);
             previousTime = currentTime;
+            frameStats.recordFrame(frameSeconds);
+            if (capture.enabled && frameSeconds > 0.025f && currentTime > 1.0 && hitches.size() < 16)
+                hitches.push_back({currentTime, frameSeconds * 1000.0f, lastEventsMs, lastWorkMs, lastSwapMs});
 
             glfwPollEvents();
+            const double eventsDone = glfwGetTime();
+            lastEventsMs = static_cast<float>((eventsDone - currentTime) * 1000.0);
+            if (state.fullscreenRequested)
+            {
+                state.fullscreenRequested = false;
+                toggleFullscreen(window, placement);
+                state.pacingChanged = true;
+            }
+            if (state.pacingChanged)
+            {
+                state.pacingChanged = false;
+                state.pacingHz = applyPacing(window, state.fullRatePacing);
+            }
+
+            // The real frame time drives everything; only a long stall (a
+            // dragged window, a breakpoint) is cut short so nothing jumps.
+            const float dt = std::min(frameSeconds, 0.25f);
             camera.processKeyboard(window, dt);
             if (!state.paused)
             {
                 simulationBacklog += dt;
                 int steps = 0;
-                while (simulationBacklog >= simulationStep && steps < 5)
+                while (simulationBacklog >= simulationStep && steps < maximumStepsPerFrame)
                 {
                     traffic.update(simulationStep);
                     dayNight.update(simulationStep);
                     simulationBacklog -= simulationStep;
                     ++steps;
                 }
-                if (steps == 5)
-                    simulationBacklog = 0.0f;   // never spiral when a frame stalls
+                if (simulationBacklog >= simulationStep)
+                    simulationBacklog = std::fmod(simulationBacklog, simulationStep);   // never spiral
             }
-            camera.update(dt, traffic.vehicles());
 
-            ++renderedFrames;
-            const double fpsElapsed = currentTime - fpsWindowStart;
-            if (fpsElapsed >= 0.5)
+            // How far the clock has run into the next step: the blend factor.
+            const float alpha = simulationBacklog / simulationStep;
+            traffic.interpolatePoses(alpha, poses);
+            camera.update(dt, poses);
+            scaler.update(frameSeconds, frameStats.frameMs(), frameStats.gpuMs());
+
+            renderFrame(alpha, currentTime);
+
+            if (capture.enabled)
             {
-                displayedFps = static_cast<float>(renderedFrames / fpsElapsed);
-                renderedFrames = 0;
-                fpsWindowStart = currentTime;
+                ++capturedFrames;
+                if (currentTime > 1.0 && capturedFrames > 30)
+                {
+                    captureFrameMs.push_back(frameSeconds * 1000.0f);
+                    captureGpuMsTotal += frameStats.gpuMs();
+                    ++captureGpuSamples;
+                }
+
+                if (capturedFrames >= capture.frames)
+                {
+                    const bool saved = saveFramebufferPng(
+                        capture.path, state.framebufferWidth, state.framebufferHeight);
+                    std::cout << (saved ? "Saved " : "Could not save ") << capture.path << '\n';
+
+                    if (!captureFrameMs.empty())
+                    {
+                        std::vector<float> sorted = captureFrameMs;
+                        std::sort(sorted.begin(), sorted.end());
+                        double total = 0.0;
+                        for (float ms : sorted)
+                            total += ms;
+                        const float average = static_cast<float>(total / static_cast<double>(sorted.size()));
+                        const float p99 = sorted[std::min(sorted.size() - 1, sorted.size() * 99 / 100)];
+                        const std::size_t overBudget = static_cast<std::size_t>(std::count_if(
+                            sorted.begin(), sorted.end(), [](float ms) { return ms > 25.0f; }));
+                        std::printf(
+                            "Frames %zu at %dx%d (scene %d%%) | average %.2f ms (%.0f FPS) | 99th %.2f ms | "
+                            "worst %.2f ms | over 25 ms: %zu | GPU %.2f ms\n",
+                            sorted.size(), state.framebufferWidth, state.framebufferHeight,
+                            static_cast<int>(std::lround(scaler.scale() * 100.0f)),
+                            average, 1000.0f / average, p99, sorted.back(), overBudget,
+                            captureGpuSamples > 0 ? captureGpuMsTotal / captureGpuSamples : 0.0);
+                    }
+                    for (const Hitch& hitch : hitches)
+                        std::printf("  slow frame at %.2f s: %.1f ms (events %.1f, our work %.1f, swap %.1f)\n",
+                                    hitch.atSeconds, hitch.frameMs, hitch.eventsMs, hitch.workMs, hitch.swapMs);
+                    std::cout.flush();
+                    exitCode = saved ? EXIT_SUCCESS : EXIT_FAILURE;
+                    glfwSetWindowShouldClose(window, GLFW_TRUE);
+                }
             }
 
-            // 1. Sky and scene into the multisampled HDR target.
-            hdr.resize(state.framebufferWidth, state.framebufferHeight);
-            hdr.bindForScene();
-            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-            const float aspect = static_cast<float>(state.framebufferWidth) /
-                                 static_cast<float>(state.framebufferHeight);
-            const glm::mat4 view = camera.viewMatrix();
-            const glm::mat4 projection = camera.projectionMatrix(aspect);
-            sky.render(view, projection, camera.position(), dayNight, static_cast<float>(currentTime));
-            scene.render(
-                view, projection, camera.position(),
-                traffic, dayNight, state.shadingMode,
-                camera.mode() == CameraMode::Driver,
-                camera.followedVehicleIndex(),
-                static_cast<float>(currentTime));
-
-            // 2. Resolve the samples, then bloom and tone-map into the window.
-            hdr.resolve();
-            postProcess.render(
-                hdr.colorTexture(), state.framebufferWidth, state.framebufferHeight,
-                dayNight.exposure());
-
-            // 3. The HUD is drawn last, straight onto the tone-mapped image.
-            if (!capture.hideHud)
-                overlay.render(
-                state.framebufferWidth,
-                state.framebufferHeight,
-                displayedFps,
-                state.paused,
-                camera.modeName(),
-                traffic.phaseName() + " | " + traffic.modeName(),
-                shadingModeName(state.shadingMode),
-                dayNight.timeText(),
-                dayNight.automatic(),
-                dayNight.streetLampsOn(),
-                traffic.vehicles().size(),
-                traffic.stats().overlapPairsNow,
-                state.showHelp);
-
-            if (capture.enabled && ++capturedFrames >= capture.frames)
-            {
-                const bool saved = saveFramebufferPng(
-                    capture.path, state.framebufferWidth, state.framebufferHeight);
-                std::cout << (saved ? "Saved " : "Could not save ") << capture.path << std::endl;
-                exitCode = saved ? EXIT_SUCCESS : EXIT_FAILURE;
-                glfwSetWindowShouldClose(window, GLFW_TRUE);
-            }
-
+            const double workDone = glfwGetTime();
+            lastWorkMs = static_cast<float>((workDone - eventsDone) * 1000.0);
             glfwSwapBuffers(window);
+            lastSwapMs = static_cast<float>((glfwGetTime() - workDone) * 1000.0);
         }
     }
     catch (const std::exception& error)

@@ -144,6 +144,7 @@ void TrafficSystem::reset()
     phaseElapsed_ = 0.0f;
     mode_ = IntersectionMode::Signals;
     islandHeight_ = 0.0f;
+    previousIslandHeight_ = 0.0f;
     randomState_ = seed_;
     vehicles_.clear();
 
@@ -214,6 +215,44 @@ void TrafficSystem::placeOnRoute(Vehicle& vehicle, std::size_t routeIndex, float
     vehicle.position = sample.position;
     vehicle.yawDegrees = sample.headingDegrees;
     vehicle.turnSign = sample.turnSign;
+
+    // A placed car appears where it is; it must not be blended in from
+    // wherever it was before (it would streak across the scene).
+    vehicle.previousPosition = vehicle.position;
+    vehicle.previousYawDegrees = vehicle.yawDegrees;
+    vehicle.previousWheelAngleDegrees = vehicle.wheelAngleDegrees;
+    vehicle.previousSteerAngleDegrees = vehicle.steerAngleDegrees;
+}
+
+void TrafficSystem::interpolatePoses(float alpha, std::vector<VehiclePose>& poses) const
+{
+    alpha = glm::clamp(alpha, 0.0f, 1.0f);
+
+    // Angles are blended along the shorter way round, so a heading of 179
+    // degrees blends into -179 through 180 rather than back through 0.
+    const auto blendAngle = [alpha](float from, float to)
+    {
+        float difference = std::fmod(to - from + 540.0f, 360.0f) - 180.0f;
+        return from + difference * alpha;
+    };
+
+    poses.resize(vehicles_.size());
+    for (std::size_t index = 0; index < vehicles_.size(); ++index)
+    {
+        const Vehicle& vehicle = vehicles_[index];
+        VehiclePose& pose = poses[index];
+        pose.active = vehicle.active;
+        pose.color = vehicle.color;
+        pose.position = glm::mix(vehicle.previousPosition, vehicle.position, alpha);
+        pose.yawDegrees = blendAngle(vehicle.previousYawDegrees, vehicle.yawDegrees);
+        pose.wheelAngleDegrees = blendAngle(vehicle.previousWheelAngleDegrees, vehicle.wheelAngleDegrees);
+        pose.steerAngleDegrees = glm::mix(vehicle.previousSteerAngleDegrees, vehicle.steerAngleDegrees, alpha);
+    }
+}
+
+float TrafficSystem::islandHeight(float alpha) const
+{
+    return glm::mix(previousIslandHeight_, islandHeight_, glm::clamp(alpha, 0.0f, 1.0f));
 }
 
 unsigned int TrafficSystem::nextRandom()
@@ -310,6 +349,16 @@ void TrafficSystem::update(float dt)
     if (signalPhaseOver())
         advancePhase();
 
+    // Remember where everything was, for render interpolation.
+    previousIslandHeight_ = islandHeight_;
+    for (Vehicle& vehicle : vehicles_)
+    {
+        vehicle.previousPosition = vehicle.position;
+        vehicle.previousYawDegrees = vehicle.yawDegrees;
+        vehicle.previousWheelAngleDegrees = vehicle.wheelAngleDegrees;
+        vehicle.previousSteerAngleDegrees = vehicle.steerAngleDegrees;
+    }
+
     // The island rises out of the road when the roundabout takes over.
     const float targetIslandHeight = mode_ == IntersectionMode::Roundabout ? 1.0f : 0.0f;
     const float islandStep = dt * 1.2f;
@@ -328,7 +377,8 @@ void TrafficSystem::update(float dt)
     // 2. Everyone looks at the traffic as it stands at the start of the step.
     //    Leaders only ever move forward, so this view is on the safe side.
     const std::size_t count = vehicles_.size();
-    std::vector<Leader> leaders(count);
+    std::vector<Leader>& leaders = leaders_;
+    leaders.assign(count, Leader {});
     for (std::size_t index = 0; index < count; ++index)
     {
         if (vehicles_[index].active)
@@ -359,7 +409,8 @@ void TrafficSystem::update(float dt)
     // 4. Junction decisions, nearest to the line first so a queue is served in
     //    order. Each commit takes its claims at once, so the next car in the
     //    loop already sees them: two cars can never commit into one zone.
-    std::vector<std::size_t> order(count);
+    std::vector<std::size_t>& order = order_;
+    order.resize(count);
     std::iota(order.begin(), order.end(), std::size_t {0});
     std::sort(order.begin(), order.end(), [this](std::size_t a, std::size_t b)
     {

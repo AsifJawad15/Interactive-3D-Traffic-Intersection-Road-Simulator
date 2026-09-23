@@ -1,4 +1,4 @@
-#include "Shader.h"
+﻿#include "Shader.h"
 
 #include <glm/gtc/type_ptr.hpp>
 
@@ -72,53 +72,55 @@ void Shader::use() const
     glUseProgram(program_);
 }
 
-GLint Shader::location(const std::string& name) const
+GLint Shader::location(std::string_view name) const
 {
     const auto found = locations_.find(name);
     if (found != locations_.end())
         return found->second;
 
-    const GLint value = glGetUniformLocation(program_, name.c_str());
-    locations_.emplace(name, value);
+    // First use of this name only: store an owned, null-terminated copy.
+    std::string owned(name);
+    const GLint value = glGetUniformLocation(program_, owned.c_str());
+    locations_.emplace(std::move(owned), value);
     return value;
 }
 
-void Shader::setBool(const std::string& name, bool value) const
+void Shader::setBool(std::string_view name, bool value) const
 {
     glUniform1i(location(name), value ? 1 : 0);
 }
 
-void Shader::setInt(const std::string& name, int value) const
+void Shader::setInt(std::string_view name, int value) const
 {
     glUniform1i(location(name), value);
 }
 
-void Shader::setFloat(const std::string& name, float value) const
+void Shader::setFloat(std::string_view name, float value) const
 {
     glUniform1f(location(name), value);
 }
 
-void Shader::setVec2(const std::string& name, const glm::vec2& value) const
+void Shader::setVec2(std::string_view name, const glm::vec2& value) const
 {
     glUniform2fv(location(name), 1, glm::value_ptr(value));
 }
 
-void Shader::setVec3(const std::string& name, const glm::vec3& value) const
+void Shader::setVec3(std::string_view name, const glm::vec3& value) const
 {
     glUniform3fv(location(name), 1, glm::value_ptr(value));
 }
 
-void Shader::setVec4(const std::string& name, const glm::vec4& value) const
+void Shader::setVec4(std::string_view name, const glm::vec4& value) const
 {
     glUniform4fv(location(name), 1, glm::value_ptr(value));
 }
 
-void Shader::setMat3(const std::string& name, const glm::mat3& value) const
+void Shader::setMat3(std::string_view name, const glm::mat3& value) const
 {
     glUniformMatrix3fv(location(name), 1, GL_FALSE, glm::value_ptr(value));
 }
 
-void Shader::setMat4(const std::string& name, const glm::mat4& value) const
+void Shader::setMat4(std::string_view name, const glm::mat4& value) const
 {
     glUniformMatrix4fv(location(name), 1, GL_FALSE, glm::value_ptr(value));
 }

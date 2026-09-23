@@ -90,6 +90,26 @@ struct Vehicle
     std::vector<std::size_t> claims;
 
     float stoppedSeconds = 0.0f;
+
+    // The pose at the start of the latest simulation step. Rendering blends
+    // from this to the current pose, so motion is smooth at any refresh rate
+    // even though the simulation itself only moves in 1/60 s steps.
+    glm::vec3 previousPosition {0.0f};
+    float previousYawDegrees = 0.0f;
+    float previousWheelAngleDegrees = 0.0f;
+    float previousSteerAngleDegrees = 0.0f;
+};
+
+// What the renderer and the cameras need of a vehicle, blended between two
+// simulation steps.
+struct VehiclePose
+{
+    glm::vec3 position {0.0f};
+    glm::vec3 color {0.8f};
+    float yawDegrees = 0.0f;
+    float wheelAngleDegrees = 0.0f;
+    float steerAngleDegrees = 0.0f;
+    bool active = false;
 };
 
 // Measurements for --soak and the HUD. Body overlap is tested with the real
@@ -138,6 +158,13 @@ public:
     // 0 when the island is flush with the road, 1 when fully raised. Animated
     // so switching modes lifts the island out of the ground instead of popping.
     float islandHeight() const { return islandHeight_; }
+
+    // Render interpolation. `alpha` is how far the clock has run into the next
+    // simulation step (0..1): poses are blended from the previous step's to
+    // the current one. The output vector is reused, so this never allocates
+    // once it has reached its size.
+    void interpolatePoses(float alpha, std::vector<VehiclePose>& poses) const;
+    float islandHeight(float alpha) const;
 
     const TrafficStats& stats() const { return stats_; }
     void resetStats();
@@ -223,6 +250,7 @@ private:
 
     IntersectionMode mode_ = IntersectionMode::Signals;
     float islandHeight_ = 0.0f;
+    float previousIslandHeight_ = 0.0f;
     unsigned int randomState_ = 12345u;
 
     TrafficStats stats_;
@@ -248,6 +276,11 @@ private:
         float gap = 1.0e9f;     // bumper to bumper, metres
         float speed = 0.0f;
     };
+
+    // Scratch space for one simulation step, kept so a step never allocates.
+    std::vector<Leader> leaders_;
+    std::vector<std::size_t> order_;
+
     Leader findLeader(std::size_t vehicleIndex) const;
     bool projectOnto(const Vehicle& other, std::size_t routeIndex, float& distanceOnRoute) const;
     bool exitHasRoom(const Vehicle& vehicle) const;

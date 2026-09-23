@@ -22,6 +22,8 @@ public:
         const glm::mat4& projection,
         const glm::vec3& cameraPosition,
         const TrafficSystem& traffic,
+        const std::vector<VehiclePose>& vehicles,
+        float islandHeight,
         const DayNight& dayNight,
         int shadingMode,
         bool driverView,
@@ -103,6 +105,6 @@ private:
     void drawTrees();
     void drawStreetFurniture();
     void drawFloodlightMast(bool illuminated);
-    void drawVehicle(const Vehicle& vehicle);
-    void drawDriverCockpit(const Vehicle& vehicle);
+    void drawVehicle(const VehiclePose& vehicle);
+    void drawDriverCockpit(const VehiclePose& vehicle);
 };

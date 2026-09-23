@@ -15,6 +15,12 @@ uniform sampler2D uBloom;
 uniform float uExposure;
 uniform float uBloomStrength;
 
+// When the scene was rendered below the window's resolution (the 720p
+// fallback), the bilinear upscale softens it; uSharpen > 0 adds back a little
+// of the detail, measured against the four neighbouring scene texels.
+uniform vec2 uSceneTexelSize;
+uniform float uSharpen;
+
 out vec4 fragmentColor;
 
 vec3 acesFilm(vec3 x)
@@ -41,13 +47,29 @@ float dither(vec2 pixel)
     return fract(sin(dot(pixel, vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
 }
 
+// The displayed colour of the scene at one point, before any sharpening.
+vec3 displayColor(vec2 uv)
+{
+    vec3 scene = texture(uScene, uv).rgb * uExposure;
+    vec3 bloom = texture(uBloom, uv).rgb;   // exposure was applied when it was extracted
+    return linearToSrgb(acesFilm(scene + bloom * uBloomStrength));
+}
+
 void main()
 {
-    vec3 scene = texture(uScene, vUv).rgb * uExposure;
-    vec3 bloom = texture(uBloom, vUv).rgb;   // exposure was applied when it was extracted
-    vec3 color = scene + bloom * uBloomStrength;
+    vec3 display = displayColor(vUv);
 
-    vec3 display = linearToSrgb(acesFilm(color));
+    // Sharpening happens after tone mapping, in display space, so bright
+    // lamps cannot grow dark halos.
+    if (uSharpen > 0.0)
+    {
+        vec3 neighbours = displayColor(vUv + vec2(uSceneTexelSize.x, 0.0)) +
+                          displayColor(vUv - vec2(uSceneTexelSize.x, 0.0)) +
+                          displayColor(vUv + vec2(0.0, uSceneTexelSize.y)) +
+                          displayColor(vUv - vec2(0.0, uSceneTexelSize.y));
+        display = clamp(display + (display - neighbours * 0.25) * uSharpen, 0.0, 1.0);
+    }
+
     display += dither(gl_FragCoord.xy) / 255.0;
     fragmentColor = vec4(display, 1.0);
 }

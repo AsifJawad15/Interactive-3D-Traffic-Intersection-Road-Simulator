@@ -21,8 +21,11 @@ public:
     PostProcess(const PostProcess&) = delete;
     PostProcess& operator=(const PostProcess&) = delete;
 
-    // Draws into the default framebuffer (the window).
-    void render(GLuint hdrScene, int width, int height, float exposure);
+    // Draws into the default framebuffer (the window). The scene may have been
+    // rendered smaller than the window; it is then scaled up here, with a
+    // light sharpening pass to win back some of the lost crispness.
+    void render(GLuint hdrScene, int sceneWidth, int sceneHeight,
+                int outputWidth, int outputHeight, float exposure);
 
     void setBloomEnabled(bool enabled) { bloomEnabled_ = enabled; }
     bool bloomEnabled() const { return bloomEnabled_; }

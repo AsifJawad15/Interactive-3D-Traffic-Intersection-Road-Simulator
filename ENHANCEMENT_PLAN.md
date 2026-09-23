@@ -1,6 +1,7 @@
 # Enhancement Plan: OpenGLMiniProject → Open-World Smart City Traffic Simulator
 
-> Status: **Phases 0 and 1 complete. Phase 2 (smooth motion and 1080p) is next and waits for your go-ahead.** Written 2026-09-23.
+> Status: **Phases 0 to 2 complete. Phase 3 (road network) is next and waits for your go-ahead.** Written 2026-09-23.
+> **Revised 2026-09-24:** every junction keeps its own permanent type (T-junction, signalised intersection or roundabout), and no intersection is ever turned into a roundabout (section 3.2).
 > **Scope revised 2026-09-23:**
 > - A smaller 3×3 city.
 > - Clouds and light rain only, with no storm and no fog weather.
@@ -21,8 +22,68 @@
 |---|---|---|---|
 | 0. Rendering foundations | ✅ Done and verified | 2026-09-23 | `enhancement/phase-0-rendering` |
 | 1. Traffic core and collision fix | ✅ Done and verified | 2026-09-23 | `enhancement/phase-1-traffic` |
-| 2. Smooth motion and 1080p | ⏸ Next, waiting for go-ahead | | |
-| 3 to 11 | Not started | | |
+| 2. Smooth motion and 1080p | ✅ Done and verified | 2026-09-24 | `enhancement/phase-2-smooth` |
+| 3. Road network | ⏸ Next, waiting for go-ahead | | |
+| 4 to 11 | Not started | | |
+
+### ✅ Checkpoint 2: smooth motion and 1080p (2026-09-24)
+
+**What changed**
+- **Render interpolation:** each vehicle keeps its pose from the previous 60 Hz step. Every frame draws the blend with α = backlog / step, and headings, wheel spin and steering blend along the short way round. The island animation is blended the same way. A car placed or re-entering starts with previous = current, so it never streaks across the scene.
+- **Cameras:** the follow camera rides a critically damped spring (the exact "SmoothDamp" form, stable at any frame time). The driver camera is rigidly attached to the blended pose.
+- **Frame timing:** the real frame time drives everything; only stalls over 0.25 s are cut short. Up to 8 simulation steps run per frame, and any leftover beyond that is dropped rather than allowed to spiral.
+- **Frame pacing (new, measured):**
+  - On this laptop's 144 Hz screen, full-rate frames often miss a refresh and alternate between 6.9 and 13.9 ms. The average is about 105–128 FPS, but it reads as stutter.
+  - The new default *steady* pacing draws on every second refresh when the screen is 120 Hz or faster, giving an even 72 FPS with every frame 13.9 ms. A 60 Hz screen keeps every refresh.
+  - `F7` switches to full rate.
+- **1080p:** the window opens at 1920×1080, or maximised when the screen itself is only 1080p tall. `F11` (or `--fullscreen`) gives true fullscreen at the monitor's own mode.
+- **Render scale:** the scene renders at 100 % or 67 % (720p inside 1080p), and the tonemap pass scales it up with light sharpening done in display space.
+  - Automatic mode drops to 67 % after 3 s below 55 FPS (or over 14.5 ms of GPU time), and returns after 10 s of comfortable headroom.
+  - `F6` cycles Auto, Native and 720p.
+- **Measurement:**
+  - OpenGL timer queries measure GPU time without stalling.
+  - `F5` shows a graph of the last 240 frame times.
+  - The HUD shows the render size, pacing and GPU time.
+- **No hitches from our side:**
+  - The window stays hidden until one full warm-up frame has been drawn.
+  - The simulation step, HUD text and uniform names no longer allocate.
+  - `Shader` looks uniforms up by `std::string_view` with a transparent hash, so a literal never builds a string.
+- **New tools:**
+  - `--motion-test` measures judder headlessly.
+  - `--capture` now reports average, 99th-percentile and worst frame times, GPU time, and for each slow frame whether the time went into events, our work or the buffer swap.
+  - New capture options: `--size`, `--fullscreen`, `--scale`, `--full-rate` and `--graph`.
+
+**New files:** `FrameStats.h/.cpp` (frame and GPU timing, render scaler).
+**Edited files:** `Simulation.h/.cpp`, `Camera.h/.cpp`, `Scene.h/.cpp`, `PostProcess.h/.cpp`, `shaders/tonemap.frag`, `Overlay.h/.cpp`, `Shader.h/.cpp`, `main.cpp`, `README.md` and both project files.
+
+**Verification results**
+- **Build and self-test:** the Release x64 build is clean, with no errors and no warnings. `--self-test` passes all 642 checks.
+- **Traffic unchanged:** the 30-minute soaks give the same numbers as Checkpoint 1 in both modes, and 0 overlaps over 5 seeds. The simulation is untouched and still deterministic.
+- **`--motion-test`** (judder: 0 means perfectly even motion, 1 or more means visible stepping):
+
+  | Display | Without interpolation | With interpolation |
+  |---|---|---|
+  | 144 Hz | 1.997 | **0.0015** |
+  | 60 Hz | 1.076 | **0.0031** |
+  | 75 Hz | 0.521 | **0.0025** |
+
+- **Fullscreen 1920×1080 on the RTX 3050, steady pacing:**
+
+  | Scene | Average | 99th percentile | GPU time |
+  |---|---|---|---|
+  | Noon overview, 60 s | 72 FPS (13.91 ms) | 14.87 ms | 2.5 ms |
+  | Night street, roundabout | 72 FPS | 14.84 ms | 2.4 ms |
+  | 720p render scale | 72 FPS | 14.95 ms | 2.0 ms |
+  | Full-rate pacing | 128 FPS | 16.9 ms | 2.6 ms |
+
+  The GPU uses about 2.5 ms of the 16.7 ms that 60 FPS allows, so there is a large margin for Phases 3 to 10.
+- **Screenshots:** 1080p fullscreen, 720p-scaled and night views all look correct. The frame graph is flat green.
+
+**Known leftovers (outside the program)**
+- **One-time stall at launch:** once, about 6 s after launch, `SwapBuffers` stalls for about 105 ms, in every mode, windowed and fullscreen, and with the GPU timers turned off.
+  - Our own work in that frame is 0.5 ms, so it is the NVIDIA hybrid-graphics driver or the Windows compositor settling in.
+  - Apart from that, a 60 s steady run had one 32 ms frame.
+- **Window size:** with a title bar, a windowed 1920×1080 is clamped by Windows to 1920×1055 on this 1080p screen. Use `F11` for exact 1080p.
 
 ### ✅ Checkpoint 1: traffic core and collision fix (2026-09-23)
 
@@ -131,7 +192,7 @@ that can switch between signals and a roundabout (`M`), six cars, a day/night cy
 lamps, one floodlight, Flat/Gouraud/Phong switching, Bezier surfaces and textures.
 
 You want it to become a small but lively city that runs smoothly:
-- **Roads:** a 3×3 road network with the outer loop road, two roundabouts, signalised and give-way junctions, and wider 4-lane roads.
+- **Roads:** a 3×3 road network with the outer loop road and wider 4-lane roads. It mixes signalised intersections, roundabouts and T-junctions, each in its own permanent place.
 - **Vehicles:** car, taxi, SUV, van, pickup, bus, truck, motorbike, police and ambulance.
 - **Pedestrians:** walking on footpaths and crossing at signals and zebra crossings.
 - **City dressing:** enough buildings, shops, props and trees that the city never looks blank, but well short of GTA density. No black-looking roads.
@@ -220,14 +281,32 @@ OpenGL has **no hardware ray-tracing API**. A full software BVH ray tracer is ex
 - **When OFF:** plain forward shading with PCF shadow maps. This is the fast default.
 
 ### 3.2 City layout: a 3×3 junction grid, 100 m apart (about 200 × 200 m inside the loop)
+**Every junction has one permanent type** (revised 2026-09-24). T-junctions, signalised intersections and roundabouts each have their own place in the city. A roundabout never replaces an intersection, so the city keeps a mix of all three.
+
 ```
- B───T───B      B  = bend (corner of the outer LOOP road)
- │   │   │      T  = give-way T-junction (main road has priority)
- S───R0──R      S  = signalised T-junction (all-red + pedestrian signals)
- │   │   │      R0 = centre showcase roundabout with the fountain (M still toggles it to signals)
- B───S───B      R  = 3-arm roundabout
+                │ road out of town (north)
+     B──────────X1─────────B
+     │          │          │
+     G──────────X0─────────R1───── road out of town (east)
+     │          │          │
+ ────ST─────────R2─────────B
+ road out       │ road out of town (south)
+ (west)
 ```
-- **Junctions:** 2 roundabouts, 2 signalised junctions, 1 give-way T-junction and 4 bends. The perimeter forms the loop road.
+
+| Mark | Type | Where |
+|---|---|---|
+| **X0** | Signalised 4-way intersection: the main crossroads, and the Phase 1 junction with its left-turn arrows, all-red and pedestrian signals | Centre |
+| **X1** | Signalised 4-way intersection | Top middle; its fourth arm leaves town to the north |
+| **R1** | 4-arm roundabout with the Bezier **fountain** island | Middle right; its fourth arm leaves town to the east |
+| **R2** | 4-arm roundabout | Bottom middle; its fourth arm leaves town to the south |
+| **G** | Give-way T-junction (the loop road has priority) | Middle left |
+| **ST** | Signalised T-junction | Bottom-left corner; a road leaves town to the west |
+| **B** | Bend (corner of the outer loop road) | The other three corners |
+
+- **Junctions:** 2 signalised intersections, 2 roundabouts, 2 T-junctions (one give-way, one signalised) and 3 bends. The perimeter forms the loop road.
+- **Roads out of town:** four roads lead out to the outskirts. That is where through-traffic enters and leaves the city.
+- **The `M` key:** it is retired when the city arrives in Phase 3. The island-rising animation belonged to the single-junction demo; in the city, the roundabouts simply are roundabouts. Until Phase 3, the single Phase 1 junction still toggles with `M`.
 - **Blocks:** 4 city blocks:
   - a park with a small plaza;
   - a gas station with a short row of shops;
@@ -401,7 +480,7 @@ The renderer stays **forward**, which keeps the Flat/Gouraud/Phong demo working.
 | **`V`** | While driving: player camera **Chase → Driver seat → Hood**. Otherwise: driver view of the followed AI car (unchanged). |
 | `Tab` / **`Shift+Tab`** | Next AI vehicle / follow an AI pedestrian (pedestrian-eye view) |
 | **Mouse (driver seat)** | Head look, limited to ±70°. **`B`** looks back. |
-| `M` | Switch the centre junction between roundabout and signals. It drains the junction, swaps lanes, then reopens. |
+| `M` | Retired in Phase 3: every junction keeps its own type (section 3.2). |
 | **`O`** | Cycle time presets: Morning → Noon → Afternoon → Evening → Night |
 | **`[` / `]`** | Move the time of day back or forward by 1 hour (the sun glides) |
 | `T`, `Y/N` | Automatic day cycle on or off / jump to day or night (unchanged) |
@@ -409,8 +488,9 @@ The renderer stays **forward**, which keeps the Flat/Gouraud/Phong demo working.
 | **`F3`** or **corner button** | Enhanced mode on or off |
 | **`Left Alt` (hold)** | Show the cursor in Free-cam mode so the corner buttons can be clicked |
 | `F2` | Shadows on or off |
-| `F5` / `F6` | Debug overlay (conflict zones, claims, collision count, **frame-time graph**) / quality preset (Low, Medium, High) |
-| **`F11`** | Borderless fullscreen on or off |
+| `F5` / `F6` | Debug overlay (conflict zones, claims, collision count, **frame-time graph**) / quality preset (Low, Medium, High). Phase 2 built the graph and a resolution cycle (Auto, Native, 720p) on `F6`. |
+| **`F7`** | Frame pacing: steady (every second refresh on 120 Hz+ screens) or full rate (added in Phase 2) |
+| **`F11`** | Fullscreen on or off |
 | `G`, `P`, `1/2/3`, `L`, `R`, `H`, `Esc` | Unchanged |
 
 **Corner panel (top-right, clickable):** `ENHANCED: ON/OFF`, and below it the Morning, Noon, Afternoon, Evening and Night buttons. The active preset is highlighted.
@@ -479,22 +559,25 @@ Each new `.cpp`, `.h` and shader file is registered in `OpenGLMiniProject.vcxpro
 - **Files:** new `Collision.*` and `TrafficBuild.cpp`. `Simulation.*` rewritten. Edits to `Route.*` (translated, reversed, curvature), `main.cpp` (soak flag), and the `--plot` output.
 - **Check (passed):** a 30-minute soak over 5 seeds on both modes with 12 cars gives **0 overlaps, no car stopped longer than 60 s, and every approach keeps flowing**. The collision in the middle is gone when viewed in the app.
 
-### Phase 2: Smooth motion and 1080p
+### Phase 2: Smooth motion and 1080p ✅ DONE (see Checkpoint 2)
 - **Motion:** render interpolation for vehicles (previous and current pose, α blend), and the critically damped camera spring.
 - **Resolution:** the 1920×1080 window, `F11` borderless fullscreen, and the render scale (1.0 or 0.67) with auto-fallback.
 - **Timing:** the frame-time graph in the `F5` overlay, shader and texture prewarm, and the `dt` clamp removed from the render path.
 - **Files:** edits to `main.cpp`, `Simulation.*` (pose history), `Camera.*`, `Framebuffer.*` (scaled target), `PostProcess.*` (upscale in tonemap) and `Overlay.*` (graph).
-- **Check:**
-  - Following a car shows no stepping or stutter at 144 Hz, or at 60 Hz with the refresh rate forced.
-  - 60 FPS or more at 1080p.
-  - No frame-time spike above 25 ms in a 2-minute run.
-  - Forcing the render scale to 0.67 still looks clean.
+- **Check (passed):**
+  - **No stepping:** `--motion-test` shows judder of 0.0015 to 0.0031 at 144, 60 and 75 Hz, against 0.5 to 2.0 without interpolation.
+  - **Frame rate:** 1080p runs at a steady 72 FPS, or 128 FPS at full rate, with 2.5 ms of GPU time.
+  - **Spikes:** the only frame over 25 ms not caused by the launch or the fullscreen switch is a single driver stall about 6 s after launch, inside `SwapBuffers`. Our own work in that frame is 0.5 ms; see Checkpoint 2.
+  - **720p:** forcing the render scale to 0.67 still looks clean.
 
 ### Phase 3: Road network (3×3), wider roads, roundabouts, the loop
-- **Network:** `RoadNetwork` with the 3×3 layout, the generic junction generator (signalised T, give-way T, bend, 3- and 4-arm roundabout), 4-lane roads, and density-aware random routing.
+- **Network:** `RoadNetwork` with the 3×3 layout of section 3.2.
+  - The generic junction generator builds signalised 4-way intersections, signalised T-junctions, give-way T-junctions, bends and 4-arm roundabouts.
+  - Each junction keeps its own permanent type.
+  - Also: 4-lane roads, four roads out of town, and density-aware random routing.
 - **Road meshes:** generated from the network: roads, kerbs with corner fillets, sidewalks, markings (lane dashes, double yellow, stop lines, turn arrows, zebras, yield teeth), splitter islands and islands. Markings are batched.
 - **Lighting:** street lamps along every road through the **simple light budget** (section 3.4). The central four lab lamps and the floodlight spot light are kept.
-- **Other:** `M` drain-and-swap on the centre junction. Camera presets updated.
+- **Other:** the `M` key is retired, because no junction changes type. The fountain moves to roundabout R1, and the camera presets are updated.
 - **Files:** new `RoadNetwork.*`, `LightManager.*` (nearest-N budget, no clusters), `MeshBuilder.*`, `RoadRenderer.*`. `Scene.cpp` is split into smaller renderers.
 - **Check:**
   - `--self-test` confirms that:
