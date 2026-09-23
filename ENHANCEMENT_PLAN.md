@@ -1,8 +1,66 @@
 # Enhancement Plan: OpenGLMiniProject → Open-World Smart City Traffic Simulator
 
-> Status: planned, not yet implemented. Written 2026-09-23.
+> Status: **Phase 0 complete. Phase 1 (collision fix) is next and waits for your go-ahead.** Written 2026-09-23.
+> **Scope revised 2026-09-23:**
+> - A smaller 3×3 city.
+> - Clouds and light rain only, with no storm and no fog weather.
+> - Time-of-day presets with a moving sun, moon and shadows.
+> - An "Enhanced" corner toggle replaces real ray tracing.
+> - A driver-seat view.
+> - 60 FPS at 1080p with no jitter.
+> - No clustered lighting.
+>
 > Work goes **one phase at a time**: build → run → check → report → next phase only after review.
 > Nothing is implemented all at once.
+
+---
+
+## 0. Progress checkpoints
+
+| Phase | Status | Date | Branch |
+|---|---|---|---|
+| 0. Rendering foundations | ✅ Done and verified | 2026-09-23 | `enhancement/phase-0-rendering` |
+| 1. Traffic core and collision fix | ⏸ Next, waiting for go-ahead | | |
+| 2. Smooth motion and 1080p | Not started | | |
+| 3 to 11 | Not started | | |
+
+### ✅ Checkpoint 0: rendering foundations (2026-09-23)
+
+**What changed**
+- **Discrete GPU:** the program now asks the drivers for the discrete GPU. It reports `NVIDIA GeForce RTX 3050 Laptop GPU` at start-up.
+- **HDR pipeline:** the scene renders into a 4× MSAA RGBA16F target. It is resolved, then bloom, ACES tone mapping and sRGB encoding are applied.
+- **Colour space:** colour textures load as sRGB, and base colours are decoded to linear light in the shader. This fixes the crushed, black-looking dark areas.
+- **Lighting:** hemisphere ambient (sky above, ground bounce below), a stronger sun, emissive surfaces boosted so lamps and signal lenses bloom, and exposure that adapts from day to night.
+- **Sky and atmosphere:** a sky gradient that follows the time of day, a sun disc and glow, a moon, twinkling stars, and height fog. The sky and fog share `shaders/atmosphere.glsl`, so distant ground fades into the horizon.
+- **World edge:** the ground now reaches 2 km, and the far plane is 1200 m.
+- **Engine:** uniform locations are cached, shaders support `#include`, the simulation runs at a fixed 60 Hz step, and the HUD reuses one text buffer.
+- **New verification tool:** a capture mode that renders a fixed view and saves a PNG.
+  ```
+  OpenGLMiniProject.exe --capture out.png --view 0..3 --time 22 --shading 0..2 --roundabout --no-hud --frames 60
+  ```
+
+**New files:** `Framebuffer.h/.cpp`, `PostProcess.h/.cpp`, `Sky.h/.cpp`, `Screenshot.h/.cpp`, `shaders/post.vert`, `shaders/bloom_down.frag`, `shaders/bloom_up.frag`, `shaders/tonemap.frag`, `shaders/sky.frag`, `shaders/atmosphere.glsl`.
+**Edited files:** `main.cpp`, `Shader.*`, `Texture.*`, `DayNight.*`, `Camera.*`, `Scene.cpp`, `Overlay.*`, `shaders/scene.vert`, `shaders/scene.frag`, and both project files.
+
+**Verification results**
+- The Release x64 build is clean, with no errors and no warnings.
+- `--self-test` passes: all route and signal checks.
+- Captures were taken at noon, dawn, dusk and night from four views. Roads read as grey asphalt, and night is dark but readable.
+- Flat, Gouraud and Phong all render. The frame rate sits at the 144 Hz vsync cap.
+
+**Known leftovers, handled by later phases**
+- The round tree canopies look glossy under the brighter sun. Phase 6 replaces them.
+- The ground beyond the city is a flat green plane. The outskirts and skyline in Phases 3 and 6 replace it.
+
+**Collision bug: measured, not guessed**
+A throwaway headless probe ran the *unchanged* traffic code for 30 simulated minutes. It checked car bodies as oriented boxes every step.
+
+| Mode | Body overlaps | Closest body gap | Gridlock starts | Cars frozen at the end |
+|---|---|---|---|---|
+| Signals | 0 | 0.35 m | about 63 s | 6 of 6, all within 4.4 m of the centre, on crossing headings |
+| Roundabout | 0 | 0.85 m | about 355 s | 6 of 6, four of them locked on the ring |
+
+**Conclusion:** it is a **logic bug** in the traffic rules, not a rendering problem. The cars never pass through each other. They enter the box together, stop centimetres apart nose-to-side, and each waits forever for the other. On screen that permanent gridlock looks like a crash. The causes are listed in section 2.2, and the fix is Phase 1 (section 4).
 
 ---
 
@@ -12,14 +70,17 @@ The project is a working OpenGL 3.3 Core lab project (CSE 4102). It has one four
 that can switch between signals and a roundabout (`M`), six cars, a day/night cycle, four street
 lamps, one floodlight, Flat/Gouraud/Phong switching, Bezier surfaces and textures.
 
-You want it to become a large, lively, open-world-feeling city:
-- A bigger road network. More roundabouts and intersections. A loop road. Wider 4-lane roads.
-- Many vehicle types: car, taxi, SUV, van, pickup, bus, truck, motorbike, police and ambulance.
-- Pedestrians walking on footpaths and crossing at signals and zebra crossings.
-- Shops with neon lights, street props, realistic trees, and no black-looking roads.
-- A player car driven with the arrow keys, an on-foot pedestrian view, and real collision.
-- Natural lighting, many night lights, shadows, weather, and ray tracing.
-- A fix for the bug where cars collide in the middle of the intersection.
+You want it to become a small but lively city that runs smoothly:
+- **Roads:** a 3×3 road network with the outer loop road, two roundabouts, signalised and give-way junctions, and wider 4-lane roads.
+- **Vehicles:** car, taxi, SUV, van, pickup, bus, truck, motorbike, police and ambulance.
+- **Pedestrians:** walking on footpaths and crossing at signals and zebra crossings.
+- **City dressing:** enough buildings, shops, props and trees that the city never looks blank, but well short of GTA density. No black-looking roads.
+- **Player:** a player car driven with the arrow keys, with a **driver-seat (cockpit) view**, an on-foot view, and real collision.
+- **Time of day:** named presets (Morning, Noon, Afternoon, Evening, Night). The sun and moon move and the shadows move with them.
+- **Weather:** **clouds** in the sky and **light rain**. No storm and no fog weather.
+- **"Enhanced" corner button:** one button in a screen corner. It switches on a ray-traced *look* (screen-space reflections, ambient occlusion, soft shadows, sun shafts) with no real ray tracing.
+- **Smoothness:** **60 FPS at 1080p** with no jitter, and never below 50 FPS. A 720p internal resolution is used as a fallback.
+- **Collision fix:** a fix for the bug where cars collide in the middle of the intersection.
 
 Constraints kept on purpose:
 - **OpenGL 3.3 Core stays.** It is the course requirement, and the custom `x64-windows-gl33` triplet depends on it.
@@ -45,7 +106,7 @@ Build tool: `C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Curre
 ### 2.2 Bug: cars collide in the middle (root causes)
 1. **No all-red clearance.** `advancePhase` ([Simulation.cpp:541](Simulation.cpp#L541)) goes straight from N/S yellow to E/W green. A car allowed through on yellow (up to 4.8 m out, [Simulation.cpp:479](Simulation.cpp#L479)) needs about 5 s to cross the 14 m left-turn arc at 55% speed, but yellow lasts only 2 s. Cross traffic starts while it is still in the box.
 2. **Unprotected left turns with no yield rule.** North and south are green together. The wide left arc crosses the opposing straight lane, and nothing makes the left-turner give way.
-3. **Straight-ray conflict detection.** `closestLeaderGap` ([Simulation.cpp:402](Simulation.cpp#L402)) only sees cars within 2.2 m sideways of a straight line along the current heading. A crossing car becomes visible only once it is already in front. Travel is then clamped to 0 and both cars freeze while overlapping: a collision followed by a deadlock.
+3. **Straight-ray conflict detection.** `closestLeaderGap` ([Simulation.cpp:402](Simulation.cpp#L402)) only sees cars within 2.2 m sideways of a straight line along the current heading. A crossing car becomes visible only once it is already in front. Travel is then clamped to 0 and both cars freeze, stopped centimetres apart. Each waits for the other forever, a deadlock that looks like a collision (measured in Checkpoint 0).
 4. **Roundabout merge hole.** `ringConflict` ([Simulation.cpp:429](Simulation.cpp#L429)) yields only to cars already past their merge distance. A car on the upstream entry arc is ignored, so two cars can merge into the same spot.
 5. **Late braking on the ring.** On the 7.5 m ring, the straight ray loses the car ahead beyond about 5.7 m of arc. Followers skip the 6.4 to 14 m slow-down bands and brake hard.
 6. **Unsafe respawn.** `leastCrowdedApproach` spawns a car even when there is less clearance than one car gap. With more vehicles, cars would spawn inside each other.
@@ -62,41 +123,58 @@ Build tool: `C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Curre
 - On a hybrid-GPU laptop the app may run on the **AMD iGPU** unless it exports `NvOptimusEnablement`.
 - `Overlay::drawText` allocates a 128 KB buffer on every call.
 
+### 2.5 Why motion can look jittery
+- **No interpolation:** the simulation steps at a fixed 60 Hz ([main.cpp:325](main.cpp#L325)), but rendering draws the latest simulation state with no interpolation. On the 144 Hz display, some frames repeat a car's position and others jump by a full step, so cars appear to stutter.
+- **Hidden stalls:** frame `dt` is clamped to 0.05 s ([main.cpp:338](main.cpp#L338)), which hides stalls instead of revealing them.
+- **Window size:** the window opens at 1280×720 ([main.cpp:253](main.cpp#L253)).
+- **Cursor:** the mouse cursor is always locked ([main.cpp:304](main.cpp#L304)), so nothing on screen can be clicked yet.
+
 ---
 
 ## 3. Key design decisions
 
-### 3.1 Ray tracing: how it can be achieved
-OpenGL has **no hardware ray-tracing API**, even though the RTX 3050 has RT cores. The options are:
+### 3.1 "Enhanced" mode: a ray-traced look without ray tracing
+OpenGL has **no hardware ray-tracing API**. A full software BVH ray tracer is expensive and would put the 60 FPS target at risk. So real ray tracing is dropped. Instead, one toggle gives the *look* of partial ray tracing, using screen-space techniques. These still march rays, but against the depth buffer instead of against scene geometry.
 
-| Option | Verdict |
+**The toggle**
+- **Button:** a button in the **top-right corner** labelled `ENHANCED: OFF` / `ENHANCED: ON`, drawn by `Overlay`.
+- **Clicking:** it is clicked with the mouse, through a new `glfwSetMouseButtonCallback` and a hit test in framebuffer pixels (DPI-aware).
+- **Cursor:** the cursor is free in Follow, Top, Chase and Driver camera modes. In Free-cam mode, holding **`Left Alt`** releases it so the button can be clicked.
+- **Shortcut:** **`F3`** does the same thing from the keyboard.
+- **Time buttons:** small **Morning / Noon / Afternoon / Evening / Night** buttons sit under it in the same corner panel.
+
+**What turns on when Enhanced is ON (all on OpenGL 3.3)**
+| Effect | What you see |
 |---|---|
-| Rewrite in Vulkan (`VK_KHR_ray_query`) or DirectX 12 (DXR) for hardware RT | Rejected. It means a full renderer rewrite and leaves the OpenGL 3.3 course requirement. |
-| Screen-space reflections | Rejected as the main approach. They only reflect what is already on screen. |
-| **Hybrid software ray tracing in GLSL (chosen)** | Keeps OpenGL 3.3. The CPU builds a BVH over simplified proxy geometry: boxes for buildings, cars and signs, spheres for tree canopies, and an analytic ground plane. The BVH is uploaded to float textures and traced in the fragment shader. This is the same "raster first, trace secondary rays" idea RTX games use. |
+| **Screen-space reflections (SSR)** | Wet roads, puddles, car paint and shop glass reflect neon, lamps, lit windows and the sky. Rays march against the depth buffer. |
+| **SSAO (ambient occlusion)** | Soft contact darkening under cars, along kerbs and walls, and around props. |
+| **Soft shadows (PCSS)** | Shadows are sharp near the object and soften with distance, instead of a uniform blur. |
+| **Screen-space contact shadows** | A short ray march towards the sun gives thin, crisp contact shadows that the shadow map is too coarse for. |
+| **Sun shafts** | Light rays from a low sun in the morning and evening, blocked by buildings and trees. |
+| **Stronger bloom** | Neon and lamps glow a little more. |
 
-The ray tracer is used for:
-1. **Ray-traced reflections** on wet roads, puddles, car paint, shop glass and water. Neon and lit windows show up in the wet street, like the reference image.
-2. **Ray-traced sun shadows** as an A/B toggle against shadow maps.
-3. **A photo mode (stretch goal)** that progressively accumulates ray-traced indirect light while the game is paused.
+**How it works**
+- **Scene pass:** it writes a second render target (MRT) holding view-space normals and roughness.
+- **Resolve:** the multisampled buffers are resolved with a nearest-filter blit.
+- **Cost:** SSR and SSAO run at **half resolution** with a depth-aware (bilateral) upsample. The budget for Enhanced is **3 ms or less at 1080p**.
+- **When OFF:** plain forward shading with PCF shadow maps. This is the fast default.
 
-### 3.2 City layout: a 5×5 junction grid, 100 m apart (world about 400 × 400 m)
+### 3.2 City layout: a 3×3 junction grid, 100 m apart (about 200 × 200 m inside the loop)
 ```
- B───T───T───T───B      B  = bend (corner of the outer LOOP road)
- │   │   │   │   │      T  = T-junction (main road has priority, side road gives way)
- T───S───S───R───T      S  = signalised 4-way (all-red + protected-left phases + pedestrian signals)
- │   │   │   │   │      R  = roundabout
- T───S───R0──S───T      R0 = centre showcase roundabout with the fountain (M still toggles it to signals)
- │   │   │   │   │
- T───R───S───S───T
- │   │   │   │   │
- B───T───T───T───B
+ B───T───B      B  = bend (corner of the outer LOOP road)
+ │   │   │      T  = give-way T-junction (main road has priority)
+ S───R0──R      S  = signalised T-junction (all-red + pedestrian signals)
+ │   │   │      R0 = centre showcase roundabout with the fountain (M still toggles it to signals)
+ B───S───B      R  = 3-arm roundabout
 ```
-- **Junctions:** 3 roundabouts, 6 signalised junctions, 12 T-junctions and 4 bends. The perimeter forms the loop road.
-- **Blocks:** 16 city blocks, including a park, a plaza, a gas station, and shop streets.
-- **Scale:** grid size and spacing are single constants, so the city can shrink to 4×4 or 3×3 if frame rate needs it.
+- **Junctions:** 2 roundabouts, 2 signalised junctions, 1 give-way T-junction and 4 bends. The perimeter forms the loop road.
+- **Blocks:** 4 city blocks:
+  - a park with a small plaza;
+  - a gas station with a short row of shops;
+  - two blocks of shops with apartments above.
+- **Scale:** grid size and spacing are single constants, so the city can still grow to 4×4 later if the frame rate allows.
 - **Open-world feel:** vehicles never despawn. They random-walk the network forever, with density-aware turn choices so no single area clogs. Buses run a fixed loop line.
-- **Outskirts:** beyond the loop there are grass, low hills, a lit distant skyline ring at 350 to 700 m, and fog. A soft invisible boundary sits 40 m outside the loop.
+- **Outskirts:** beyond the loop there is a single row of low buildings, then grass, low hills and a lit distant skyline ring at 350 to 700 m. The faint Phase 0 horizon haze blends the world edge into the sky. A soft invisible boundary sits 40 m outside the loop.
 
 ### 3.3 Road cross-section (wider roads)
 - **Lanes:** 2 lanes per direction, each 3.5 m wide. Lane centres are at ±1.75 m and ±5.25 m, with a double yellow centre line.
@@ -105,13 +183,13 @@ The ray tracer is used for:
 - **Roundabouts:** a single wide circulating lane of radius 13, an island of radius 9.5 with an apron, and entry and exit arcs of radius 8. Entry and exit arcs are built for both approach lanes, with the existing tangent-circle construction. Splitter islands and zebra crossings sit on every arm.
 - **Lane discipline:** the inner lane goes straight or left, and the outer lane goes straight or right. Turns decide which lane a car ends up in, so no lane changes are needed. Any lane may enter a roundabout.
 
-### 3.4 Lighting architecture
-The renderer stays **forward**, which keeps the Flat/Gouraud/Phong demo working. It gains **CPU-clustered lighting**:
-- The screen is split into 16×9 tiles and 16 depth slices.
-- Each cluster lists up to 24 light indices, stored in an integer texture.
-- Lights use windowed falloff so the light range is finite. The four central "lab" lamps keep the Lab 3 constants k_c=1, k_l=0.09, k_q=0.032, multiplied by the window term.
-
-This supports hundreds of lamps, neon spill lights and headlight spot lights, all on OpenGL 3.3.
+### 3.4 Lighting: a simple light budget (no clustered lighting)
+The renderer stays **forward**, which keeps the Flat/Gouraud/Phong demo working.
+- **Light list:** lights live in a UBO with room for **up to 32 point lights and 8 spot lights**.
+- **Per frame:** the CPU frustum-culls all lights, then keeps the ones that matter most, ranked by intensity over distance to the camera.
+- **Always in the list:** the four central "lab" lamps, which keep the Lab 3 constants k_c=1, k_l=0.09, k_q=0.032, and the floodlight spot light.
+- **Lamps beyond about 80 m:** drawn as emissive bulbs only. Bloom and the horizon haze hide the missing light.
+- **Falloff:** lights use a windowed falloff, so a light switching in or out of the list never pops.
 
 ---
 
@@ -166,8 +244,11 @@ This supports hundreds of lamps, neon spill lights and headlight spot lights, al
 - **Zebras:** a pedestrian starts crossing only if no car is within its stopping distance. Cars yield to pedestrians waiting at the kerb.
 - **No deadlock:** a pedestrian already crossing never waits for anything.
 
-### 4.7 Fixed timestep
-The simulation runs at a fixed 60 Hz with an accumulator. It is deterministic and seeded, so soak tests are reproducible.
+### 4.7 Fixed timestep with render interpolation
+- **Fixed step:** the simulation runs at a fixed 60 Hz with an accumulator. It is deterministic and seeded, so soak tests are reproducible.
+- **Interpolation:** each vehicle, pedestrian and the player keeps its **previous and current pose** (position and heading). Rendering blends the two with α = backlog / step, using slerp for heading.
+- **Cameras:** they follow the blended pose.
+- **Result:** motion is smooth at any refresh rate (60, 144 or anything else), while the simulation stays fixed-step.
 
 ---
 
@@ -177,37 +258,68 @@ The simulation runs at a fixed 60 Hz with an accumulator. It is deterministic an
   - A *lofted body generator*: a Bezier side profile is swept across the width with the roof tapered inward (ties in Lab 5).
   - Types: sedan, hatchback, SUV, taxi (roof sign), van, pickup, 12 m bus, box truck, motorbike with rider, police car and ambulance (flashing light bars that are real lights at night).
   - Each type has its own length, width, IDM parameters and colour palette.
-  - Brake lights respond to deceleration. Indicators blink *before* turns. Headlights come on at night and in rain or fog.
-- **City generator (`World.h/.cpp`, seeded):**
-  - Buildings have varied footprints and heights.
-  - Ground floors are shops with glass fronts, striped awnings, lit interiors at night, and **neon signs**. The sign text is geometry from stb_easy_font, emissive, with bloom, flicker and a coloured spill light.
-  - Shop types: cafe, pharmacy, bank, fashion, pizza, 24/7, hotel and cinema.
-  - Upper floors use a procedural window grid in the shader, with random windows lit at night.
-  - Rooftops carry tanks, AC units and billboards.
-  - Special blocks: a park with a pond, a central plaza, and a gas station with a lit canopy.
-- **Street furniture:** lamps every 25 m, benches, bins, hydrants, bollards, bus stops with lit ad panels, stop, yield and speed signs, parked cars and planters. The Lab 4 crates stay at the central junction.
+  - Brake lights respond to deceleration. Indicators blink *before* turns. Headlights come on at night and in rain.
+- **Player car interior (for the driver-seat view):**
+  - The model: a dashboard, a steering wheel that turns with the steering input, a speedometer with a moving needle, A-pillars, the bonnet visible through the windscreen, and a rear-view mirror frame.
+  - It is only drawn when the camera is inside the car.
+- **City generator (`World.h/.cpp`, seeded), minimal but never blank:**
+  - **Buildings:** about **30 to 40 buildings** in 4 to 5 prebuilt styles (low shop row, 3 to 5 storey apartment, office tower, hotel, small house), with varied heights and colours.
+  - **Shops:** ground-floor shops on the main streets only, with glass fronts, striped awnings and lit interiors at night. About half have **neon signs**. The sign text is geometry from stb_easy_font, emissive, with bloom, a gentle flicker and a coloured spill light.
+  - **Shop types:** cafe, pharmacy, bank, pizza, 24/7 and hotel.
+  - **Upper floors:** a procedural window grid in the shader, with random windows lit at night.
+  - **Rooftops:** some carry tanks, AC units or a billboard. Not every roof has clutter.
+  - **Special blocks:** a park with a pond and small plaza, and a gas station with a lit canopy.
+- **Street furniture:** lamps every 30 m, and a few benches, bins, bus stops with lit ad panels, stop, yield and speed signs, parked cars and planters per block. The Lab 4 crates stay at the central junction.
 - **Realistic trees (`TreeGenerator`):**
   - Structure: a Bezier trunk plus 2 to 3 levels of branches.
   - Leaves: clusters of **alpha-tested leaf cards** with an RGBA procedural leaf texture, normals bent outward, and wind sway in the vertex shader.
   - Species: broadleaf, conifer, and palm on the plaza.
+  - Placement: street trees along the main roads and a cluster in the park. There are fewer than a dense city would have.
   - Rendering: 4 to 6 prebuilt variants, drawn with instancing.
 - **Pedestrians (`Pedestrians.h/.cpp`):**
   - Model: hierarchical, with hips, torso, head, two-part arms and two-part legs.
   - Walk cycle: limb phase is driven by distance walked, the same idea as wheel rotation.
   - Variety: different skin, shirt, trousers and hair colours. Umbrellas appear in rain.
   - Movement: a sidewalk graph that loops around each block and connects blocks through crossings.
-  - Rendering: 100 to 150 walkers, **instanced per body part**, about 10 draw calls for all of them.
-- **Sky and atmosphere:**
-  - A sky dome with a sun-elevation gradient, sun glow, moon and stars.
-  - Procedural clouds whose coverage follows the weather.
-  - Height fog coloured by the sky, which also hides the edge of the world.
-- **Weather (`Weather.h/.cpp`):**
-  - States: Clear, Cloudy, Rain, Storm and Fog, with smooth 10 s transitions.
-  - Rain: instanced streak particles in a volume that follows the camera, plus ground splashes.
-  - Wetness: builds up while it rains and dries slowly afterwards. It darkens albedo, raises specular, and adds puddles from a noise mask that reflect through ray tracing.
-  - Storms add lightning flashes.
-  - AI drivers slow down and leave longer gaps in rain.
-  - The cockpit view gets animated wipers.
+  - Rendering: 60 to 100 walkers, **instanced per body part**, about 10 draw calls for all of them.
+- **Sky and atmosphere:** a sky gradient that follows sun elevation, sun glow, moon, stars, and a faint horizon haze coloured by the sky (all done in Phase 0). There is no fog weather. The haze only blends the far edge of the world into the sky.
+
+- **Sun, moon and time presets (`DayNight.*`):**
+  - **Presets:**
+
+    | Preset | Time | Look |
+    |---|---|---|
+    | Morning | 07:00 | Low sun in the east, warm light, long shadows pointing west |
+    | Noon | 12:00 | High sun to the south, white light, short shadows |
+    | Afternoon | 15:30 | Sun sinking to the south-west, shadows lengthening towards the north-east |
+    | Evening | 18:30 | Sunset in the west, orange and pink sky, very long shadows pointing east, lamps and neon switching on |
+    | Night | 22:00 | Moon up, stars, street lamps, neon and lit windows |
+
+  - **HUD:** it shows the preset name and the clock, for example `Afternoon 15:30`.
+  - **Sun path:** today the sun moves on a circle straight through the zenith ([DayNight.cpp:79](DayNight.cpp#L79)), so at noon it is directly overhead and shadows vanish. The new path is tilted like a real mid-latitude sky. The sun rises in the east, peaks at about **60° elevation to the south**, and sets in the west, so noon still has visible short shadows.
+  - **Moon:** it follows the opposite arc and gives faint blue moonlight with soft shadows at night.
+  - **Changing preset:** the sun and moon **glide** to the new position over about 3 s instead of snapping, so shadows sweep smoothly across the city.
+  - **Shadow map:** it always follows the current sun, or the moon at night.
+  - **Colour:** sunrise and sunset tint the sky, the clouds and the sunlight colour.
+  - **Automatic cycle:** it still works (`T`), and passes through all the presets.
+
+- **Weather (`Weather.h/.cpp`):** the states are **Clear → Cloudy → Rain**, cycled with `K`. Every change blends over about 10 s, so the sky never snaps. There is no storm state and no fog state.
+
+- **Clouds (built on the Phase 0 sky shader):**
+  - **Where they live:** a cloud layer at about 1.5 km altitude, drawn inside `sky.frag`. Each sky pixel finds where its view ray meets the cloud plane and samples fractal noise (fbm) there.
+  - **Motion:** the noise scrolls with the wind, so clouds drift slowly across the top of the sky.
+  - **Coverage and density:** two uniforms set by the weather. Clear has a few wisps, Cloudy is broken cloud, and Rain is full overcast.
+  - **Lighting:** cloud edges facing the sun get a bright silver lining and the thick middles are darker underneath. The colour follows the time of day: white at noon, orange and pink at sunset, and dark blue-grey lit by the moon at night. Clouds hide the stars and moon behind them.
+  - **Effect on the scene:** overcast weakens direct sunlight and raises the soft sky ambient, which also softens shadows in Phase 8. It greys the horizon colour a little, which the haze picks up automatically through `atmosphere.glsl`.
+  - **Cloud shadows:** the same noise is sampled at each ground point along the sun direction. Soft shadow patches then drift across the city on partly cloudy days.
+
+- **Light rain:**
+  - **Falling drops:** up to about 5,000 instanced, motion-stretched streaks in a cylinder around the camera, which follows the camera. The streaks lean slightly with the wind. Drops are brightened by nearby street lamps and neon, so rain glitters under lights at night.
+  - **Splashes:** small expanding rings on the road, sidewalks and car roofs near the camera.
+  - **Wetness:** a value from 0 to 1 that rises over about 60 s of rain and dries slowly afterwards. Wet surfaces get darker albedo and sharper, stronger highlights.
+  - **Puddles:** a world-space noise mask adds near-mirror puddles. With Enhanced OFF they reflect the sky colour. With Enhanced ON they get screen-space reflections of neon, lamps and lit windows, like the reference image.
+  - **Haze:** rain slightly thickens the horizon haze, but never turns into fog.
+  - **Life in the rain:** pedestrians open umbrellas and walk a little faster. AI drivers slow down and keep longer gaps. Headlights switch on even by day. The driver-seat view gets animated wipers.
 
 ---
 
@@ -220,25 +332,57 @@ The simulation runs at a fixed 60 Hz with an accumulator. It is deterministic an
 | `Space` / `Left Shift` | Handbrake / run or boost |
 | **`F`** | Switch between on foot and driving (spawns or enters the player car) |
 | `C` | Cycle camera: Free → Top → Follow → Driver → **Chase (player)** → **On-foot first person** |
-| `V` / `Tab` | Driver view / next AI vehicle. **`Shift+Tab`** follows an AI pedestrian (pedestrian-eye view) |
+| **`V`** | While driving: player camera **Chase → Driver seat → Hood**. Otherwise: driver view of the followed AI car (unchanged). |
+| `Tab` / **`Shift+Tab`** | Next AI vehicle / follow an AI pedestrian (pedestrian-eye view) |
+| **Mouse (driver seat)** | Head look, limited to ±70°. **`B`** looks back. |
 | `M` | Switch the centre junction between roundabout and signals. It drains the junction, swaps lanes, then reopens. |
-| `G`, `P`, `1/2/3`, `T`, `Y/N`, `L`, `R`, `H`, `Esc` | Unchanged |
-| **`K`** | Cycle weather |
-| `F2` / `F3` / `F4` | Shadows on/off / ray-traced reflections on/off / RT photo mode |
-| `F5` / `F6` | Debug overlay (conflict zones, claims, collision count) / quality preset (Low, Medium, High) |
+| **`O`** | Cycle time presets: Morning → Noon → Afternoon → Evening → Night |
+| **`[` / `]`** | Move the time of day back or forward by 1 hour (the sun glides) |
+| `T`, `Y/N` | Automatic day cycle on or off / jump to day or night (unchanged) |
+| **`K`** | Cycle weather: Clear → Cloudy → Rain |
+| **`F3`** or **corner button** | Enhanced mode on or off |
+| **`Left Alt` (hold)** | Show the cursor in Free-cam mode so the corner buttons can be clicked |
+| `F2` | Shadows on or off |
+| `F5` / `F6` | Debug overlay (conflict zones, claims, collision count, **frame-time graph**) / quality preset (Low, Medium, High) |
+| **`F11`** | Borderless fullscreen on or off |
+| `G`, `P`, `1/2/3`, `L`, `R`, `H`, `Esc` | Unchanged |
 
-**HUD:** speed in km/h, weather, mode, a **minimap** of the network with the player, vehicles and junction states, and performance stats (FPS, draw calls, active lights, and GPU time per pass from GL timer queries).
+**Corner panel (top-right, clickable):** `ENHANCED: ON/OFF`, and below it the Morning, Noon, Afternoon, Evening and Night buttons. The active preset is highlighted.
+
+**HUD:** speed in km/h, time preset and clock, weather, mode, a **minimap** of the network with the player, vehicles and junction states, and performance stats (FPS, frame time, draw calls, active lights, and GPU time per pass from GL timer queries).
 
 ---
 
-## 7. Performance budget
-The target is 60 FPS at 1080p on the RTX 3050 with the High preset. A Low preset keeps the iGPU usable.
-- `NvOptimusEnablement` and `AmdPowerXpressRequestHighPerformance` exports force the discrete GPU.
+## 7. Performance and smoothness budget
+
+**Targets:** **60 FPS or more at 1920×1080** on the RTX 3050 with the High preset. The hard floor is **50 FPS**. If the machine cannot hold that, the internal resolution drops to 720p.
+
+**Resolution**
+- **Window:** it opens at 1920×1080. `F11` switches to borderless fullscreen.
+- **Render scale:** 1.0 (native) or 0.67 (720p internal). The scene renders at the scale, and the tonemap pass upscales it to the window, so the HUD stays sharp.
+- **Auto-fallback:**
+  - If the average FPS stays below 55 for 3 s, the render scale drops to 0.67.
+  - If it stays above 75 for 10 s, it goes back to 1.0.
+  - The HUD shows the current scale.
+
+**No jitter**
+- **Render interpolation:** AI cars, pedestrians and the player car use the blended poses from section 4.7.
+- **Camera smoothing:** follow, chase and driver cameras use a critically damped spring, so they never shake or lag in steps.
+- **Frame timing:** vsync stays on. Frame `dt` is measured properly, without the 0.05 s clamp hiding stutter. The simulation keeps its own spiral-of-death guard.
+- **No hitches:**
+  - no per-frame heap allocations;
+  - all shaders compiled and all textures uploaded at start;
+  - one warm-up frame of every pass before the first visible frame.
+- **Frame-time graph (`F5`):** it shows the last 240 frames, so any spike is visible.
+
+**Cost control**
+- `NvOptimusEnablement` and `AmdPowerXpressRequestHighPerformance` exports force the discrete GPU (done in Phase 0).
 - Uniform locations are cached, and per-frame data goes in a UBO.
-- **Static batching:** a `MeshBuilder` bakes transformed primitives with per-vertex colour into one VBO per block per material. Draw calls drop from thousands to about 150.
+- **Static batching:** a `MeshBuilder` bakes transformed primitives with per-vertex colour into one VBO per block per material. Draw calls drop to about 100.
 - **Instancing** for trees, lamps, pedestrians, rain, parked cars and props.
-- **Culling:** frustum culling plus distance culling that follows fog density. LOD for distant vehicles and pedestrians.
-- **Shadows:** 2 cascades at 2048². **Ray tracing:** BVH traversal capped at 64 steps and 150 m, with an optional half-resolution setting.
+- **Culling:** frustum culling plus distance culling. LOD for distant vehicles and pedestrians.
+- **Shadows:** one 2048² cascade on Low and Medium, and two cascades on High.
+- **Enhanced mode:** 3 ms or less at 1080p, with SSR and SSAO at half resolution.
 
 ---
 
@@ -253,13 +397,14 @@ After **every** phase:
 
 Each new `.cpp`, `.h` and shader file is registered in `OpenGLMiniProject.vcxproj` and `.filters` within the same phase. Checkpoint commits are your call; I will not commit unless you ask.
 
-### Phase 0: Rendering foundations (fixes the black roads)
+### Phase 0: Rendering foundations ✅ DONE (see Checkpoint 0)
 - Discrete-GPU export, a uniform-location cache, the fixed-timestep loop, and the Overlay buffer fix.
 - An HDR framebuffer: RGBA16F with 4× MSAA, resolved to a single sample. Then bloom, ACES tone mapping, exposure keyed to daylight, and sRGB output.
 - Colour textures loaded as sRGB. Specular maps and data textures stay linear.
-- Hemisphere ambient light, the sky dome with sun, moon and stars, and height fog. The far plane moves to 900 m.
-- **Files:** new `Framebuffer.*`, `PostProcess.*`, `Sky.*`, and shaders `post.vert`, `bloom.frag`, `tonemap.frag`, `sky.*`. Edits to `Shader.*` (cache and a simple `#include` expander), `Texture.*`, `main.cpp`, `scene.frag`, `DayNight.*`.
-- **Check:** roads read as grey asphalt by day. Night is dark but not crushed. Flat, Gouraud and Phong all still work.
+- Hemisphere ambient light, the sky with sun, moon and stars, and height fog. The far plane moved to 1200 m and the ground to 2 km.
+- The `--capture` screenshot mode, used to check every later phase.
+- **Files:** see Checkpoint 0.
+- **Check (passed):** roads read as grey asphalt by day. Night is dark but not crushed. Flat, Gouraud and Phong all still work.
 
 ### Phase 1: Traffic core rewrite and collision fix (on the existing single junction)
 - The lane graph with connectors, conflict-point precompute, commit-and-claim, IDM following along paths, and all-red plus protected-left signal phases.
@@ -268,54 +413,112 @@ Each new `.cpp`, `.h` and shader file is registered in `OpenGLMiniProject.vcxpro
 - **Files:** new `Collision.*`, `LaneGraph` code inside `Simulation.*` (or a new `Traffic.*`). Edits to `Route.*` (translated, reversed, curvature), `main.cpp` (soak flag), and the `--plot` output.
 - **Check:** a 30-minute soak over 5 seeds on both modes with 12 cars gives **0 overlaps, no car stopped longer than 60 s, and every approach keeps flowing**. The collision in the middle is gone when viewed in the app.
 
-### Phase 2: Road network, wider roads, more roundabouts, the loop
-- `RoadNetwork` with the 5×5 layout, the generic junction generator (4-way signalised, T, bend, roundabout), 4-lane roads, and density-aware random routing.
-- Mesh generation from the network: roads, kerbs with corner fillets, sidewalks, markings (lane dashes, double yellow, stop lines, turn arrows, zebras, yield teeth), splitter islands and islands. Markings are batched.
-- Street lamps along every road through the **clustered light manager**. The central four lab lamps and the floodlight spot light are kept.
-- `M` drain-and-swap on the centre junction. Camera presets updated.
-- **Files:** new `RoadNetwork.*`, `LightManager.*`, `MeshBuilder.*`, `RoadRenderer.*`. `Scene.cpp` is split into smaller renderers.
-- **Check:** `--self-test` confirms every lane is tangent-continuous, the network is connected, lanes clear islands and kerbs, the conflict table is symmetric, and no conflicting movements are ever green together. `--plot` writes `network.png` of all lanes and conflict points with stb_image_write. Soak: 40 vehicles, 0 overlaps, and traffic spread across junctions (no junction holds more than 25% of cars).
+### Phase 2: Smooth motion and 1080p
+- **Motion:** render interpolation for vehicles (previous and current pose, α blend), and the critically damped camera spring.
+- **Resolution:** the 1920×1080 window, `F11` borderless fullscreen, and the render scale (1.0 or 0.67) with auto-fallback.
+- **Timing:** the frame-time graph in the `F5` overlay, shader and texture prewarm, and the `dt` clamp removed from the render path.
+- **Files:** edits to `main.cpp`, `Simulation.*` (pose history), `Camera.*`, `Framebuffer.*` (scaled target), `PostProcess.*` (upscale in tonemap) and `Overlay.*` (graph).
+- **Check:**
+  - Following a car shows no stepping or stutter at 144 Hz, or at 60 Hz with the refresh rate forced.
+  - 60 FPS or more at 1080p.
+  - No frame-time spike above 25 ms in a 2-minute run.
+  - Forcing the render scale to 0.67 still looks clean.
 
-### Phase 3: Interactivity (player car, on foot, pedestrian view)
-- A player car with a kinematic bicycle model on the arrow keys, plus handbrake and boost. Collision with the world and AI, AI yielding to the player, chase and cockpit cameras.
-- On-foot first person with wall collision. `F` to switch, the pedestrian-eye view, the minimap and a speedometer.
-- **Files:** new `Player.*`. Edits to `Camera.*`, `main.cpp`, `Overlay.*`.
-- **Check:** drive the whole loop, crash into buildings and cars (you get pushed back, no tunnelling), and walk into walls (you slide along them).
+### Phase 3: Road network (3×3), wider roads, roundabouts, the loop
+- **Network:** `RoadNetwork` with the 3×3 layout, the generic junction generator (signalised T, give-way T, bend, 3- and 4-arm roundabout), 4-lane roads, and density-aware random routing.
+- **Road meshes:** generated from the network: roads, kerbs with corner fillets, sidewalks, markings (lane dashes, double yellow, stop lines, turn arrows, zebras, yield teeth), splitter islands and islands. Markings are batched.
+- **Lighting:** street lamps along every road through the **simple light budget** (section 3.4). The central four lab lamps and the floodlight spot light are kept.
+- **Other:** `M` drain-and-swap on the centre junction. Camera presets updated.
+- **Files:** new `RoadNetwork.*`, `LightManager.*` (nearest-N budget, no clusters), `MeshBuilder.*`, `RoadRenderer.*`. `Scene.cpp` is split into smaller renderers.
+- **Check:**
+  - `--self-test` confirms that:
+    - every lane is tangent-continuous;
+    - the network is connected;
+    - lanes clear islands and kerbs;
+    - the conflict table is symmetric;
+    - no conflicting movements are ever green together.
+  - `--plot` writes `network.png` of all lanes and conflict points with stb_image_write.
+  - Soak: 25 vehicles, 0 overlaps, and traffic spread across junctions (no junction holds more than 35% of cars).
+  - Night: roads are lit, with no light popping as the camera moves.
 
-### Phase 4: Vehicle variety
+### Phase 4: Player car, driver-seat view, on foot
+- **Driving:** a player car with a kinematic bicycle model on the arrow keys, plus handbrake and boost. It is fixed-step and interpolated like the AI. It collides with the world and AI, and the AI yields to the player.
+- **Cameras:** Chase, **Driver seat** and Hood, switched with `V`.
+- **Driver seat:**
+  - the camera at the driver's eye position;
+  - the interior model (dashboard, turning steering wheel, speedometer needle, A-pillars, mirror frame);
+  - mouse head look limited to ±70°, and `B` to look back;
+  - a slight smoothed lean under braking and cornering.
+- **On foot:** first person with wall collision, and `F` to switch between driving and walking. Also the pedestrian-eye view, the minimap and a speedometer.
+- **Files:** new `Player.*`, `CockpitRenderer.*`. Edits to `Camera.*`, `main.cpp`, `Overlay.*`.
+- **Check:**
+  - Drive the whole loop in the driver-seat view, with no camera shake or jitter.
+  - Crash into buildings and cars: you get pushed back, with no tunnelling.
+  - Walk into walls: you slide along them.
+
+### Phase 5: Vehicle variety
 - The lofted-body generator and the 11 vehicle types. Lights, indicators and brake lights. The bus loop line with bus-stop dwell time. Emergency flashers.
 - **Files:** new `VehicleTypes.*`, `VehicleRenderer.*`. Edits to `Mesh.*` and the simulation spawn mix.
 - **Check:** a mix of types is visible. Buses swing properly on turns and stop at stops. Soak with long vehicles still gives 0 overlaps.
 
-### Phase 5: City dressing (shops, neon, trees, props)
-- The world generator, buildings, shops with neon text, the procedural lit-window facade, the park, plaza and gas station.
-- Street furniture, parked cars, and the realistic instanced trees with leaf cards and wind. The distant skyline.
+### Phase 6: City dressing (minimal: buildings, shops, props, trees)
+- **Buildings:** the world generator places the 30 to 40 buildings in 4 to 5 styles, shops with neon text on the main streets, and the lit-window facade. Also the park, plaza and gas station.
+- **Street:** a modest amount of street furniture and parked cars. The instanced trees with leaf cards and wind. The single outer building row and the distant skyline.
 - **Files:** new `World.*`, `TreeGenerator.*`, `NeonText.*`, `PropRenderer.*`. RGBA support in `Texture.*`. Instancing attributes in `Mesh.*` and the shaders.
-- **Check:** street-level and top views look like a city. Neon glows through bloom at night. The frame rate stays above 60 FPS and the HUD shows draw calls.
+- **Check:**
+  - Street-level and top views look like a small, lived-in city with no empty-looking stretches, but not crowded.
+  - Neon glows through bloom at night.
+  - The frame rate stays at 60 FPS or more at 1080p, and the HUD shows draw calls.
 
-### Phase 6: Pedestrians
+### Phase 7: Pedestrians
 - The sidewalk graph, crossings (signalised and zebra), the walker model and animation, instanced rendering, vehicles yielding, and umbrellas.
 - **Files:** new `Pedestrians.*`, `PedestrianRenderer.*`.
 - **Check:** soak shows 0 vehicle-pedestrian overlaps on crossings and no pedestrian stuck for more than 90 s. You can see people waiting for WALK and then crossing.
 
-### Phase 7: Shadows and night lighting polish
-- Two-cascade stable shadow maps with PCF and alpha-tested leaf shadows. Headlights become clustered spot lights. Neon spill lights, contact shadows and moonlight.
-- **Files:** new `ShadowMap.*`, `shadow.vert/frag`.
-- **Check:** shadows have no acne, no peter-panning and no swimming while the camera moves. Streets are well lit at night.
+### Phase 8: Sun, moon, time presets and shadows
+- **Sky motion:** the tilted sun path, the moon's opposite arc, and the five presets with the 3 s glide. `O`, `[`, `]` and the corner time buttons (the Enhanced button comes in Phase 10).
+- **Shadows:** a stable shadow map (1 cascade, 2 on High) with PCF and alpha-tested leaf shadows. It follows the sun, or the moon at night.
+- **Night lighting:** faint blue moonlight shadows, and headlights as spot lights in the light budget. Also neon spill lights and night lighting polish.
+- **Files:** new `ShadowMap.*`, `shadow.vert/frag`. Edits to `DayNight.*`, `Sky.*`, `sky.frag`, `scene.frag`, `Overlay.*`.
+- **Check:**
+  - Captures at all five presets from the same view: shadows point west in the morning, are short at noon, and are long and pointing east in the evening.
+  - Pressing `O` makes shadows sweep smoothly, with no snapping.
+  - No acne, no peter-panning, and no swimming while the camera moves.
+  - Streets are well lit at night.
 
-### Phase 8: Weather
-- The weather state machine, rain particles and splashes, wetness and puddles, lightning, fog, AI behaviour changes, and wipers.
-- **Files:** new `Weather.*`, `Rain.*`, `rain.vert/frag`.
-- **Check:** cycle through every state with `K` at day and at night. Transitions are smooth and FPS stays at or above 60.
+### Phase 9: Weather: clouds and light rain
+Built in this order, each step checked with captures before the next:
+1. **Weather state machine and `K` key:** Clear, Cloudy and Rain, with smooth blended parameters and a HUD readout.
+2. **Clouds:** the cloud layer in `sky.frag` (fbm noise, wind drift, coverage, sun-side lighting, time-of-day colour). Overcast dims the sun and lifts the ambient, and cloud shadows drift over the ground.
+3. **Rain particles:** instanced streaks around the camera with a slight wind slant, plus splashes on the ground and on car roofs.
+4. **Wet world:** a wetness value that builds and dries, darker and glossier surfaces, and puddles with sky reflection. Puddles get screen-space reflections in Phase 10.
+5. **Behaviour:** umbrellas, slower and more careful AI drivers, headlights on in rain, and wipers in the driver-seat view.
+- **Files:** new `Weather.*`, `Rain.*`, `shaders/rain.vert/frag`. Edits to `sky.frag`, `atmosphere.glsl`, `scene.frag`, `DayNight.*` (overcast factors) and `Overlay.*`.
+- **Check:**
+  - Cycle every state with `K` at Morning, Evening and Night.
+  - Clouds drift across the top of the sky and change with the weather.
+  - Rain is visible under street lamps at night.
+  - Roads darken and puddles appear as rain continues, then dry afterwards.
+  - Transitions are smooth, and FPS stays at 60 or more.
+- **Can move earlier:** clouds depend only on the Phase 0 sky, so steps 1 and 2 can run straight after Phase 1 if you want them sooner.
 
-### Phase 9: Ray tracing
-- **9a:** proxy extraction, a binned-SAH BVH on the CPU, and upload to RGBA32F textures (a static BVH plus a per-frame dynamic one). A GLSL traversal library, **RT reflections** (Fresnel and wetness weighted, with roughness jitter), and an **RT sun-shadow** toggle. GPU timings in the HUD.
-- **9b (stretch):** the photo mode. It uses a raster G-buffer for primary hits and ray-traced indirect light, soft shadows and reflections accumulated over frames while paused.
-- **Files:** new `RayTracer.*`, `rt_common.glsl` (included), `pathtrace.frag`.
-- **Check:** A/B with `F3` shows neon and lit windows reflected in the wet road. RT costs no more than 3 ms at 1080p on High. The Low preset turns it off.
+### Phase 10: Enhanced mode and the corner button
+- **Button and input:** the corner panel button with mouse hit testing, the cursor rule (free outside Free-cam, `Left Alt` in Free-cam), and `F3`.
+- **Scene pass:** a second render target for normals and roughness, with a nearest-filter resolve.
+- **Effects:**
+  - **SSR:** half resolution, Fresnel- and wetness-weighted, fading at screen edges.
+  - **SSAO:** half resolution, with a bilateral upsample.
+  - **PCSS** soft shadows, **screen-space contact shadows**, **sun shafts** for a low sun, and a slight bloom boost.
+- **Timing:** GPU timings for each effect in the HUD.
+- **Files:** new `Enhanced.*` (or inside `PostProcess.*`), `shaders/ssr.frag`, `shaders/ssao.frag`, `shaders/sunshafts.frag`. Edits to `Framebuffer.*`, `scene.frag`, `Overlay.*`, `main.cpp`.
+- **Check:**
+  - An A/B comparison with the button at Evening and at Night in the rain: neon and lit windows reflect in the wet road, and cars sit on the ground with soft contact shading.
+  - Sun shafts appear at Morning and Evening.
+  - 60 FPS or more at 1080p with Enhanced ON, or at least 50 FPS with the 720p fallback.
+  - Enhanced costs 3 ms or less.
 
-### Phase 10: Delivery
-- The README update: the new lab-topic mapping, controls, and how the ray tracing works. The Overlay help panel. Final soak runs across seeds. A performance pass. A viva demo script.
+### Phase 11: Delivery
+- The README update: the new lab-topic mapping, controls, and how Enhanced mode fakes a ray-traced look. The Overlay help panel. Final soak runs across seeds. A performance pass. A viva demo script.
 
 ---
 
@@ -327,14 +530,25 @@ Each new `.cpp`, `.h` and shader file is registered in `OpenGLMiniProject.vcxpro
 - **Self-test:** `x64\Release\OpenGLMiniProject.exe --self-test`, run from the project folder. It covers geometry, network connectivity, conflict tables and the signal-plan safety matrix.
 - **Soak:** `--soak 30 <seed>` over several seeds. It reports AI-AI overlaps (must be 0), vehicle-pedestrian overlaps (must be 0), the longest stop, throughput per junction and the density spread.
 - **Plot:** `--plot` writes an ASCII map plus `network.png`.
+- **Capture:** it renders a fixed view and saves it, which gives before and after images for every phase.
+  ```
+  --capture out.png --view 0..3 --time H --shading 0..2 [--roundabout] [--no-hud]
+  ```
+  - **Time presets:** use `--time 7`, `12`, `15.5`, `18.5` or `22`.
+  - **New flags:** `--weather clear|cloudy|rain` (from Phase 9) and `--enhanced` (from Phase 10).
+- **Smoothness:** the `F5` frame-time graph and the FPS readout are checked at 1080p every phase. The FPS must stay at 60 or more, with no spike above 25 ms.
+- **Enhanced A/B:** the same capture with and without `--enhanced`.
 - **Visual:** a phase-specific checklist is run in the app every phase, with the HUD's performance stats and GPU timer queries.
 
 ## 10. Risks and mitigations
 | Risk | Mitigation |
 |---|---|
-| Scope is very large | Strict phase order. Each phase ships on its own. The grid size constant can shrink the city. |
-| Frame rate with shadows, ray tracing and hundreds of objects | Batching, instancing, culling and quality presets from Phase 0 and Phase 2 onward. Timer queries show where the time goes. |
+| Scope is large | Strict phase order. Each phase ships on its own. The city is 3×3, and the grid size constant can change it. |
+| Jitter from the fixed simulation step | Render interpolation (section 4.7) and critically damped cameras, checked in Phase 2 before anything else is added. |
+| Frame rate drops below 60 at 1080p | Batching, instancing, culling, quality presets, and the auto render-scale fallback to 720p. Timer queries show where the time goes. |
+| Enhanced mode too slow | SSR and SSAO at half resolution, fewer ray-march steps on Medium, and Enhanced OFF on Low. |
+| Screen-space reflections miss off-screen objects | Fade reflections at screen edges and fall back to the sky colour. This is expected for a "partial ray tracing" look. |
 | Gridlock in a closed network | The exit-room check, a vehicle cap well below road capacity, and a deadlock detector in the soak test. |
-| Shadow-map artefacts | Texel snapping, normal-offset bias, and the RT-shadow alternative for comparison. |
+| Shadow-map artefacts | Texel snapping, normal-offset bias, and PCSS in Enhanced mode. |
 | Lab grading features lost | Flat/Gouraud/Phong, the Lab 3 lamp constants and spot light, the Lab 4 crates and specular map, and the Lab 5 Bezier meshes are all kept, and the README mapping is updated. |
 | iGPU selected by default | Optimus and PowerXpress exports in `main.cpp`. |
