@@ -20,3 +20,6 @@ vcpkg_installed/
 # Operating-system metadata
 .DS_Store
 Thumbs.db
+
+# Visual Studio project-upgrade reports
+UpgradeLog*.htm

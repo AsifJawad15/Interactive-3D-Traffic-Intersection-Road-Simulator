@@ -10,7 +10,9 @@ uniform mat4 uProjection;
 uniform mat3 uNormalMatrix;
 uniform vec2 uUvScale;
 
-uniform vec3 uAmbient;
+// Hemisphere ambient: sky light from above, bounce light from the ground.
+uniform vec3 uAmbientSky;
+uniform vec3 uAmbientGround;
 uniform vec3 uLightDirection;
 uniform vec3 uLightColor;
 uniform int uPointLightCount;
@@ -61,7 +63,8 @@ void main()
     vWorldPosition = worldPosition.xyz;
     vNormal = normal;
     vTexCoord = aTexCoord * uUvScale;
-    vec3 totalDiffuse = uAmbient + uLightColor * diffuse;
+    vec3 ambient = mix(uAmbientGround, uAmbientSky, 0.5 + 0.5 * normal.y);
+    vec3 totalDiffuse = ambient + uLightColor * diffuse;
     vec3 totalSpecular = uLightColor * specular * 0.35;
 
     for (int index = 0; index < uPointLightCount; ++index)

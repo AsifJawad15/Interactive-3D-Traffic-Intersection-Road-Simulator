@@ -8,6 +8,7 @@
 #include <glm/vec4.hpp>
 
 #include <string>
+#include <unordered_map>
 
 class Shader
 {
@@ -34,9 +35,16 @@ public:
     void setMat3(const std::string& name, const glm::mat3& value) const;
     void setMat4(const std::string& name, const glm::mat4& value) const;
 
+    // Location of a uniform, looked up once and then cached. Asking the driver
+    // by name on every draw was the most expensive part of the old renderer.
+    GLint location(const std::string& name) const;
+
 private:
     GLuint program_ = 0;
+    mutable std::unordered_map<std::string, GLint> locations_;
 
-    static std::string readFile(const std::string& path);
+    // Reads a shader source and expands  #include "file.glsl"  lines, resolved
+    // relative to the including file, so shaders can share GLSL functions.
+    static std::string readFile(const std::string& path, int depth = 0);
     static GLuint compile(GLenum type, const std::string& source, const std::string& label);
 };

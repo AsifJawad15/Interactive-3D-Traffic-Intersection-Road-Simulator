@@ -22,7 +22,8 @@ public:
         GLenum wrapS = GL_REPEAT,
         GLenum wrapT = GL_REPEAT,
         GLenum minFilter = GL_LINEAR_MIPMAP_LINEAR,
-        GLenum magFilter = GL_LINEAR);
+        GLenum magFilter = GL_LINEAR,
+        bool srgb = false);
     ~Texture();
 
     Texture(const Texture&) = delete;
@@ -33,12 +34,16 @@ public:
 
     void bind(unsigned int unit = 0) const;
 
+    // `srgb` marks a colour image. Its texels are stored gamma-encoded, so the
+    // GPU converts them to linear light when sampling. Data images such as
+    // specular maps stay linear.
     static Texture fromFile(
         const std::string& path,
         GLenum wrapS = GL_REPEAT,
         GLenum wrapT = GL_REPEAT,
         GLenum minFilter = GL_LINEAR_MIPMAP_LINEAR,
-        GLenum magFilter = GL_LINEAR);
+        GLenum magFilter = GL_LINEAR,
+        bool srgb = false);
 
     // Loads an image if it is present and falls back to a generated texture
     // otherwise, so a missing asset never stops the program from running.
@@ -48,7 +53,8 @@ public:
         GLenum wrapS = GL_REPEAT,
         GLenum wrapT = GL_REPEAT,
         GLenum minFilter = GL_LINEAR_MIPMAP_LINEAR,
-        GLenum magFilter = GL_LINEAR);
+        GLenum magFilter = GL_LINEAR,
+        bool srgb = false);
     static Texture makeWhite();
     static Texture makeAsphalt(int size = 128);
     static Texture makeGrass(int size = 128);

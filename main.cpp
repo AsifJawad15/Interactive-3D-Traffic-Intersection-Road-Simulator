@@ -3,8 +3,12 @@
 
 #include "Camera.h"
 #include "DayNight.h"
+#include "Framebuffer.h"
 #include "Overlay.h"
+#include "PostProcess.h"
 #include "Scene.h"
+#include "Sky.h"
+#include "Screenshot.h"
 #include "Simulation.h"
 
 #include <algorithm>
@@ -14,8 +18,43 @@
 #include <iostream>
 #include <string>
 
+// On a laptop with both an integrated and a discrete GPU, these two exported
+// symbols ask the NVIDIA and AMD drivers to run this program on the discrete
+// GPU. Without them Windows usually picks the integrated one.
+extern "C"
+{
+    __declspec(dllexport) unsigned long NvOptimusEnablement = 0x00000001;
+    __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+}
+
 namespace
 {
+    // Options for --capture, which renders a fixed view at a fixed time and
+    // saves it as a PNG. It makes every change checkable with an image.
+    struct CaptureOptions
+    {
+        bool enabled = false;
+        std::string path = "capture.png";
+        int frames = 90;
+        int view = 0;
+        float hour = -1.0f;
+        bool hideHud = false;
+        bool roundabout = false;
+        int shading = 2;
+    };
+
+    // Camera poses for --view. Yaw 90 looks along +z (north), yaw 0 along +x.
+    void applyCaptureView(Camera& camera, int view)
+    {
+        switch (view)
+        {
+        case 1: camera.setFreePose({2.5f, 1.7f, -36.0f}, 90.0f, -3.0f); break;   // street level, south arm
+        case 2: camera.setFreePose({-34.0f, 3.2f, 6.0f}, 0.0f, -7.0f); break;    // side road, west arm
+        case 3: camera.setFreePose({0.0f, 58.0f, -72.0f}, 90.0f, -36.0f); break; // high overview
+        default: camera.reset(); break;
+        }
+    }
+
     struct ApplicationState
     {
         Camera* camera = nullptr;
@@ -176,6 +215,30 @@ int main(int argc, char** argv)
         return EXIT_SUCCESS;
     }
 
+    CaptureOptions capture;
+    for (int index = 1; index < argc; ++index)
+    {
+        const std::string argument = argv[index];
+        const bool hasValue = index + 1 < argc;
+        if (argument == "--capture" && hasValue)
+        {
+            capture.enabled = true;
+            capture.path = argv[++index];
+        }
+        else if (argument == "--frames" && hasValue)
+            capture.frames = std::max(1, std::atoi(argv[++index]));
+        else if (argument == "--view" && hasValue)
+            capture.view = std::atoi(argv[++index]);
+        else if (argument == "--time" && hasValue)
+            capture.hour = static_cast<float>(std::atof(argv[++index]));
+        else if (argument == "--no-hud")
+            capture.hideHud = true;
+        else if (argument == "--roundabout")
+            capture.roundabout = true;
+        else if (argument == "--shading" && hasValue)
+            capture.shading = std::clamp(std::atoi(argv[++index]), 0, 2);
+    }
+
     glfwSetErrorCallback(glfwErrorCallback);
     if (glfwInit() != GLFW_TRUE)
         return EXIT_FAILURE;
@@ -183,7 +246,9 @@ int main(int argc, char** argv)
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_SAMPLES, 4);
+    // Anti-aliasing now happens in the off-screen HDR target, so the window
+    // itself needs no multisampling.
+    glfwWindowHint(GLFW_SAMPLES, 0);
 
     GLFWwindow* window = glfwCreateWindow(
         1280,
@@ -241,6 +306,26 @@ int main(int argc, char** argv)
 
         Scene scene;
         Overlay overlay;
+        Sky sky;
+        HdrTarget hdr;
+        PostProcess postProcess;
+
+        if (capture.enabled)
+        {
+            applyCaptureView(camera, capture.view);
+            if (capture.hour >= 0.0f)
+                dayNight.setTime(capture.hour);
+            if (capture.roundabout)
+                traffic.setMode(IntersectionMode::Roundabout);
+            state.showHelp = !capture.hideHud;
+            state.shadingMode = capture.shading;
+        }
+        int capturedFrames = 0;
+
+        // The simulation advances in fixed 1/60 s steps, independent of the
+        // frame rate, so traffic behaves identically on a slow or a fast GPU.
+        constexpr float simulationStep = 1.0f / 60.0f;
+        float simulationBacklog = 0.0f;
 
         double previousTime = glfwGetTime();
         double fpsWindowStart = previousTime;
@@ -257,8 +342,17 @@ int main(int argc, char** argv)
             camera.processKeyboard(window, dt);
             if (!state.paused)
             {
-                traffic.update(dt);
-                dayNight.update(dt);
+                simulationBacklog += dt;
+                int steps = 0;
+                while (simulationBacklog >= simulationStep && steps < 5)
+                {
+                    traffic.update(simulationStep);
+                    dayNight.update(simulationStep);
+                    simulationBacklog -= simulationStep;
+                    ++steps;
+                }
+                if (steps == 5)
+                    simulationBacklog = 0.0f;   // never spiral when a frame stalls
             }
             camera.update(dt, traffic.vehicles());
 
@@ -271,19 +365,33 @@ int main(int argc, char** argv)
                 fpsWindowStart = currentTime;
             }
 
-            const glm::vec3 skyColor = dayNight.skyColor();
-            glClearColor(skyColor.r, skyColor.g, skyColor.b, 1.0f);
+            // 1. Sky and scene into the multisampled HDR target.
+            hdr.resize(state.framebufferWidth, state.framebufferHeight);
+            hdr.bindForScene();
+            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
             const float aspect = static_cast<float>(state.framebufferWidth) /
                                  static_cast<float>(state.framebufferHeight);
+            const glm::mat4 view = camera.viewMatrix();
+            const glm::mat4 projection = camera.projectionMatrix(aspect);
+            sky.render(view, projection, camera.position(), dayNight, static_cast<float>(currentTime));
             scene.render(
-                camera.viewMatrix(), camera.projectionMatrix(aspect), camera.position(),
+                view, projection, camera.position(),
                 traffic, dayNight, state.shadingMode,
                 camera.mode() == CameraMode::Driver,
                 camera.followedVehicleIndex(),
                 static_cast<float>(currentTime));
-            overlay.render(
+
+            // 2. Resolve the samples, then bloom and tone-map into the window.
+            hdr.resolve();
+            postProcess.render(
+                hdr.colorTexture(), state.framebufferWidth, state.framebufferHeight,
+                dayNight.exposure());
+
+            // 3. The HUD is drawn last, straight onto the tone-mapped image.
+            if (!capture.hideHud)
+                overlay.render(
                 state.framebufferWidth,
                 state.framebufferHeight,
                 displayedFps,
@@ -296,6 +404,15 @@ int main(int argc, char** argv)
                 dayNight.streetLampsOn(),
                 traffic.vehicles().size(),
                 state.showHelp);
+
+            if (capture.enabled && ++capturedFrames >= capture.frames)
+            {
+                const bool saved = saveFramebufferPng(
+                    capture.path, state.framebufferWidth, state.framebufferHeight);
+                std::cout << (saved ? "Saved " : "Could not save ") << capture.path << std::endl;
+                exitCode = saved ? EXIT_SUCCESS : EXIT_FAILURE;
+                glfwSetWindowShouldClose(window, GLFW_TRUE);
+            }
 
             glfwSwapBuffers(window);
         }

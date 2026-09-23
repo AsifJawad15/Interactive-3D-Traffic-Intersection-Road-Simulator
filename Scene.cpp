@@ -1,5 +1,7 @@
 #include "Scene.h"
 
+#include "Sky.h"
+
 #include <glm/geometric.hpp>
 #include <glm/gtc/matrix_inverse.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -83,25 +85,25 @@ Scene::Scene()
       // and a mipmapped minification filter so the distant road does not shimmer.
       asphalt_(Texture::fromFileOr(
           "assets/asphalt-photoreal.png", &Texture::makeAsphalt,
-          GL_REPEAT, GL_REPEAT, GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR)),
+          GL_REPEAT, GL_REPEAT, GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR, true)),
       // These three use an image file when one is present in assets/ and fall
       // back to the generated pattern otherwise, so the project runs with no
       // assets at all but can be re-skinned by dropping in a photograph.
       grass_(Texture::fromFileOr(
           "assets/grass.png", &Texture::makeGrass,
-          GL_REPEAT, GL_REPEAT, GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR)),
+          GL_REPEAT, GL_REPEAT, GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR, true)),
       sidewalk_(Texture::fromFileOr(
           "assets/sidewalk.png", &Texture::makeSidewalk,
-          GL_REPEAT, GL_REPEAT, GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR)),
+          GL_REPEAT, GL_REPEAT, GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR, true)),
       facade_(Texture::fromFileOr(
           "assets/facade.png", &Texture::makeFacade,
-          GL_REPEAT, GL_REPEAT, GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR)),
+          GL_REPEAT, GL_REPEAT, GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR, true)),
       // The Lab 4 container pair. The specular map is the metal banding only,
       // so the crate's painted panels stay matte while its edges catch a
       // highlight - the whole point of a separate specular map.
       crateDiffuse_(Texture::fromFileOr(
           "assets/container2.png", &Texture::makeFacade,
-          GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE, GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR)),
+          GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE, GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR, true)),
       crateSpecular_(Texture::fromFileOr(
           "assets/container2_specular.png", &Texture::makeFacade,
           GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE, GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR)),
@@ -130,7 +132,10 @@ void Scene::render(
     shader_.setMat4("uView", view);
     shader_.setMat4("uProjection", projection);
     shader_.setVec3("uViewPosition", cameraPosition);
-    shader_.setVec3("uAmbient", dayNight.ambientLight());
+    shader_.setVec3("uAmbientSky", dayNight.skyAmbient());
+    shader_.setVec3("uAmbientGround", dayNight.groundAmbient());
+    shader_.setFloat("uEmissiveStrength", 3.0f);
+    applyAtmosphereUniforms(shader_, dayNight);
     shader_.setVec3("uLightDirection", dayNight.sunDirection());
     shader_.setVec3("uLightColor", dayNight.sunColor());
     shader_.setInt("uShadingMode", shadingMode);
@@ -161,7 +166,9 @@ void Scene::render(
     shader_.setFloat("uSpotCutOff", std::cos(glm::radians(16.0f)));
     shader_.setFloat("uSpotOuterCutOff", std::cos(glm::radians(24.0f)));
 
-    drawCube(transformed({0.0f, -0.30f, 0.0f}, {82.0f, 0.5f, 82.0f}), {0.72f, 0.86f, 0.72f}, grass_, {32.0f, 32.0f}, 6.0f);
+    // The ground runs out to two kilometres so it reaches the fog and the
+    // horizon; the old 82 m square ended in mid-air at the edge of the view.
+    drawCube(transformed({0.0f, -0.30f, 0.0f}, {2000.0f, 0.5f, 2000.0f}), {0.72f, 0.86f, 0.72f}, grass_, {780.0f, 780.0f}, 6.0f);
     drawRoads();
     const float islandHeight = traffic.islandHeight();
     drawRoadMarkings(islandHeight);
@@ -259,8 +266,11 @@ void Scene::drawCylinder(
 
 void Scene::drawRoads()
 {
-    drawCube(transformed({0.0f, 0.0f, 0.0f}, {12.0f, 0.12f, 80.0f}), {0.96f, 0.96f, 0.98f}, asphalt_, {4.0f, 28.0f}, 8.0f);
-    drawCube(transformed({0.0f, 0.01f, 0.0f}, {80.0f, 0.12f, 12.0f}), {0.96f, 0.96f, 0.98f}, asphalt_, {28.0f, 4.0f}, 8.0f);
+    // The asphalt photograph is very dark, so it is tinted brighter: real worn
+    // asphalt reflects roughly 7-10 % of the light, not the 4 % of the image.
+    const glm::vec3 asphaltTint {1.28f, 1.28f, 1.30f};
+    drawCube(transformed({0.0f, 0.0f, 0.0f}, {12.0f, 0.12f, 80.0f}), asphaltTint, asphalt_, {4.0f, 28.0f}, 8.0f);
+    drawCube(transformed({0.0f, 0.01f, 0.0f}, {80.0f, 0.12f, 12.0f}), asphaltTint, asphalt_, {28.0f, 4.0f}, 8.0f);
 
     const std::array<glm::vec3, 4> pavementCenters = {
         glm::vec3{-23.0f, 0.12f, -23.0f}, glm::vec3{23.0f, 0.12f, -23.0f},

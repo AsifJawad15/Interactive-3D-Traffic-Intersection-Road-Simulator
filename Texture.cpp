@@ -35,12 +35,13 @@ Texture::Texture(
     GLenum wrapS,
     GLenum wrapT,
     GLenum minFilter,
-    GLenum magFilter)
+    GLenum magFilter,
+    bool srgb)
 {
     glGenTextures(1, &id_);
     glBindTexture(GL_TEXTURE_2D, id_);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, rgb.data());
+    glTexImage2D(GL_TEXTURE_2D, 0, srgb ? GL_SRGB8 : GL_RGB8, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, rgb.data());
     glGenerateMipmap(GL_TEXTURE_2D);
 
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, static_cast<GLint>(wrapS));
@@ -77,7 +78,7 @@ void Texture::bind(unsigned int unit) const
 }
 
 Texture Texture::fromFile(
-    const std::string& path, GLenum wrapS, GLenum wrapT, GLenum minFilter, GLenum magFilter)
+    const std::string& path, GLenum wrapS, GLenum wrapT, GLenum minFilter, GLenum magFilter, bool srgb)
 {
     namespace fs = std::filesystem;
     const fs::path requested(path);
@@ -107,7 +108,7 @@ Texture Texture::fromFile(
         const size_t byteCount = static_cast<size_t>(width) * static_cast<size_t>(height) * 3;
         std::vector<unsigned char> rgb(data, data + byteCount);
         stbi_image_free(data);
-        return Texture(width, height, rgb, wrapS, wrapT, minFilter, magFilter);
+        return Texture(width, height, rgb, wrapS, wrapT, minFilter, magFilter, srgb);
     }
 
     throw std::runtime_error("Texture file not found: " + path);
@@ -119,11 +120,12 @@ Texture Texture::fromFileOr(
     GLenum wrapS,
     GLenum wrapT,
     GLenum minFilter,
-    GLenum magFilter)
+    GLenum magFilter,
+    bool srgb)
 {
     try
     {
-        return fromFile(path, wrapS, wrapT, minFilter, magFilter);
+        return fromFile(path, wrapS, wrapT, minFilter, magFilter, srgb);
     }
     catch (const std::runtime_error&)
     {
@@ -149,7 +151,7 @@ Texture Texture::makeAsphalt(int size)
             setPixel(pixels, size, x, y, base, base + 1, base + 3);
         }
     }
-    return Texture(size, size, pixels);
+    return Texture(size, size, pixels, GL_REPEAT, GL_REPEAT, GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR, true);
 }
 
 Texture Texture::makeGrass(int size)
@@ -164,7 +166,7 @@ Texture Texture::makeGrass(int size)
             setPixel(pixels, size, x, y, 43 + noise / 3, 105 + noise + stripe, 48 + noise / 2);
         }
     }
-    return Texture(size, size, pixels);
+    return Texture(size, size, pixels, GL_REPEAT, GL_REPEAT, GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR, true);
 }
 
 Texture Texture::makeSidewalk(int size)
@@ -182,7 +184,7 @@ Texture Texture::makeSidewalk(int size)
             setPixel(pixels, size, x, y, base, base - 2, base - 5);
         }
     }
-    return Texture(size, size, pixels);
+    return Texture(size, size, pixels, GL_REPEAT, GL_REPEAT, GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR, true);
 }
 
 Texture Texture::makeFacade(int size)
@@ -217,7 +219,7 @@ Texture Texture::makeFacade(int size)
             }
         }
     }
-    return Texture(size, size, pixels);
+    return Texture(size, size, pixels, GL_REPEAT, GL_REPEAT, GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR, true);
 }
 
 unsigned char Texture::clampByte(int value)

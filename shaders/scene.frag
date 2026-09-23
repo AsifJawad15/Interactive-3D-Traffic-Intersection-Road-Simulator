@@ -14,7 +14,15 @@ uniform sampler2D uDiffuseTexture;
 uniform sampler2D uSpecularTexture;
 uniform vec3 uBaseColor;
 uniform vec3 uEmissiveColor;
-uniform vec3 uAmbient;
+
+// Emissive colours are written in the source as ordinary 0..1 colours. In the
+// HDR pipeline they are scaled up so lamps, lenses and screens are brighter
+// than lit surfaces and pick up bloom.
+uniform float uEmissiveStrength;
+
+// Hemisphere ambient: sky light from above, bounce light from the ground.
+uniform vec3 uAmbientSky;
+uniform vec3 uAmbientGround;
 uniform vec3 uLightDirection;
 uniform vec3 uLightColor;
 uniform int uPointLightCount;
@@ -34,6 +42,8 @@ uniform vec3 uViewPosition;
 uniform float uShininess;
 uniform int uShadingMode;
 
+#include "atmosphere.glsl"
+
 out vec4 fragmentColor;
 
 vec3 illuminate(vec3 normal, vec3 albedo, vec3 specularMap)
@@ -44,7 +54,8 @@ vec3 illuminate(vec3 normal, vec3 albedo, vec3 specularMap)
 
     float diffuse = max(dot(normal, lightDirection), 0.0);
     float specular = pow(max(dot(viewDirection, reflectionDirection), 0.0), uShininess);
-    vec3 diffuseLighting = uAmbient + uLightColor * diffuse;
+    vec3 ambient = mix(uAmbientGround, uAmbientSky, 0.5 + 0.5 * normal.y);
+    vec3 diffuseLighting = ambient + uLightColor * diffuse;
     vec3 specularLighting = uLightColor * specular * 0.35;
 
     for (int index = 0; index < uPointLightCount; ++index)
@@ -89,7 +100,11 @@ vec3 illuminate(vec3 normal, vec3 albedo, vec3 specularMap)
 
 void main()
 {
-    vec3 albedo = texture(uDiffuseTexture, vTexCoord).rgb * uBaseColor;
+    // Colours in the source were chosen by eye on a monitor, so they are
+    // gamma-encoded values. Lighting maths must happen in linear light, so they
+    // are decoded here. Textures marked sRGB are decoded by the GPU itself.
+    vec3 baseColor = pow(max(uBaseColor, vec3(0.0)), vec3(2.2));
+    vec3 albedo = texture(uDiffuseTexture, vTexCoord).rgb * baseColor;
     vec3 specularMap = texture(uSpecularTexture, vTexCoord).rgb;
     vec3 result;
 
@@ -109,6 +124,7 @@ void main()
         result = illuminate(normal, albedo, specularMap);
     }
 
-    result += uEmissiveColor;
+    result += uEmissiveColor * uEmissiveStrength;
+    result = applyFog(result, vWorldPosition, uViewPosition);
     fragmentColor = vec4(result, 1.0);
 }

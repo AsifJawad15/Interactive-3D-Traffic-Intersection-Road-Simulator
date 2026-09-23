@@ -147,6 +147,16 @@ void Camera::reset()
     saveFreeCamera();
 }
 
+void Camera::setFreePose(const glm::vec3& position, float yawDegrees, float pitchDegrees)
+{
+    mode_ = CameraMode::Free;
+    position_ = position;
+    yaw_ = yawDegrees;
+    pitch_ = glm::clamp(pitchDegrees, -85.0f, 85.0f);
+    updateVectors();
+    saveFreeCamera();
+}
+
 glm::mat4 Camera::viewMatrix() const
 {
     const glm::vec3 viewUp = mode_ == CameraMode::Top ? glm::vec3{0.0f, 0.0f, -1.0f} : up_;
@@ -156,7 +166,8 @@ glm::mat4 Camera::viewMatrix() const
 glm::mat4 Camera::projectionMatrix(float aspectRatio) const
 {
     const float fov = mode_ == CameraMode::Driver ? 68.0f : fieldOfView_;
-    return glm::perspective(glm::radians(fov), aspectRatio, 0.1f, 180.0f);
+    // The far plane reaches the fogged horizon; fog hides everything beyond it.
+    return glm::perspective(glm::radians(fov), aspectRatio, 0.1f, 1200.0f);
 }
 
 void Camera::updateVectors()

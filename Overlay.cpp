@@ -153,16 +153,15 @@ void Overlay::drawText(
     int screenWidth,
     int screenHeight)
 {
-    std::vector<unsigned char> buffer(128 * 1024);
     const int quadCount = stb_easy_font_print(
         0.0f,
         0.0f,
         const_cast<char*>(text.c_str()),
         nullptr,
-        buffer.data(),
-        static_cast<int>(buffer.size()));
+        textBuffer_.data(),
+        static_cast<int>(textBuffer_.size()));
 
-    const auto* raw = reinterpret_cast<const EasyFontVertex*>(buffer.data());
+    const auto* raw = reinterpret_cast<const EasyFontVertex*>(textBuffer_.data());
     std::vector<glm::vec2> triangles;
     triangles.reserve(static_cast<size_t>(quadCount) * 6);
 

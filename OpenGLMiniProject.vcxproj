@@ -162,6 +162,10 @@
     <ClCompile Include="Shader.cpp" />
     <ClCompile Include="Simulation.cpp" />
     <ClCompile Include="Texture.cpp" />
+    <ClCompile Include="Sky.cpp" />
+    <ClCompile Include="PostProcess.cpp" />
+    <ClCompile Include="Framebuffer.cpp" />
+    <ClCompile Include="Screenshot.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Camera.h" />
@@ -173,6 +177,10 @@
     <ClInclude Include="Shader.h" />
     <ClInclude Include="Simulation.h" />
     <ClInclude Include="Texture.h" />
+    <ClInclude Include="Sky.h" />
+    <ClInclude Include="PostProcess.h" />
+    <ClInclude Include="Framebuffer.h" />
+    <ClInclude Include="Screenshot.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="assets\asphalt-photoreal.png" />
@@ -180,6 +188,12 @@
     <None Include="shaders\overlay.vert" />
     <None Include="shaders\scene.frag" />
     <None Include="shaders\scene.vert" />
+    <None Include="shaders\atmosphere.glsl" />
+    <None Include="shaders\sky.frag" />
+    <None Include="shaders\tonemap.frag" />
+    <None Include="shaders\bloom_up.frag" />
+    <None Include="shaders\bloom_down.frag" />
+    <None Include="shaders\post.vert" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

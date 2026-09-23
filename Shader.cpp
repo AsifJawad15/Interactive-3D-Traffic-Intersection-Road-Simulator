@@ -49,7 +49,9 @@ Shader::~Shader()
         glDeleteProgram(program_);
 }
 
-Shader::Shader(Shader&& other) noexcept : program_(std::exchange(other.program_, 0))
+Shader::Shader(Shader&& other) noexcept
+    : program_(std::exchange(other.program_, 0)),
+      locations_(std::move(other.locations_))
 {
 }
 
@@ -60,6 +62,7 @@ Shader& Shader::operator=(Shader&& other) noexcept
         if (program_ != 0)
             glDeleteProgram(program_);
         program_ = std::exchange(other.program_, 0);
+        locations_ = std::move(other.locations_);
     }
     return *this;
 }
@@ -69,48 +72,62 @@ void Shader::use() const
     glUseProgram(program_);
 }
 
+GLint Shader::location(const std::string& name) const
+{
+    const auto found = locations_.find(name);
+    if (found != locations_.end())
+        return found->second;
+
+    const GLint value = glGetUniformLocation(program_, name.c_str());
+    locations_.emplace(name, value);
+    return value;
+}
+
 void Shader::setBool(const std::string& name, bool value) const
 {
-    glUniform1i(glGetUniformLocation(program_, name.c_str()), value ? 1 : 0);
+    glUniform1i(location(name), value ? 1 : 0);
 }
 
 void Shader::setInt(const std::string& name, int value) const
 {
-    glUniform1i(glGetUniformLocation(program_, name.c_str()), value);
+    glUniform1i(location(name), value);
 }
 
 void Shader::setFloat(const std::string& name, float value) const
 {
-    glUniform1f(glGetUniformLocation(program_, name.c_str()), value);
+    glUniform1f(location(name), value);
 }
 
 void Shader::setVec2(const std::string& name, const glm::vec2& value) const
 {
-    glUniform2fv(glGetUniformLocation(program_, name.c_str()), 1, glm::value_ptr(value));
+    glUniform2fv(location(name), 1, glm::value_ptr(value));
 }
 
 void Shader::setVec3(const std::string& name, const glm::vec3& value) const
 {
-    glUniform3fv(glGetUniformLocation(program_, name.c_str()), 1, glm::value_ptr(value));
+    glUniform3fv(location(name), 1, glm::value_ptr(value));
 }
 
 void Shader::setVec4(const std::string& name, const glm::vec4& value) const
 {
-    glUniform4fv(glGetUniformLocation(program_, name.c_str()), 1, glm::value_ptr(value));
+    glUniform4fv(location(name), 1, glm::value_ptr(value));
 }
 
 void Shader::setMat3(const std::string& name, const glm::mat3& value) const
 {
-    glUniformMatrix3fv(glGetUniformLocation(program_, name.c_str()), 1, GL_FALSE, glm::value_ptr(value));
+    glUniformMatrix3fv(location(name), 1, GL_FALSE, glm::value_ptr(value));
 }
 
 void Shader::setMat4(const std::string& name, const glm::mat4& value) const
 {
-    glUniformMatrix4fv(glGetUniformLocation(program_, name.c_str()), 1, GL_FALSE, glm::value_ptr(value));
+    glUniformMatrix4fv(location(name), 1, GL_FALSE, glm::value_ptr(value));
 }
 
-std::string Shader::readFile(const std::string& path)
+std::string Shader::readFile(const std::string& path, int depth)
 {
+    if (depth > 8)
+        throw std::runtime_error("Shader #include nested too deeply: " + path);
+
     const std::filesystem::path requested(path);
     const std::filesystem::path candidates[] = {
         requested,
@@ -124,9 +141,34 @@ std::string Shader::readFile(const std::string& path)
         if (!file)
             continue;
 
-        std::ostringstream stream;
-        stream << file.rdbuf();
-        return stream.str();
+        // Lines of the form   #include "name.glsl"   are replaced by the named
+        // file, resolved relative to the file that includes it. GLSL has no
+        // include mechanism of its own, so shared functions live in .glsl files.
+        std::ostringstream expanded;
+        std::string line;
+        while (std::getline(file, line))
+        {
+            if (!line.empty() && line.back() == '\r')
+                line.pop_back();
+
+            const std::size_t firstCharacter = line.find_first_not_of(" \t");
+            const bool isInclude = firstCharacter != std::string::npos &&
+                                   line.compare(firstCharacter, 8, "#include") == 0;
+            const std::size_t open = line.find('"');
+            const std::size_t close = line.rfind('"');
+
+            if (isInclude && open != std::string::npos && close > open)
+            {
+                const std::string included = line.substr(open + 1, close - open - 1);
+                const std::filesystem::path includePath = candidate.parent_path() / included;
+                expanded << readFile(includePath.string(), depth + 1) << '\n';
+            }
+            else
+            {
+                expanded << line << '\n';
+            }
+        }
+        return expanded.str();
     }
 
     throw std::runtime_error("Could not open shader file: " + path);

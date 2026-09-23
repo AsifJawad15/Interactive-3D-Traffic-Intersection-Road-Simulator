@@ -37,6 +37,9 @@ private:
     GLuint vao_ = 0;
     GLuint vbo_ = 0;
 
+    // Scratch space for stb_easy_font, allocated once instead of per string.
+    std::vector<unsigned char> textBuffer_ = std::vector<unsigned char>(128 * 1024);
+
     void drawRectangle(float x, float y, float width, float height, const glm::vec4& color, int screenWidth, int screenHeight);
     void drawText(float x, float y, float scale, const std::string& text, const glm::vec4& color, int screenWidth, int screenHeight);
     void uploadAndDraw(const std::vector<glm::vec2>& vertices, const glm::vec4& color, int screenWidth, int screenHeight);

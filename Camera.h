@@ -31,6 +31,10 @@ public:
     void toggleDriverView(std::size_t vehicleCount);
     void reset();
 
+    // Places the free camera at an exact pose. Used by --capture so that the
+    // same view can be rendered before and after a change.
+    void setFreePose(const glm::vec3& position, float yawDegrees, float pitchDegrees);
+
     glm::mat4 viewMatrix() const;
     glm::mat4 projectionMatrix(float aspectRatio) const;
 

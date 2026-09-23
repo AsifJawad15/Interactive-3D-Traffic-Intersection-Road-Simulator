@@ -45,6 +45,18 @@
     <ClCompile Include="Texture.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Sky.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PostProcess.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Framebuffer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Screenshot.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Camera.h"><Filter>Header Files</Filter></ClInclude>
@@ -56,6 +68,10 @@
     <ClInclude Include="Shader.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Simulation.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Texture.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Sky.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="PostProcess.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Framebuffer.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Screenshot.h"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="assets\asphalt-photoreal.png"><Filter>Resource Files</Filter></None>
@@ -63,5 +79,11 @@
     <None Include="shaders\overlay.vert"><Filter>Resource Files</Filter></None>
     <None Include="shaders\scene.frag"><Filter>Resource Files</Filter></None>
     <None Include="shaders\scene.vert"><Filter>Resource Files</Filter></None>
+    <None Include="shaders\atmosphere.glsl"><Filter>Resource Files</Filter></None>
+    <None Include="shaders\sky.frag"><Filter>Resource Files</Filter></None>
+    <None Include="shaders\tonemap.frag"><Filter>Resource Files</Filter></None>
+    <None Include="shaders\bloom_up.frag"><Filter>Resource Files</Filter></None>
+    <None Include="shaders\bloom_down.frag"><Filter>Resource Files</Filter></None>
+    <None Include="shaders\post.vert"><Filter>Resource Files</Filter></None>
   </ItemGroup>
 </Project>
