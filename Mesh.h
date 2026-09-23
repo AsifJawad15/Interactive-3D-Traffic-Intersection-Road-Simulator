@@ -7,8 +7,6 @@
 #include <cstddef>
 #include <vector>
 
-#include <glm/vec2.hpp>
-
 struct Vertex
 {
     glm::vec3 position;
@@ -16,11 +14,20 @@ struct Vertex
     glm::vec2 texCoord;
 };
 
+// Geometry on the CPU side, before it is uploaded. Kept separately so the
+// same shape can also be baked many times into one combined mesh.
+struct MeshData
+{
+    std::vector<Vertex> vertices;
+    std::vector<unsigned int> indices;
+};
+
 class Mesh
 {
 public:
     Mesh() = default;
     Mesh(const std::vector<Vertex>& vertices, const std::vector<unsigned int>& indices);
+    explicit Mesh(const MeshData& data) : Mesh(data.vertices, data.indices) {}
     ~Mesh();
 
     Mesh(const Mesh&) = delete;
@@ -30,6 +37,11 @@ public:
     Mesh& operator=(Mesh&& other) noexcept;
 
     void draw() const;
+    bool empty() const { return indexCount_ == 0; }
+
+    static MeshData beveledCubeData(float bevel = 0.08f);
+    static MeshData bezierRevolutionData(
+        const std::vector<glm::vec2>& controlPoints, unsigned int stacks, unsigned int slices);
 
     static Mesh makeCube();
     static Mesh makeBeveledCube(float bevel = 0.08f);

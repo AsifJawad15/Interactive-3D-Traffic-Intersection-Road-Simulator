@@ -15,9 +15,6 @@ uniform vec3 uAmbientSky;
 uniform vec3 uAmbientGround;
 uniform vec3 uLightDirection;
 uniform vec3 uLightColor;
-uniform int uPointLightCount;
-uniform vec3 uPointLightPositions[4];
-uniform vec3 uPointLightColors[4];
 
 // Lab 3 completes the illumination model with a spot light: a point light
 // whose intensity is gated by the angle between the fragment direction and the
@@ -30,6 +27,8 @@ uniform float uSpotCutOff;
 uniform float uSpotOuterCutOff;
 uniform vec3 uViewPosition;
 uniform float uShininess;
+
+#include "lights.glsl"
 
 // Ripple animation for the fountain water. Zero for every other object, so a
 // single extra uniform buys the whole effect without a second shader.
@@ -67,19 +66,8 @@ void main()
     vec3 totalDiffuse = ambient + uLightColor * diffuse;
     vec3 totalSpecular = uLightColor * specular * 0.35;
 
-    for (int index = 0; index < uPointLightCount; ++index)
-    {
-        vec3 toLight = uPointLightPositions[index] - worldPosition.xyz;
-        float distanceToLight = length(toLight);
-        vec3 pointDirection = normalize(toLight);
-        float attenuation = 1.0 / (1.0 + 0.09 * distanceToLight + 0.032 * distanceToLight * distanceToLight);
-        float pointDiffuse = max(dot(normal, pointDirection), 0.0);
-        vec3 pointReflection = reflect(-pointDirection, normal);
-        float pointSpecular = pow(max(dot(viewDirection, pointReflection), 0.0), uShininess);
-        totalDiffuse += uPointLightColors[index] * pointDiffuse * attenuation;
-        totalSpecular += uPointLightColors[index] * pointSpecular * attenuation * 0.45;
-    }
-
+    // Street lamps (Lab 3 point lights), per vertex for Gouraud shading.
+    addPointLights(worldPosition.xyz, normal, viewDirection, uShininess, totalDiffuse, totalSpecular);
 
     // Spot light.
     {

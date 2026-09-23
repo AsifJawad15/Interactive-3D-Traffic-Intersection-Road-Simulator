@@ -1,5 +1,6 @@
 #include "Scene.h"
 
+#include "MeshBuilder.h"
 #include "Sky.h"
 
 #include <glm/geometric.hpp>
@@ -69,7 +70,7 @@ namespace
     }
 }
 
-Scene::Scene()
+Scene::Scene(const TrafficSystem& traffic)
     : shader_("shaders/scene.vert", "shaders/scene.frag"),
       cube_(Mesh::makeCube()),
       beveledCube_(Mesh::makeBeveledCube(0.09f)),
@@ -108,11 +109,46 @@ Scene::Scene()
       crateSpecular_(Texture::fromFileOr(
           "assets/container2_specular.png", &Texture::makeFacade,
           GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE, GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR)),
-      signFace_(Texture::makeSidewalk())
+      signFace_(Texture::makeSidewalk()),
+      roads_(traffic)
 {
     shader_.use();
     shader_.setInt("uDiffuseTexture", 0);
     shader_.setInt("uSpecularTexture", 1);
+    LightManager::attach(shader_.id());
+    buildStreetLamps(traffic.network());
+}
+
+void Scene::buildStreetLamps(const RoadNetwork& network)
+{
+    // Every lamp in the city is baked into one mesh per material, so a
+    // hundred-odd lamps cost three draw calls. The light each one casts goes
+    // to the light budget, which picks the ones that matter each frame.
+    MeshBuilder posts;
+    MeshBuilder heads;
+    MeshBuilder bulbs;
+    const MeshData post = Mesh::bezierRevolutionData(lampPostProfile(), 12, 12);
+    const MeshData box = Mesh::beveledCubeData(0.09f);
+
+    std::vector<LightManager::PointLight> lights;
+    for (const StreetLamp& lamp : network.streetLamps())
+    {
+        posts.append(post, glm::translate(glm::mat4(1.0f), lamp.position));
+        heads.append(box, transformed(lamp.position + glm::vec3(0.0f, 5.75f, 0.0f), {0.75f, 0.28f, 0.75f}));
+        bulbs.append(box, transformed(lamp.position + glm::vec3(0.0f, 5.58f, 0.0f), {0.46f, 0.16f, 0.46f}));
+
+        LightManager::PointLight light;
+        light.position = lamp.position + glm::vec3(0.0f, 5.58f, 0.0f);
+        light.color = {1.65f, 0.92f, 0.36f};
+        light.range = 22.0f;
+        light.alwaysOn = lamp.lab;
+        lights.push_back(light);
+    }
+
+    lampPosts_ = posts.build();
+    lampHeads_ = heads.build();
+    lampBulbs_ = bulbs.build();
+    lights_.setLights(std::move(lights));
 }
 
 void Scene::render(
@@ -121,7 +157,6 @@ void Scene::render(
     const glm::vec3& cameraPosition,
     const TrafficSystem& traffic,
     const std::vector<VehiclePose>& vehicles,
-    float islandHeight,
     const DayNight& dayNight,
     int shadingMode,
     bool driverView,
@@ -143,28 +178,9 @@ void Scene::render(
     shader_.setVec3("uLightColor", dayNight.sunColor());
     shader_.setInt("uShadingMode", shadingMode);
 
-    const std::array<glm::vec3, 4> lampPositions = {
-        glm::vec3{-11.0f, 5.58f, -11.0f}, glm::vec3{11.0f, 5.58f, -11.0f},
-        glm::vec3{-11.0f, 5.58f, 11.0f}, glm::vec3{11.0f, 5.58f, 11.0f}
-    };
-    shader_.setInt("uPointLightCount", 4);
-    const glm::vec3 lampColor = dayNight.streetLampsOn()
-        ? glm::vec3{1.65f, 0.92f, 0.36f}
-        : glm::vec3{0.0f};
-    // Names written out once, so no string is built on every frame.
-    static constexpr std::array<const char*, 4> positionNames = {
-        "uPointLightPositions[0]", "uPointLightPositions[1]",
-        "uPointLightPositions[2]", "uPointLightPositions[3]"
-    };
-    static constexpr std::array<const char*, 4> colorNames = {
-        "uPointLightColors[0]", "uPointLightColors[1]",
-        "uPointLightColors[2]", "uPointLightColors[3]"
-    };
-    for (std::size_t index = 0; index < lampPositions.size(); ++index)
-    {
-        shader_.setVec3(positionNames[index], lampPositions[index]);
-        shader_.setVec3(colorNames[index], lampColor);
-    }
+    // This frame's street lamps: the 32 that matter most, with the four
+    // Lab 3 lamps of the central crossroads always among them.
+    lights_.update(cameraPosition, projection * view, dayNight.streetLampsOn());
 
     // A single spot light on a floodlight mast, aimed at the middle of the
     // intersection. Its cut-off angles are uploaded as cosines so the shader
@@ -182,34 +198,24 @@ void Scene::render(
     // horizon; the old 82 m square ended in mid-air at the edge of the view.
     drawCube(transformed({0.0f, -0.30f, 0.0f}, {2000.0f, 0.5f, 2000.0f}), {0.72f, 0.86f, 0.72f}, grass_, {780.0f, 780.0f}, 6.0f);
     drawRoads();
-    drawRoadMarkings(islandHeight);
-    drawIsland(islandHeight);
-    drawFountain(islandHeight);
+
+    const RoadNetwork& network = traffic.network();
+    for (const Junction& junction : network.junctions())
+    {
+        if (junction.type != JunctionType::Roundabout)
+            continue;
+        drawIsland(junction.centre);
+        if (junction.fountain)
+            drawFountain(junction.centre);
+    }
 
     drawBuildings();
     drawTrees();
     drawStreetFurniture();
     drawFloodlightMast(dayNight.streetLampsOn());
-
-    for (const glm::vec3 position : std::array<glm::vec3, 4>{
-             glm::vec3{-11.0f, 0.0f, -11.0f}, glm::vec3{11.0f, 0.0f, -11.0f},
-             glm::vec3{-11.0f, 0.0f, 11.0f}, glm::vec3{11.0f, 0.0f, 11.0f}})
-    {
-        drawStreetLamp(position, dayNight.streetLampsOn());
-    }
-
-    // The signal heads go dark when the roundabout takes over: give-way rules
-    // replace them, so leaving the lenses lit would be misleading.
-    const bool signalsActive = islandHeight < 0.5f;
-    for (const auto& [lane, position, yaw] : std::array<std::tuple<Lane, glm::vec3, float>, 4>{{
-             {Lane::Northbound, {-7.0f, 0.0f, -8.2f}, 0.0f},
-             {Lane::Southbound, {7.0f, 0.0f, 8.2f}, 180.0f},
-             {Lane::Eastbound, {-8.2f, 0.0f, 7.0f}, 90.0f},
-             {Lane::Westbound, {8.2f, 0.0f, -7.0f}, -90.0f}}})
-    {
-        drawTrafficSignal(position, yaw, traffic.signalFor(lane),
-                          traffic.leftArrowFor(lane) == SignalState::Green, signalsActive);
-    }
+    drawStreetLamps(dayNight.streetLampsOn());
+    drawSignals(traffic);
+    drawGiveWaySigns(network);
 
     // Vehicles that have left the scene and wait to re-enter are not drawn.
     for (std::size_t index = 0; index < vehicles.size(); ++index)
@@ -282,66 +288,23 @@ void Scene::drawCylinder(
 
 void Scene::drawRoads()
 {
-    // The asphalt photograph is very dark, so it is tinted brighter: real worn
-    // asphalt reflects roughly 7-10 % of the light, not the 4 % of the image.
-    const glm::vec3 asphaltTint {1.28f, 1.28f, 1.30f};
-    drawCube(transformed({0.0f, 0.0f, 0.0f}, {12.0f, 0.12f, 80.0f}), asphaltTint, asphalt_, {4.0f, 28.0f}, 8.0f);
-    drawCube(transformed({0.0f, 0.01f, 0.0f}, {80.0f, 0.12f, 12.0f}), asphaltTint, asphalt_, {28.0f, 4.0f}, 8.0f);
+    // The whole network is six static meshes. The asphalt photograph is very
+    // dark, so it is tinted brighter: real worn asphalt reflects roughly 7-10 %
+    // of the light, not the 4 % of the image. Texture coordinates were baked
+    // in world metres, so the uv scale is 1.
+    const glm::mat4 identity(1.0f);
+    drawMesh(roads_.asphalt(), identity, {1.28f, 1.28f, 1.30f}, asphalt_, {1.0f, 1.0f}, 8.0f, glm::vec3{0.0f});
+    drawMesh(roads_.kerbs(), identity, {0.70f, 0.70f, 0.72f}, sidewalk_, {1.0f, 1.0f}, 12.0f, glm::vec3{0.0f});
+    drawMesh(roads_.sidewalks(), identity, {0.92f, 0.92f, 0.92f}, sidewalk_, {1.0f, 1.0f}, 12.0f, glm::vec3{0.0f});
+    drawMesh(roads_.lawns(), identity, {0.60f, 0.80f, 0.55f}, grass_, {1.0f, 1.0f}, 6.0f, glm::vec3{0.0f});
 
-    const std::array<glm::vec3, 4> pavementCenters = {
-        glm::vec3{-23.0f, 0.12f, -23.0f}, glm::vec3{23.0f, 0.12f, -23.0f},
-        glm::vec3{-23.0f, 0.12f, 23.0f}, glm::vec3{23.0f, 0.12f, 23.0f}
-    };
-    for (const glm::vec3 center : pavementCenters)
-        drawCube(transformed(center, {32.0f, 0.20f, 32.0f}), {0.92f, 0.92f, 0.92f}, sidewalk_, {8.0f, 8.0f}, 12.0f);
-}
-
-void Scene::drawRoadMarkings(float islandHeight)
-{
-    const glm::vec3 white {0.96f, 0.96f, 0.90f};
-    const glm::vec3 yellow {0.95f, 0.72f, 0.08f};
-
-    for (int value = -36; value <= 36; value += 6)
-    {
-        if (value > -10 && value < 10)
-            continue;
-        drawCube(transformed({0.0f, 0.09f, static_cast<float>(value)}, {0.14f, 0.035f, 3.0f}), yellow, white_, {1, 1}, 4.0f);
-        drawCube(transformed({static_cast<float>(value), 0.10f, 0.0f}, {3.0f, 0.035f, 0.14f}), yellow, white_, {1, 1}, 4.0f);
-    }
-
-    // Lane edge lines run the full length of each arm while the signals are in
-    // charge, and stop short of the circulating area in roundabout mode. Ending
-    // the strips is what removes the markings from the middle; nothing is ever
-    // laid over the carriageway, so the road surface stays perfectly flat.
-    const float clearRadius = glm::mix(0.0f, 11.0f, islandHeight);
-    const float armLength = 40.0f - clearRadius;
-    const float armCentre = (40.0f + clearRadius) * 0.5f;
-
-    for (float side : {-1.0f, 1.0f})
-    {
-        for (float edge : {-5.7f, 5.7f})
-        {
-            drawCube(
-                transformed({edge, 0.09f, side * armCentre}, {0.12f, 0.035f, armLength}),
-                white, white_, {1, 1}, 4.0f);
-            drawCube(
-                transformed({side * armCentre, 0.10f, edge}, {armLength, 0.035f, 0.12f}),
-                white, white_, {1, 1}, 4.0f);
-        }
-    }
-
-    // Pedestrian crossings sit just behind the stop line while the signals are
-    // running, and slide outboard of the circulating ring in roundabout mode so
-    // that traffic never drives across them.
-    const float crossing = glm::mix(7.2f, 13.6f, islandHeight);
-    for (int stripe = -5; stripe <= 5; stripe += 2)
-    {
-        const float offset = static_cast<float>(stripe);
-        drawCube(transformed({offset, 0.115f, -crossing}, {0.75f, 0.035f, 2.2f}), white, white_, {1, 1}, 4.0f);
-        drawCube(transformed({offset, 0.115f, crossing}, {0.75f, 0.035f, 2.2f}), white, white_, {1, 1}, 4.0f);
-        drawCube(transformed({-crossing, 0.12f, offset}, {2.2f, 0.035f, 0.75f}), white, white_, {1, 1}, 4.0f);
-        drawCube(transformed({crossing, 0.12f, offset}, {2.2f, 0.035f, 0.75f}), white, white_, {1, 1}, 4.0f);
-    }
+    // Paint lies 12 mm above the asphalt; a polygon offset keeps it winning
+    // the depth test even hundreds of metres away.
+    glEnable(GL_POLYGON_OFFSET_FILL);
+    glPolygonOffset(-1.0f, -2.0f);
+    drawMesh(roads_.whitePaint(), identity, {0.96f, 0.96f, 0.90f}, white_, {1.0f, 1.0f}, 4.0f, glm::vec3{0.0f});
+    drawMesh(roads_.yellowPaint(), identity, {0.95f, 0.72f, 0.08f}, white_, {1.0f, 1.0f}, 4.0f, glm::vec3{0.0f});
+    glDisable(GL_POLYGON_OFFSET_FILL);
 }
 
 void Scene::drawBuildings()
@@ -392,21 +355,13 @@ void Scene::drawBuildings()
     }
 }
 
-void Scene::drawIsland(float islandHeight)
+void Scene::drawIsland(const glm::vec2& centre)
 {
-    if (islandHeight <= 0.001f)
-        return;
+    const float radius = RoadNetwork::islandRadius;
 
-    const float radius = TrafficSystem::islandRadius;
-
-    // Nothing is laid on top of the carriageway here. A roundabout has no lane
-    // markings through the middle, and drawRoadMarkings simply stops drawing
-    // them inside the circulating area, so the road surface itself stays flat.
-
-    // The island rises out of the road rather than popping into place. It
-    // stands only as proud of the carriageway as a real kerb does - about
-    // nineteen centimetres - so it reads as an island and not as raised road.
-    const float lift = glm::mix(-0.60f, 0.10f, islandHeight);
+    // The island stands only as proud of the carriageway as a real kerb does
+    // - fifteen centimetres - so it reads as an island and not as raised road.
+    const float lift = RoadNetwork::roadY;
     constexpr float kerbThickness = 0.30f;
 
     // Kerb first: wider than the island but with its top face LOWER, so the
@@ -414,26 +369,21 @@ void Scene::drawIsland(float islandHeight)
     // as a rim rather than as a lid over the grass.
     drawMesh(
         cylinder_,
-        transformed({0.0f, lift, 0.0f},
+        transformed({centre.x, lift, centre.y},
                     {radius * 2.0f + 0.6f, kerbThickness, radius * 2.0f + 0.6f}),
         {0.80f, 0.80f, 0.82f}, sidewalk_, {5.0f, 5.0f}, 16.0f, glm::vec3{0.0f});
 
     drawMesh(
         cylinder_,
-        transformed({0.0f, lift + 0.04f, 0.0f},
+        transformed({centre.x, lift + 0.04f, centre.y},
                     {radius * 2.0f, kerbThickness, radius * 2.0f}),
         {0.60f, 0.80f, 0.55f}, grass_, {4.0f, 4.0f}, 6.0f, glm::vec3{0.0f});
 }
 
-void Scene::drawFountain(float islandHeight)
+void Scene::drawFountain(const glm::vec2& centre)
 {
-    if (islandHeight <= 0.001f)
-        return;
-
-    // Sits on the top face of the island's grass disc: lift + 0.04 + half the
-    // kerb thickness, evaluated at a fully raised island.
-    const float base = glm::mix(-1.4f, 0.29f, islandHeight);
-    const glm::vec3 origin {0.0f, base, 0.0f};
+    // Sits on the top face of the island's grass disc.
+    const glm::vec3 origin {centre.x, RoadNetwork::roadY + 0.04f + 0.15f, centre.y};
 
     // Basin and column are Bezier surfaces of revolution, drawn at their
     // authored size because the control points are already in metres.
@@ -452,10 +402,10 @@ void Scene::drawFountain(float islandHeight)
         {0.35f, 0.62f, 0.78f}, white_, {1.0f, 1.0f}, 110.0f, glm::vec3{0.03f, 0.07f, 0.10f});
     waveAmplitude_ = 0.0f;
 
-    drawWaterJets(origin + glm::vec3(0.0f, 2.45f, 0.0f), islandHeight);
+    drawWaterJets(origin + glm::vec3(0.0f, 2.45f, 0.0f));
 }
 
-void Scene::drawWaterJets(const glm::vec3& origin, float islandHeight)
+void Scene::drawWaterJets(const glm::vec3& origin)
 {
     // Each droplet follows the projectile equation p = p0 + v0 t + 0.5 g t^2.
     // Giving the droplets of one jet evenly spaced ages turns a handful of
@@ -490,7 +440,7 @@ void Scene::drawWaterJets(const glm::vec3& origin, float islandHeight)
             drawCube(
                 transformed(position, glm::vec3(size)),
                 {0.72f, 0.88f, 0.98f}, white_, {1.0f, 1.0f}, 120.0f,
-                glm::vec3{0.22f, 0.34f, 0.42f} * islandHeight);
+                glm::vec3{0.22f, 0.34f, 0.42f});
         }
     }
 }
@@ -607,20 +557,80 @@ void Scene::drawFloodlightMast(bool illuminated)
         illuminated ? glm::vec3{0.85f, 0.78f, 0.58f} : glm::vec3{0.0f});
 }
 
-void Scene::drawStreetLamp(const glm::vec3& position, bool illuminated)
+void Scene::drawStreetLamps(bool illuminated)
 {
-    // The tapered post is another Bezier surface of revolution, authored in
-    // metres so it needs a translation and nothing else.
-    drawMesh(
-        lampPost_, glm::translate(glm::mat4(1.0f), position),
-        {0.08f, 0.09f, 0.11f}, white_, {1.0f, 1.0f}, 34.0f, glm::vec3{0.0f});
+    // Tapered Bezier posts, housings and bulbs of every lamp in the city: one
+    // draw call each. The bulbs glow (and bloom) even where the lamp is too
+    // far away to be one of the lights that actually light the ground.
+    const glm::mat4 identity(1.0f);
+    drawMesh(lampPosts_, identity, {0.08f, 0.09f, 0.11f}, white_, {1.0f, 1.0f}, 34.0f, glm::vec3{0.0f});
+    drawMesh(lampHeads_, identity, {0.12f, 0.13f, 0.16f}, white_, {1.0f, 1.0f}, 40.0f, glm::vec3{0.0f});
+    drawMesh(lampBulbs_, identity,
+             illuminated ? glm::vec3{1.0f, 0.72f, 0.30f} : glm::vec3{0.24f, 0.21f, 0.16f},
+             white_, {1.0f, 1.0f}, 64.0f,
+             illuminated ? glm::vec3{0.72f, 0.38f, 0.08f} : glm::vec3{0.0f});
+}
 
-    drawBeveledCube(transformed(position + glm::vec3(0.0f, 5.75f, 0.0f), {0.75f, 0.28f, 0.75f}), {0.12f, 0.13f, 0.16f}, white_, {1, 1}, 40.0f);
-    drawBeveledCube(
-        transformed(position + glm::vec3(0.0f, 5.58f, 0.0f), {0.46f, 0.16f, 0.46f}),
-        illuminated ? glm::vec3{1.0f, 0.72f, 0.30f} : glm::vec3{0.24f, 0.21f, 0.16f},
-        white_, {1, 1}, 64.0f,
-        illuminated ? glm::vec3{0.72f, 0.38f, 0.08f} : glm::vec3{0.0f});
+void Scene::drawSignals(const TrafficSystem& traffic)
+{
+    // A signal head on the driver's right of every approach to a signalised
+    // junction, just behind the stop line, facing the oncoming cars.
+    const RoadNetwork& network = traffic.network();
+    for (std::size_t index = 0; index < network.junctionCount(); ++index)
+    {
+        const Junction& junction = network.junctions()[index];
+        if (!junction.isSignalised())
+            continue;
+        for (int arm = 0; arm < 4; ++arm)
+        {
+            if (!junction.hasArm[static_cast<std::size_t>(arm)])
+                continue;
+            const glm::vec2 along = armDirection(arm);
+            // Right of the approaching car (heading -along): (along.z, -along.x).
+            const glm::vec2 right {along.y, -along.x};
+            const glm::vec2 foot = junction.centre + along * (RoadNetwork::stopLine + 0.6f) +
+                                   right * (RoadNetwork::halfWidth + 1.3f);
+            // The lenses face local -z; turn them to face along the arm.
+            const float yaw = glm::degrees(std::atan2(-along.x, -along.y));
+            drawTrafficSignal({foot.x, RoadNetwork::kerbTopY, foot.y}, yaw,
+                              traffic.signalFor(index, arm),
+                              traffic.leftArrowFor(index, arm) == SignalState::Green, true);
+        }
+    }
+}
+
+void Scene::drawGiveWaySigns(const RoadNetwork& network)
+{
+    // A red give-way sign at every approach that must yield: the entries of
+    // the roundabouts and the side road of the give-way T-junction.
+    for (const Junction& junction : network.junctions())
+    {
+        const bool roundabout = junction.type == JunctionType::Roundabout;
+        if (!roundabout && junction.type != JunctionType::GiveWayT)
+            continue;
+        for (int arm = 0; arm < 4; ++arm)
+        {
+            if (!junction.hasArm[static_cast<std::size_t>(arm)] || junction.majorArm[static_cast<std::size_t>(arm)])
+                continue;
+            const glm::vec2 along = armDirection(arm);
+            const glm::vec2 right {along.y, -along.x};
+            const float out = roundabout ? 22.0f : RoadNetwork::stopLine + 1.5f;
+            const glm::vec2 foot = junction.centre + along * out + right * (RoadNetwork::halfWidth + 1.2f);
+            const float yaw = glm::degrees(std::atan2(-along.x, -along.y));
+
+            glm::mat4 parent = glm::translate(glm::mat4(1.0f), {foot.x, RoadNetwork::kerbTopY, foot.y});
+            parent = glm::rotate(parent, glm::radians(yaw), {0.0f, 1.0f, 0.0f});
+            drawMesh(lampPost_, glm::scale(parent, {0.42f, 0.42f, 0.42f}),
+                     {0.62f, 0.63f, 0.66f}, white_, {1.0f, 1.0f}, 48.0f, glm::vec3{0.0f});
+
+            glm::mat4 plate = glm::translate(parent, {0.0f, 2.15f, 0.0f});
+            plate = glm::rotate(plate, glm::radians(45.0f), {0.0f, 0.0f, 1.0f});
+            drawBeveledCube(glm::scale(plate, {0.70f, 0.70f, 0.08f}), {0.86f, 0.12f, 0.10f}, white_, {1.0f, 1.0f}, 52.0f);
+            glm::mat4 face = glm::translate(parent, {0.0f, 2.15f, -0.05f});
+            face = glm::rotate(face, glm::radians(45.0f), {0.0f, 0.0f, 1.0f});
+            drawBeveledCube(glm::scale(face, {0.46f, 0.46f, 0.04f}), {0.96f, 0.96f, 0.94f}, white_, {1.0f, 1.0f}, 60.0f);
+        }
+    }
 }
 
 void Scene::drawTrafficSignal(

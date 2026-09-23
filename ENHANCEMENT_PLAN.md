@@ -23,8 +23,44 @@
 | 0. Rendering foundations | ✅ Done and verified | 2026-09-23 | `enhancement/phase-0-rendering` |
 | 1. Traffic core and collision fix | ✅ Done and verified | 2026-09-23 | `enhancement/phase-1-traffic` |
 | 2. Smooth motion and 1080p | ✅ Done and verified | 2026-09-24 | `enhancement/phase-2-smooth` |
-| 3. Road network | ⏸ Next, waiting for go-ahead | | |
+| 3. Road network | 🔶 In progress: traffic done and verified, rendering built but not yet reviewed | 2026-09-24 | `enhancement/phase-3-network` |
 | 4 to 11 | Not started | | |
+
+### 🔶 Checkpoint 3 (in progress): resume here after a pause (2026-09-24)
+
+**Done and verified**
+- **`RoadNetwork.h/.cpp`:** the 3×3 city with a fixed type at every junction.
+  - X0 and X1 are signalised crossroads. R1 is a roundabout with the fountain, and R2 is a roundabout. G is a give-way T-junction and ST a signalised T-junction, and there are three bends.
+  - Four roads lead out of town, each 240 m to its spawn or exit point.
+  - The module also provides block outlines (corners follow a kerb fillet, a bend or a roundabout), splitter islands, and street-lamp positions, including the four Lab 3 lamps at X0.
+- **Traffic (`Simulation.*`, `TrafficBuild.*`):** rebuilt on top of the network.
+  - **Routes:** 92 routes run from the middle of one road to the middle of the next, and cars chain from route to route. Following looks ahead into the next route, and turn choices spread traffic by load.
+  - **Signals:** there is one controller per signalised junction; `M` and the old single-junction modes are removed.
+  - **Spawning:** cars come in at the eight lanes into town. The give-way T gives priority to its major arms.
+  - **Lane rules:** at crossroads the inner lane goes straight or left, and the outer lane straight or right. At roundabouts the outer lane takes exits 1–2 and the inner lane exits 2–3.
+- **New junction rules:**
+  - **"Slip in":** a car may enter a zone claimed by someone else only if its pessimistic clearing time plus 1.5 s is less than the claimant's earliest possible arrival.
+  - **Starvation guard:** after 20 s at its line, a car makes crossing traffic hold back.
+  - **Turn-taking:** a car only defers to a longer waiter who could actually go.
+  - **First in, first through:** now limited to the same junction.
+  - **Give-way traffic:** it decides at its stopping distance + 2 m.
+- **Results:**
+  - `--self-test` passes all 2664 checks: 9 junctions, 92 routes and 406 conflict zones. Routes are continuous, clear kerbs and islands, and connect into one strongly connected network.
+  - **25 cars, 30-minute soak, seeds 1 to 8:** 0 overlaps, worst stop 29–45 s, busiest junction R2 at 20–22 % (the limit is 35 %). All pass.
+  - **40 cars (stress):** 0 overlaps, but the worst stop is 57–70 s, so one seed in three fails. R2 is at about 31 %.
+  - `--motion-test` passes, with judder at or below 0.0016.
+- **Rendering (built and running):**
+  - `MeshBuilder`, `RoadRenderer` (asphalt, kerbs, sidewalks, lawns, white and yellow paint, zebras, lane arrows, stop and give-way lines taken from `stopMarkings()`), `LightManager`, and `shaders/lights.glsl` (a 32-light budget in a UBO with windowed falloff).
+  - `Scene` draws the lamps baked into 3 meshes, an island at every roundabout with the fountain at R1, signal heads per junction, and give-way signs. `Mesh` gained `MeshData`.
+  - 1080p captures run at a steady 72 FPS with 1.3–1.9 ms of GPU time.
+- **Tools:** new camera capture views 0–5 (3 = the whole city, 5 = straight down); the `--roundabout` capture flag was removed. `--plot` writes `network.png`. New `--stop-limit S` for soaks. Shift gives the free camera a ×4 boost, and the top camera is at 300 m.
+
+**Still to do in Phase 3 (in this order)**
+1. **Review the screenshots** (`--capture x.png --size 1920x1080 --view 0|2|3|5 --time 12`, then `--time 22` for night): check the road meshes, kerbs, markings, arrows and signal heads. Fix any wrong winding, gaps or overlaps. The old props at X0 (8 buildings, 12 trees, crates, signs) were kept; check them against the new kerbs.
+2. **Night check:** roads lit, and no light popping while moving (`LightManager` fade).
+3. **Update `README.md`:** the city, the removal of `M`, the new tools, and the lab mapping. The Lab 3 lamps are now in the light budget.
+4. **Write the final Checkpoint 3**, commit, and push.
+
 
 ### ✅ Checkpoint 2: smooth motion and 1080p (2026-09-24)
 

@@ -169,6 +169,10 @@
     <ClCompile Include="Collision.cpp" />
     <ClCompile Include="TrafficBuild.cpp" />
     <ClCompile Include="FrameStats.cpp" />
+    <ClCompile Include="RoadNetwork.cpp" />
+    <ClCompile Include="MeshBuilder.cpp" />
+    <ClCompile Include="LightManager.cpp" />
+    <ClCompile Include="RoadRenderer.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Camera.h" />
@@ -186,6 +190,10 @@
     <ClInclude Include="Screenshot.h" />
     <ClInclude Include="Collision.h" />
     <ClInclude Include="FrameStats.h" />
+    <ClInclude Include="RoadNetwork.h" />
+    <ClInclude Include="MeshBuilder.h" />
+    <ClInclude Include="LightManager.h" />
+    <ClInclude Include="RoadRenderer.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="assets\asphalt-photoreal.png" />

@@ -1,6 +1,7 @@
 // The running traffic: signals, the commit-and-claim junction rule, car
-// following, spawning and the collision measurements. The one-off geometry
-// (routes, shared lanes, conflict zones) and the self-test are in TrafficBuild.cpp.
+// following, routing through the city, spawning and the collision
+// measurements. The one-off geometry (routes, shared lanes, conflict zones)
+// and the self-test are in TrafficBuild.cpp.
 
 #include "Simulation.h"
 
@@ -34,21 +35,24 @@ namespace
     // A car only takes its turn if priority traffic is further away than this.
     constexpr float acceptedGapSeconds = 3.5f;
 
+    // After this long at the line, crossing traffic holds back for a car.
+    constexpr float starvationSeconds = 20.0f;
+
     constexpr float leaderLookAhead = 80.0f;
-    constexpr float spawnClearance = 16.0f;
+    constexpr float spawnClearance = 18.0f;
 
     // Signal timing. Green and the left arrow are actuated: they end early
     // once their own queue is empty and someone waits on the other road, and
     // they never run past their maximum while anyone is waiting across.
     constexpr float minimumLeftArrowSeconds = 3.0f;
-    // Long enough for the two opposing left turns to go one after the other:
-    // their arcs cross in the middle, so they cannot go together.
-    constexpr float maximumLeftArrowSeconds = 12.0f;
+    // On the 4-lane crossroads the two opposing left turns pass each other
+    // without crossing, so one short arrow serves both sides at once.
+    constexpr float maximumLeftArrowSeconds = 7.0f;
     constexpr float minimumGreenSeconds = 6.0f;
     constexpr float maximumGreenSeconds = 16.0f;
-    constexpr float yellowSeconds = 2.5f;
+    constexpr float yellowSeconds = 3.0f;
     constexpr float allRedSeconds = 2.5f;
-    constexpr float demandRange = 30.0f;   // metres before the line
+    constexpr float demandRange = 35.0f;   // metres before the line
 
     // Normalised logistic curve, scaled so 0 maps exactly to 0 and 1 exactly to
     // 1. It shapes how fast the acceleration may change (the jerk), so small
@@ -66,14 +70,9 @@ namespace
         return (logistic(value) - low) / (high - low);
     }
 
-    bool laneIsNorthSouth(Lane lane)
+    bool armIsNorthSouth(int arm)
     {
-        return lane == Lane::Northbound || lane == Lane::Southbound;
-    }
-
-    std::size_t laneIndex(Lane lane)
-    {
-        return static_cast<std::size_t>(lane);
+        return arm == ArmNorth || arm == ArmSouth;
     }
 
     // Soonest a car could cover `distance` if it accelerated flat out.
@@ -114,6 +113,20 @@ namespace
         return static_cast<int>(phase) < static_cast<int>(TrafficPhase::AllRedBeforeEastWest);
     }
 
+    const char* phaseText(TrafficPhase phase)
+    {
+        switch (phase)
+        {
+        case TrafficPhase::NorthSouthLeftArrow: return "N/S LEFT ARROW";
+        case TrafficPhase::NorthSouthGreen: return "N/S GREEN";
+        case TrafficPhase::NorthSouthYellow: return "N/S YELLOW";
+        case TrafficPhase::EastWestLeftArrow: return "E/W LEFT ARROW";
+        case TrafficPhase::EastWestGreen: return "E/W GREEN";
+        case TrafficPhase::EastWestYellow: return "E/W YELLOW";
+        default: return "ALL RED";
+        }
+    }
+
     const std::array<glm::vec3, 12> palette = {
         glm::vec3{0.82f, 0.06f, 0.035f}, glm::vec3{0.07f, 0.30f, 0.88f},
         glm::vec3{0.95f, 0.58f, 0.04f}, glm::vec3{0.13f, 0.62f, 0.34f},
@@ -125,9 +138,10 @@ namespace
 }
 
 TrafficSystem::TrafficSystem(std::size_t vehicleCount, unsigned int seed)
-    : vehicleCount_(vehicleCount), seed_(seed)
+    : network_(RoadNetwork::makeCity()), vehicleCount_(vehicleCount), seed_(seed)
 {
     buildRoutes();
+    buildSuccessors();
     buildSharedSpans();
     buildConflicts();
     finishRoutes();
@@ -135,17 +149,23 @@ TrafficSystem::TrafficSystem(std::size_t vehicleCount, unsigned int seed)
 }
 
 // ---------------------------------------------------------------------------
-// Placement and spawning
+// Placement, routing and spawning
 // ---------------------------------------------------------------------------
 
 void TrafficSystem::reset()
 {
-    phase_ = TrafficPhase::NorthSouthLeftArrow;
-    phaseElapsed_ = 0.0f;
-    mode_ = IntersectionMode::Signals;
-    islandHeight_ = 0.0f;
-    previousIslandHeight_ = 0.0f;
+    // Neighbouring signals start on opposite axes, so the city does not
+    // change colour all at once.
+    signals_.assign(network_.junctionCount(), SignalController {});
+    for (std::size_t junction = 0; junction < signals_.size(); ++junction)
+    {
+        signals_[junction].phase = junction % 2 == 0 ? TrafficPhase::NorthSouthLeftArrow
+                                                     : TrafficPhase::EastWestLeftArrow;
+        signals_[junction].elapsed = 0.0f;
+    }
+
     randomState_ = seed_;
+    std::fill(claimCounts_.begin(), claimCounts_.end(), 0);
     vehicles_.clear();
 
     for (std::size_t index = 0; index < vehicleCount_; ++index)
@@ -153,63 +173,94 @@ void TrafficSystem::reset()
         Vehicle vehicle;
         vehicle.id = index;
         vehicle.color = palette[index % palette.size()];
-        vehicle.maximumSpeed = 5.4f + static_cast<float>(index % 3) * 0.35f;
-        vehicle.claims.reserve(16);
+        // 29 to 34 km/h: a city street, not a motorway.
+        vehicle.maximumSpeed = 8.0f + static_cast<float>(index % 3) * 0.7f;
+        vehicle.claims.reserve(24);
         vehicles_.push_back(vehicle);
     }
 
-    placeVehiclesOnApproaches();
+    placeVehiclesInTown();
     resetStats();
 }
 
 void TrafficSystem::resetStats()
 {
     stats_ = TrafficStats {};
+    stats_.junctionSeconds.assign(network_.junctionCount(), 0.0);
     for (Vehicle& vehicle : vehicles_)
         vehicle.stoppedSeconds = 0.0f;
 }
 
-void TrafficSystem::placeVehiclesOnApproaches()
+unsigned int TrafficSystem::nextRandom()
 {
-    // Every claim belongs to the old routes, so all of them go.
-    std::fill(claimCounts_.begin(), claimCounts_.end(), 0);
+    // Small deterministic generator, so every run with the same seed is
+    // identical and a soak-test failure can be replayed.
+    randomState_ = randomState_ * 1664525u + 1013904223u;
+    return randomState_ >> 8;
+}
 
-    // Queue the vehicles on the four approaches in turn, one car-length and a
-    // good gap apart, all before their stop lines.
-    static constexpr Lane order[4] = {
-        Lane::Northbound, Lane::Eastbound, Lane::Southbound, Lane::Westbound
-    };
-
-    for (std::size_t index = 0; index < vehicles_.size(); ++index)
+void TrafficSystem::placeVehiclesInTown()
+{
+    // Scatter the vehicles over the whole network, each one well clear of
+    // the others and short of its junction, so nobody starts inside a box.
+    for (Vehicle& vehicle : vehicles_)
     {
-        Vehicle& vehicle = vehicles_[index];
+        vehicle.active = false;
         vehicle.claims.clear();
         vehicle.committed = false;
-
-        const std::size_t row = index / 4;
-        const std::size_t routeIndex = pickRoute(order[index % 4]);
-        const float distance = 2.0f + 13.0f * static_cast<float>(row);
-        if (distance > routes_[routeIndex].stopDistance - 3.0f)
-        {
-            vehicle.active = false;   // no room yet: it enters once a gap opens
-            continue;
-        }
-
-        vehicle.active = true;
-        placeOnRoute(vehicle, routeIndex, distance, vehicle.maximumSpeed * 0.6f);
     }
+
+    for (Vehicle& vehicle : vehicles_)
+    {
+        for (int attempt = 0; attempt < 400; ++attempt)
+        {
+            const std::size_t routeIndex = nextRandom() % routes_.size();
+            const RouteInfo& info = routes_[routeIndex];
+            const float lowest = 3.0f;
+            const float highest = info.needsCommit ? info.stopDistance - 6.0f : info.route.totalLength() - 3.0f;
+            if (highest <= lowest)
+                continue;
+            const float fraction = static_cast<float>(nextRandom() % 10000) / 10000.0f;
+            const float distance = lowest + fraction * (highest - lowest);
+            const glm::vec3 position = info.route.sample(distance).position;
+
+            bool clear = true;
+            for (const Vehicle& other : vehicles_)
+            {
+                if (other.active && glm::length(other.position - position) < 15.0f)
+                {
+                    clear = false;
+                    break;
+                }
+            }
+            if (!clear)
+                continue;
+
+            vehicle.active = true;
+            placeOnRoute(vehicle, routeIndex, distance, vehicle.maximumSpeed * 0.5f);
+            break;
+        }
+    }
+}
+
+void TrafficSystem::enterRoute(Vehicle& vehicle, std::size_t routeIndex)
+{
+    releaseClaims(vehicle);
+    vehicle.routeIndex = routeIndex;
+    const RouteInfo& info = routes_[routeIndex];
+    // A route with nothing to cross (a bend) is driven straight through.
+    vehicle.committed = !info.needsCommit;
+    vehicle.nextRouteIndex = info.leavesTown ? noRoute : chooseNextRoute(routeIndex);
 }
 
 void TrafficSystem::placeOnRoute(Vehicle& vehicle, std::size_t routeIndex, float distance, float speed)
 {
-    vehicle.routeIndex = routeIndex;
-    vehicle.lane = routes_[routeIndex].lane;
+    enterRoute(vehicle, routeIndex);
     vehicle.distance = distance;
     vehicle.currentSpeed = speed;
     vehicle.acceleration = 0.0f;
     vehicle.stoppedSeconds = 0.0f;
     vehicle.steerAngleDegrees = 0.0f;
-    vehicle.committed = false;
 
     const RouteSample sample = routes_[routeIndex].route.sample(distance);
     vehicle.position = sample.position;
@@ -224,6 +275,103 @@ void TrafficSystem::placeOnRoute(Vehicle& vehicle, std::size_t routeIndex, float
     vehicle.previousSteerAngleDegrees = vehicle.steerAngleDegrees;
 }
 
+std::size_t TrafficSystem::chooseNextRoute(std::size_t routeIndex)
+{
+    const std::vector<std::size_t>& candidates = routes_[routeIndex].successors;
+    if (candidates.empty())
+        return noRoute;
+
+    // A random choice, weighted away from exits that many cars are already
+    // heading for, so no single part of the city clogs up.
+    std::array<float, 8> weights {};
+    float total = 0.0f;
+    for (std::size_t option = 0; option < candidates.size() && option < weights.size(); ++option)
+    {
+        const RouteInfo& candidate = routes_[candidates[option]];
+        int load = 0;
+        for (const Vehicle& other : vehicles_)
+        {
+            if (!other.active)
+                continue;
+            const RouteInfo& current = routes_[other.routeIndex];
+            if (current.junction == candidate.junction && current.outArm == candidate.outArm)
+                ++load;
+            if (other.nextRouteIndex != noRoute)
+            {
+                const RouteInfo& next = routes_[other.nextRouteIndex];
+                if (next.junction == candidate.junction && next.outArm == candidate.outArm)
+                    ++load;
+            }
+        }
+        weights[option] = 1.0f / (1.0f + 0.6f * static_cast<float>(load));
+        total += weights[option];
+    }
+
+    float pick = static_cast<float>(nextRandom() % 10000) / 10000.0f * total;
+    for (std::size_t option = 0; option < candidates.size() && option < weights.size(); ++option)
+    {
+        pick -= weights[option];
+        if (pick <= 0.0f)
+            return candidates[option];
+    }
+    return candidates.back();
+}
+
+bool TrafficSystem::trySpawn(Vehicle& vehicle)
+{
+    // Through-traffic comes into town on one of the eight lanes of the four
+    // roads in, choosing the lane with the most room - but only if the gap to
+    // the last car on it is comfortably larger than a stopping distance.
+    const std::size_t count = townEntryRoutes_.size();
+    if (count == 0)
+        return false;
+    const std::size_t first = nextRandom() % count;
+
+    float bestClearance = -1.0f;
+    std::size_t bestRoute = townEntryRoutes_[first];
+    for (std::size_t offset = 0; offset < count; ++offset)
+    {
+        const std::size_t candidate = townEntryRoutes_[(first + offset) % count];
+        float clearance = std::numeric_limits<float>::max();
+        for (const Vehicle& other : vehicles_)
+        {
+            float along = 0.0f;
+            if (!other.active || &other == &vehicle || !projectOnto(other, candidate, along))
+                continue;
+            clearance = std::min(clearance, along - other.halfLength - vehicle.halfLength);
+        }
+        if (clearance > bestClearance)
+        {
+            bestClearance = clearance;
+            bestRoute = candidate;
+        }
+    }
+
+    if (bestClearance < spawnClearance)
+        return false;
+
+    // Any route from that lane; they all share it up to the junction.
+    std::size_t options[4] {};
+    std::size_t optionCount = 0;
+    for (std::size_t candidate : townEntryRoutes_)
+    {
+        if (sameStartLane(candidate, bestRoute) && optionCount < 4)
+            options[optionCount++] = candidate;
+    }
+
+    const float speed = vehicle.maximumSpeed * glm::clamp((bestClearance - 10.0f) / 20.0f, 0.4f, 1.0f);
+    vehicle.active = true;
+    placeOnRoute(vehicle, options[nextRandom() % optionCount], 0.0f, speed);
+    return true;
+}
+
+void TrafficSystem::releaseClaims(Vehicle& vehicle)
+{
+    for (std::size_t slot : vehicle.claims)
+        --claimCounts_[slot];
+    vehicle.claims.clear();
+}
+
 void TrafficSystem::interpolatePoses(float alpha, std::vector<VehiclePose>& poses) const
 {
     alpha = glm::clamp(alpha, 0.0f, 1.0f);
@@ -232,7 +380,7 @@ void TrafficSystem::interpolatePoses(float alpha, std::vector<VehiclePose>& pose
     // degrees blends into -179 through 180 rather than back through 0.
     const auto blendAngle = [alpha](float from, float to)
     {
-        float difference = std::fmod(to - from + 540.0f, 360.0f) - 180.0f;
+        const float difference = std::fmod(to - from + 540.0f, 360.0f) - 180.0f;
         return from + difference * alpha;
     };
 
@@ -250,88 +398,6 @@ void TrafficSystem::interpolatePoses(float alpha, std::vector<VehiclePose>& pose
     }
 }
 
-float TrafficSystem::islandHeight(float alpha) const
-{
-    return glm::mix(previousIslandHeight_, islandHeight_, glm::clamp(alpha, 0.0f, 1.0f));
-}
-
-unsigned int TrafficSystem::nextRandom()
-{
-    // Small deterministic generator, so every run with the same seed is
-    // identical and a soak-test failure can be replayed.
-    randomState_ = randomState_ * 1664525u + 1013904223u;
-    return randomState_ >> 8;
-}
-
-std::size_t TrafficSystem::pickRoute(Lane lane)
-{
-    const bool wantRoundabout = mode_ == IntersectionMode::Roundabout;
-
-    std::size_t candidates[8] {};
-    std::size_t count = 0;
-    for (std::size_t index = 0; index < routes_.size() && count < 8; ++index)
-    {
-        if (routes_[index].lane == lane && routes_[index].roundabout == wantRoundabout)
-            candidates[count++] = index;
-    }
-
-    if (count == 0)
-        return 0;
-    return candidates[nextRandom() % count];
-}
-
-bool TrafficSystem::trySpawn(Vehicle& vehicle)
-{
-    // Re-enter on the approach with the most room, but only if the gap to the
-    // last car on it is comfortably larger than a stopping distance.
-    static constexpr Lane lanes[4] = {
-        Lane::Northbound, Lane::Eastbound, Lane::Southbound, Lane::Westbound
-    };
-    const bool roundabout = mode_ == IntersectionMode::Roundabout;
-    const std::size_t first = nextRandom() % 4;
-
-    float bestClearance = -1.0f;
-    Lane bestLane = Lane::Northbound;
-    for (std::size_t offset = 0; offset < 4; ++offset)
-    {
-        const Lane lane = lanes[(first + offset) % 4];
-        float clearance = std::numeric_limits<float>::max();
-        for (const Vehicle& other : vehicles_)
-        {
-            if (!other.active || &other == &vehicle)
-                continue;
-            const RouteInfo& info = routeFor(other);
-            if (info.lane != lane || info.roundabout != roundabout)
-                continue;
-            // Routes from one approach share their first stretch exactly, so
-            // distance along any of them is distance along the approach lane.
-            clearance = std::min(clearance, other.distance - other.halfLength - vehicle.halfLength);
-        }
-        if (clearance > bestClearance)
-        {
-            bestClearance = clearance;
-            bestLane = lane;
-        }
-    }
-
-    if (bestClearance < spawnClearance)
-        return false;
-
-    const float speed = vehicle.maximumSpeed *
-        glm::clamp((bestClearance - 10.0f) / 15.0f, 0.4f, 1.0f);
-    vehicle.active = true;
-    vehicle.claims.clear();
-    placeOnRoute(vehicle, pickRoute(bestLane), 0.0f, speed);
-    return true;
-}
-
-void TrafficSystem::releaseClaims(Vehicle& vehicle)
-{
-    for (std::size_t slot : vehicle.claims)
-        --claimCounts_[slot];
-    vehicle.claims.clear();
-}
-
 // ---------------------------------------------------------------------------
 // Simulation step
 // ---------------------------------------------------------------------------
@@ -343,14 +409,16 @@ void TrafficSystem::update(float dt)
         return;
     stats_.simulatedSeconds += dt;
 
-    // The signal cycle keeps running in both modes so that switching back is
-    // seamless; in roundabout mode the vehicles simply ignore it.
-    phaseElapsed_ += dt;
-    if (signalPhaseOver())
-        advancePhase();
+    for (std::size_t junction = 0; junction < signals_.size(); ++junction)
+    {
+        if (!network_.junctions()[junction].isSignalised())
+            continue;
+        signals_[junction].elapsed += dt;
+        if (signalPhaseOver(junction))
+            advancePhase(junction);
+    }
 
     // Remember where everything was, for render interpolation.
-    previousIslandHeight_ = islandHeight_;
     for (Vehicle& vehicle : vehicles_)
     {
         vehicle.previousPosition = vehicle.position;
@@ -359,15 +427,7 @@ void TrafficSystem::update(float dt)
         vehicle.previousSteerAngleDegrees = vehicle.steerAngleDegrees;
     }
 
-    // The island rises out of the road when the roundabout takes over.
-    const float targetIslandHeight = mode_ == IntersectionMode::Roundabout ? 1.0f : 0.0f;
-    const float islandStep = dt * 1.2f;
-    if (islandHeight_ < targetIslandHeight)
-        islandHeight_ = std::min(targetIslandHeight, islandHeight_ + islandStep);
-    else
-        islandHeight_ = std::max(targetIslandHeight, islandHeight_ - islandStep);
-
-    // 1. Vehicles waiting off-screen come back when there is room.
+    // 1. Vehicles waiting out of town come back when a road in has room.
     for (Vehicle& vehicle : vehicles_)
     {
         if (!vehicle.active)
@@ -388,34 +448,32 @@ void TrafficSystem::update(float dt)
     // 3. A car let through on green that has not reached its line when the
     //    light changes stops after all if it comfortably can. It is still
     //    outside every zone, so giving its claims back is always safe.
-    if (mode_ == IntersectionMode::Signals)
+    for (Vehicle& vehicle : vehicles_)
     {
-        for (Vehicle& vehicle : vehicles_)
+        if (!vehicle.active || !vehicle.committed)
+            continue;
+        const RouteInfo& info = routeFor(vehicle);
+        if (!network_.junctions()[info.junction].isSignalised())
+            continue;
+        const float toLine = info.stopDistance - vehicle.distance;
+        const float comfortableStop =
+            vehicle.currentSpeed * vehicle.currentSpeed / (2.0f * comfortableBraking);
+        if (toLine > 0.0f && toLine >= comfortableStop && !movementPermitted(vehicle))
         {
-            if (!vehicle.active || !vehicle.committed)
-                continue;
-            const RouteInfo& info = routeFor(vehicle);
-            const float toLine = info.stopDistance - vehicle.distance;
-            const float comfortableStop =
-                vehicle.currentSpeed * vehicle.currentSpeed / (2.0f * comfortableBraking);
-            if (toLine > 0.0f && toLine >= comfortableStop && !movementPermitted(vehicle))
-            {
-                releaseClaims(vehicle);
-                vehicle.committed = false;
-            }
+            releaseClaims(vehicle);
+            vehicle.committed = false;
         }
     }
 
-    // 4. Junction decisions, nearest to the line first so a queue is served in
-    //    order. Each commit takes its claims at once, so the next car in the
-    //    loop already sees them: two cars can never commit into one zone.
+    // 4. Junction decisions, cars standing at their lines first (longest wait
+    //    first), then by distance to the line. Each commit takes its claims at
+    //    once, so the next car already sees them: two cars can never commit
+    //    into one zone.
     std::vector<std::size_t>& order = order_;
     order.resize(count);
     std::iota(order.begin(), order.end(), std::size_t {0});
     std::sort(order.begin(), order.end(), [this](std::size_t a, std::size_t b)
     {
-        // Cars already standing at their lines go first, longest wait first;
-        // then everyone else by distance to the line.
         const float toLineA = routes_[vehicles_[a].routeIndex].stopDistance - vehicles_[a].distance;
         const float toLineB = routes_[vehicles_[b].routeIndex].stopDistance - vehicles_[b].distance;
         const bool atLineA = toLineA < 0.5f;
@@ -493,17 +551,28 @@ void TrafficSystem::update(float dt)
             }
         }
 
-        // Reaching the end of a route means leaving the scene; the vehicle
-        // re-enters on an approach with room, now or on a later step.
-        if (vehicle.distance >= info.route.totalLength())
+        // The end of a route is the middle of the next road: carry on into
+        // the next junction's route, or leave town and come back later on
+        // one of the roads in.
+        const float length = info.route.totalLength();
+        if (vehicle.distance >= length)
         {
             ++stats_.trips;
-            ++stats_.tripsPerApproach[laneIndex(info.lane)];
-            releaseClaims(vehicle);
-            vehicle.committed = false;
-            vehicle.active = false;
-            if (!trySpawn(vehicle))
-                continue;
+            if (vehicle.nextRouteIndex == noRoute)
+            {
+                ++stats_.leftTown;
+                releaseClaims(vehicle);
+                vehicle.committed = false;
+                vehicle.active = false;
+                if (!trySpawn(vehicle))
+                    continue;
+            }
+            else
+            {
+                const float overshoot = vehicle.distance - length;
+                enterRoute(vehicle, vehicle.nextRouteIndex);
+                vehicle.distance = overshoot;
+            }
         }
 
         const RouteInfo& current = routeFor(vehicle);
@@ -520,6 +589,7 @@ void TrafficSystem::update(float dt)
         vehicle.steerAngleDegrees +=
             (desiredSteer - vehicle.steerAngleDegrees) * std::min(1.0f, dt * 6.0f);
 
+        stats_.junctionSeconds[current.junction] += dt;
         if (vehicle.currentSpeed < 0.05f)
         {
             vehicle.stoppedSeconds += dt;
@@ -564,6 +634,7 @@ TrafficSystem::Leader TrafficSystem::findLeader(std::size_t vehicleIndex) const
 {
     const Vehicle& me = vehicles_[vehicleIndex];
     const RouteInfo& info = routeFor(me);
+    const float remaining = info.route.totalLength() - me.distance;
     Leader leader;
 
     for (std::size_t index = 0; index < vehicles_.size(); ++index)
@@ -572,26 +643,33 @@ TrafficSystem::Leader TrafficSystem::findLeader(std::size_t vehicleIndex) const
         if (index == vehicleIndex || !other.active)
             continue;
 
+        float ahead = -1.0f;
         float along = 0.0f;
-        if (!projectOnto(other, me.routeIndex, along))
-            continue;
-
-        // On a shared stretch, the other car only counts while I have not yet
-        // turned off it myself.
-        if (other.routeIndex != me.routeIndex)
+        if (projectOnto(other, me.routeIndex, along))
         {
-            bool stillShared = false;
-            for (const SharedSpan& span : info.shared)
+            // On a shared stretch, the other car only counts while I have not
+            // yet turned off it myself.
+            bool counts = other.routeIndex == me.routeIndex;
+            if (!counts)
             {
-                if (span.other == other.routeIndex && me.distance <= span.to + span.tail &&
-                    along >= span.from && along <= span.to + span.tail)
-                    stillShared = true;
+                for (const SharedSpan& span : info.shared)
+                {
+                    if (span.other == other.routeIndex && me.distance <= span.to + span.tail &&
+                        along >= span.from && along <= span.to + span.tail)
+                        counts = true;
+                }
             }
-            if (!stillShared)
-                continue;
+            if (counts)
+                ahead = along - me.distance;
+        }
+        else if (me.nextRouteIndex != noRoute && remaining < leaderLookAhead &&
+                 projectOnto(other, me.nextRouteIndex, along))
+        {
+            // Already past the middle of the next road, on the route I will
+            // take (or one sharing its first lane).
+            ahead = remaining + along;
         }
 
-        const float ahead = along - me.distance;
         if (ahead <= 0.0f || ahead > leaderLookAhead)
             continue;
 
@@ -622,7 +700,7 @@ float TrafficSystem::commandedAcceleration(const Vehicle& vehicle, const Leader&
 
     // Corners ahead: brake early and evenly so the car arrives at each one at
     // its corner speed, v^2 = vc^2 + 2 a d.
-    const float lookAhead = std::min(40.0f, speed * speed / 2.0f + 5.0f);
+    const float lookAhead = std::min(50.0f, speed * speed / 2.0f + 5.0f);
     for (float ahead = 1.0f; ahead <= lookAhead; ahead += 1.0f)
     {
         const float cornerSpeed = curveSpeedAt(vehicle.distance + ahead);
@@ -651,20 +729,34 @@ float TrafficSystem::commandedAcceleration(const Vehicle& vehicle, const Leader&
 // Junction decisions: commit and claim
 // ---------------------------------------------------------------------------
 
-SignalState TrafficSystem::movementSignal(Lane lane, Turn turn) const
+SignalState TrafficSystem::phaseSignal(TrafficPhase phase, int arm, Turn turn)
 {
-    if (turn == Turn::Left && leftArrowFor(lane) == SignalState::Green)
+    const bool northSouth = armIsNorthSouth(arm);
+    if (turn == Turn::Left && ((northSouth && phase == TrafficPhase::NorthSouthLeftArrow) ||
+                               (!northSouth && phase == TrafficPhase::EastWestLeftArrow)))
         return SignalState::Green;
-    return signalFor(lane);
+
+    switch (phase)
+    {
+    case TrafficPhase::NorthSouthGreen: return northSouth ? SignalState::Green : SignalState::Red;
+    case TrafficPhase::NorthSouthYellow: return northSouth ? SignalState::Yellow : SignalState::Red;
+    case TrafficPhase::EastWestGreen: return northSouth ? SignalState::Red : SignalState::Green;
+    case TrafficPhase::EastWestYellow: return northSouth ? SignalState::Red : SignalState::Yellow;
+    default: return SignalState::Red;
+    }
+}
+
+SignalState TrafficSystem::movementSignal(const RouteInfo& route) const
+{
+    if (!network_.junctions()[route.junction].isSignalised())
+        return SignalState::Green;
+    return phaseSignal(signals_[route.junction].phase, route.inArm, route.turn);
 }
 
 bool TrafficSystem::movementPermitted(const Vehicle& vehicle) const
 {
-    if (mode_ == IntersectionMode::Roundabout)
-        return true;
-
     const RouteInfo& info = routeFor(vehicle);
-    const SignalState signal = movementSignal(info.lane, info.turn);
+    const SignalState signal = movementSignal(info);
     if (signal == SignalState::Green)
         return true;
     if (signal == SignalState::Red)
@@ -678,6 +770,16 @@ bool TrafficSystem::movementPermitted(const Vehicle& vehicle) const
         return true;
     return vehicle.currentSpeed > 1.0f &&
            toLine < vehicle.currentSpeed * vehicle.currentSpeed / (2.0f * 4.0f);
+}
+
+bool TrafficSystem::decidesEarly(const RouteInfo& route) const
+{
+    // Signal-controlled traffic and the road with priority decide early
+    // enough not to brake for nothing. Traffic that has to give way decides
+    // close to the line, like a real driver looking for a gap.
+    const Junction& junction = network_.junctions()[route.junction];
+    return junction.isSignalised() ||
+           (junction.type == JunctionType::GiveWayT && junction.majorArm[static_cast<std::size_t>(route.inArm)]);
 }
 
 bool TrafficSystem::exitHasRoom(const Vehicle& vehicle) const
@@ -702,6 +804,61 @@ bool TrafficSystem::exitHasRoom(const Vehicle& vehicle) const
     return true;
 }
 
+float TrafficSystem::slowestClearingTime(const Vehicle& vehicle, float distance) const
+{
+    // A deliberately pessimistic drive: half a second before the car even
+    // starts to speed up (the jerk limit), then only 1 m/s^2, never faster
+    // than the corners allow. The real car can only do better.
+    const RouteInfo& info = routeFor(vehicle);
+    constexpr float step = 0.05f;
+    float speed = vehicle.currentSpeed;
+    float covered = 0.0f;
+    float time = 0.0f;
+    while (covered < distance)
+    {
+        if (time > 30.0f)
+            return std::numeric_limits<float>::max();
+        const float along = vehicle.distance + covered;
+        const std::size_t metre = std::min(static_cast<std::size_t>(std::max(0.0f, along)), info.curveSpeed.size() - 1);
+        const float limit = std::min(vehicle.maximumSpeed, info.curveSpeed[metre]);
+        if (time >= 0.5f)
+            speed = std::min(speed + 1.0f * step, limit);
+        speed = std::min(speed, limit);
+        covered += std::max(speed, 0.0f) * step;
+        time += step;
+    }
+    return time;
+}
+
+bool TrafficSystem::canSlipIn(const Vehicle& vehicle, const Leader& leader,
+                              const Conflict& conflict, int mine) const
+{
+    const int theirs = 1 - mine;
+    const float clearDistance = conflict.out[static_cast<std::size_t>(mine)] - vehicle.distance;
+
+    // Nothing ahead may hold the car up on its way through the zone.
+    if (leader.vehicle != nullptr && leader.gap < clearDistance + 12.0f)
+        return false;
+
+    const float clearingTime = slowestClearingTime(vehicle, clearDistance) + 1.5f;
+
+    // Every car holding the other side must be further off than that, even
+    // if it accelerated flat out from now on.
+    const std::size_t theirSlot = static_cast<std::size_t>(&conflict - conflicts_.data()) * 2 +
+                                  static_cast<std::size_t>(theirs);
+    for (const Vehicle& other : vehicles_)
+    {
+        if (!other.active || std::find(other.claims.begin(), other.claims.end(), theirSlot) == other.claims.end())
+            continue;
+        const float toZone = conflict.in[static_cast<std::size_t>(theirs)] - other.distance;
+        if (toZone <= 0.0f)
+            return false;   // already in it
+        if (earliestArrival(toZone, other.currentSpeed, other.maximumSpeed) < clearingTime)
+            return false;
+    }
+    return true;
+}
+
 bool TrafficSystem::tryCommit(std::size_t vehicleIndex, const Leader& leader)
 {
     if (commitBlocker(vehicleIndex, leader) != nullptr)
@@ -721,28 +878,31 @@ bool TrafficSystem::tryCommit(std::size_t vehicleIndex, const Leader& leader)
     return true;
 }
 
-const char* TrafficSystem::commitBlocker(std::size_t vehicleIndex, const Leader& leader) const
+const char* TrafficSystem::commitBlocker(std::size_t vehicleIndex, const Leader& leader, bool takeTurns) const
 {
     const Vehicle& vehicle = vehicles_[vehicleIndex];
     const RouteInfo& info = routeFor(vehicle);
-    const bool roundabout = mode_ == IntersectionMode::Roundabout;
+    if (!info.needsCommit)
+        return nullptr;
 
-    // Decide early enough on a green light not to brake for nothing, but no
-    // earlier: a claim taken far from the line blocks crossing traffic for
-    // nothing. At a roundabout, decide close to the line like a real driver.
+    // Decide early enough on green not to brake for nothing, but no earlier:
+    // a claim taken far from the line blocks crossing traffic for nothing.
     const float toLine = info.stopDistance - vehicle.distance;
     const float speed = vehicle.currentSpeed;
-    const float decisionDistance = roundabout
-        ? std::max(8.0f, speed * speed / 4.0f + 6.0f)
-        : std::max(5.0f, speed * 1.5f + speed * speed / (2.0f * comfortableBraking));
+    const float decisionDistance = decidesEarly(info)
+        ? std::max(5.0f, speed * 1.5f + speed * speed / (2.0f * comfortableBraking))
+        : std::max(6.0f, speed * speed / (2.0f * comfortableBraking) + 2.0f);
     if (toLine > decisionDistance)
         return "not at the line yet";
 
     if (!movementPermitted(vehicle))
         return "signal";
 
-    // First in, first through: never commit past a car still waiting ahead.
-    if (leader.vehicle != nullptr && !leader.vehicle->committed)
+    // First in, first through: never commit past a car still waiting ahead
+    // for this same junction. (A car queuing at the next junction is the
+    // exit-room check's business, not this one's.)
+    if (leader.vehicle != nullptr && !leader.vehicle->committed &&
+        routeFor(*leader.vehicle).junction == info.junction)
         return "queued behind a waiting car";
 
     if (!exitHasRoom(vehicle))
@@ -753,11 +913,14 @@ const char* TrafficSystem::commitBlocker(std::size_t vehicleIndex, const Leader&
         const Conflict& conflict = conflicts_[ref.conflict];
         const int mine = ref.side;
         const int theirs = 1 - mine;
-        if (vehicle.distance > conflict.out[mine])
+        if (vehicle.distance > conflict.out[static_cast<std::size_t>(mine)])
             continue;
 
-        // Someone on the crossing route already owns this zone.
-        if (claimCounts_[ref.conflict * 2 + static_cast<std::size_t>(theirs)] > 0)
+        // Someone on the crossing route already owns this zone. The car may
+        // still slip in ahead of them, but only if it is certain to be out of
+        // the zone before they could possibly get there.
+        if (claimCounts_[ref.conflict * 2 + static_cast<std::size_t>(theirs)] > 0 &&
+            !canSlipIn(vehicle, leader, conflict, mine))
             return "zone claimed by crossing traffic";
 
         // Give way to crossing traffic that has priority (or that is too close
@@ -765,25 +928,43 @@ const char* TrafficSystem::commitBlocker(std::size_t vehicleIndex, const Leader&
         for (std::size_t index = 0; index < vehicles_.size(); ++index)
         {
             const Vehicle& other = vehicles_[index];
-            if (!other.active || other.committed || other.routeIndex != conflict.route[theirs])
+            if (!other.active || other.committed || other.routeIndex != conflict.route[static_cast<std::size_t>(theirs)])
                 continue;
             if (!movementPermitted(other))
                 continue;
 
             const RouteInfo& otherInfo = routeFor(other);
             const float otherToLine = otherInfo.stopDistance - other.distance;
+            const bool otherWaitingAtLine = otherToLine < 0.5f && other.currentSpeed < 0.5f;
+
+            // Starvation guard: a car that has stood at its line for a long
+            // time goes before anyone else on a crossing route, so a steady
+            // stream of claims from one direction cannot lock it out forever.
+            // (A car at its own line is at the front, whatever lies ahead.)
+            if (takeTurns && otherWaitingAtLine &&
+                other.stoppedSeconds > std::max(starvationSeconds, vehicle.stoppedSeconds + 5.0f))
+                return "letting a long-waiting car go first";
 
             // A car queued behind someone still waiting cannot go first.
             const Leader otherLeader = findLeader(index);
-            if (otherLeader.vehicle != nullptr && !otherLeader.vehicle->committed)
+            if (otherLeader.vehicle != nullptr && !otherLeader.vehicle->committed &&
+                routeFor(*otherLeader.vehicle).junction == otherInfo.junction)
                 continue;
 
             // Equal priority is served in turn: whoever has been waiting at
             // the line longer goes first, so a steady stream on one side cannot
-            // starve the other.
-            if (conflict.prioritySide < 0 && otherToLine < 0.5f &&
-                other.stoppedSeconds > vehicle.stoppedSeconds + 0.5f)
+            // starve the other. But only if that car could actually go now -
+            // giving way to someone who is stuck themselves helps nobody.
+            if (takeTurns && conflict.prioritySide < 0 && otherToLine < 0.5f &&
+                other.stoppedSeconds > vehicle.stoppedSeconds + 0.5f &&
+                commitBlocker(index, otherLeader, false) == nullptr)
                 return "taking turns with a car that waited longer";
+
+            // ...and, the other way round, a car waiting much longer does not
+            // hold back for a car standing at its own line: that car will see
+            // this one's claims and wait.
+            if (otherWaitingAtLine && vehicle.stoppedSeconds > other.stoppedSeconds + 5.0f)
+                continue;
 
             const bool theyHavePriority = conflict.prioritySide == theirs;
             const bool theyCannotStop = other.currentSpeed > 1.0f &&
@@ -791,7 +972,7 @@ const char* TrafficSystem::commitBlocker(std::size_t vehicleIndex, const Leader&
             if (!theyHavePriority && !theyCannotStop)
                 continue;
 
-            const float toZone = conflict.in[theirs] - other.distance;
+            const float toZone = conflict.in[static_cast<std::size_t>(theirs)] - other.distance;
             if (toZone < 0.0f)
                 continue;
             if (earliestArrival(toZone, other.currentSpeed, other.maximumSpeed) < acceptedGapSeconds)
@@ -841,22 +1022,18 @@ void TrafficSystem::measureBodies(float)
 }
 
 // ---------------------------------------------------------------------------
-// Signals and modes
+// Signals
 // ---------------------------------------------------------------------------
 
-bool TrafficSystem::signalDemand(bool northSouth, bool leftTurnsOnly) const
+bool TrafficSystem::signalDemand(std::size_t junction, bool northSouth, bool leftTurnsOnly) const
 {
-    // Signal mode only: roundabout routes never wait for a light.
-    if (mode_ != IntersectionMode::Signals)
-        return false;
-
     for (std::size_t index = 0; index < vehicles_.size(); ++index)
     {
         const Vehicle& vehicle = vehicles_[index];
         if (!vehicle.active || vehicle.committed)
             continue;
         const RouteInfo& info = routeFor(vehicle);
-        if (laneIsNorthSouth(info.lane) != northSouth ||
+        if (info.junction != junction || armIsNorthSouth(info.inArm) != northSouth ||
             info.stopDistance - vehicle.distance >= demandRange)
             continue;
         if (!leftTurnsOnly)
@@ -867,140 +1044,129 @@ bool TrafficSystem::signalDemand(bool northSouth, bool leftTurnsOnly) const
         if (info.turn != Turn::Left)
             continue;
         const Leader leader = findLeader(index);
-        if (leader.vehicle == nullptr || leader.vehicle->committed)
+        if (leader.vehicle == nullptr || leader.vehicle->committed ||
+            routeFor(*leader.vehicle).junction != junction)
             return true;
     }
     return false;
 }
 
-bool TrafficSystem::signalPhaseOver() const
+bool TrafficSystem::signalPhaseOver(std::size_t junction) const
 {
-    const float elapsed = phaseElapsed_;
-    const bool servesNorthSouth = phaseServesNorthSouth(phase_);
+    const SignalController& controller = signals_[junction];
+    const float elapsed = controller.elapsed;
+    const bool servesNorthSouth = phaseServesNorthSouth(controller.phase);
 
-    if (isLeftArrow(phase_))
+    if (isLeftArrow(controller.phase))
     {
         if (elapsed >= maximumLeftArrowSeconds)
             return true;
-        return elapsed >= minimumLeftArrowSeconds && !signalDemand(servesNorthSouth, true);
+        return elapsed >= minimumLeftArrowSeconds && !signalDemand(junction, servesNorthSouth, true);
     }
 
-    if (isGreen(phase_))
+    if (isGreen(controller.phase))
     {
-        // With nobody waiting across, the green simply rests. In roundabout
-        // mode there is never demand, so it falls back to the maximum and the
-        // (dark) cycle keeps turning.
-        const bool crossDemand = signalDemand(!servesNorthSouth, false);
-        if (mode_ != IntersectionMode::Signals)
-            return elapsed >= maximumGreenSeconds;
-        if (!crossDemand)
+        // With nobody waiting across, the green simply rests.
+        if (!signalDemand(junction, !servesNorthSouth, false))
             return false;
         if (elapsed >= maximumGreenSeconds)
             return true;
-        return elapsed >= minimumGreenSeconds && !signalDemand(servesNorthSouth, false);
+        return elapsed >= minimumGreenSeconds && !signalDemand(junction, servesNorthSouth, false);
     }
 
-    const bool yellow = phase_ == TrafficPhase::NorthSouthYellow || phase_ == TrafficPhase::EastWestYellow;
+    const bool yellow = controller.phase == TrafficPhase::NorthSouthYellow ||
+                        controller.phase == TrafficPhase::EastWestYellow;
     return elapsed >= (yellow ? yellowSeconds : allRedSeconds);
+}
+
+void TrafficSystem::advancePhase(std::size_t junction)
+{
+    SignalController& controller = signals_[junction];
+    auto next = static_cast<TrafficPhase>((static_cast<int>(controller.phase) + 1) % 8);
+
+    // The left-turn arrow only runs when someone is waiting to turn left.
+    if ((next == TrafficPhase::NorthSouthLeftArrow && !signalDemand(junction, true, true)) ||
+        (next == TrafficPhase::EastWestLeftArrow && !signalDemand(junction, false, true)))
+        next = static_cast<TrafficPhase>(static_cast<int>(next) + 1);
+
+    controller.phase = next;
+    controller.elapsed = 0.0f;
 }
 
 void TrafficSystem::advancePhase()
 {
-    auto next = static_cast<TrafficPhase>((static_cast<int>(phase_) + 1) % 8);
-
-    // The left-turn arrow only runs when someone is waiting to turn left.
-    if ((next == TrafficPhase::NorthSouthLeftArrow && !signalDemand(true, true)) ||
-        (next == TrafficPhase::EastWestLeftArrow && !signalDemand(false, true)))
-        next = static_cast<TrafficPhase>(static_cast<int>(next) + 1);
-
-    phase_ = next;
-    phaseElapsed_ = 0.0f;
-}
-
-void TrafficSystem::setMode(IntersectionMode mode)
-{
-    if (mode == mode_)
-        return;
-
-    mode_ = mode;
-
-    // Routes differ between the two modes, so traffic is re-formed on the
-    // approaches rather than teleported onto a route it was never following.
-    placeVehiclesOnApproaches();
-}
-
-void TrafficSystem::toggleMode()
-{
-    setMode(mode_ == IntersectionMode::Signals
-                ? IntersectionMode::Roundabout
-                : IntersectionMode::Signals);
-}
-
-SignalState TrafficSystem::signalFor(Lane lane) const
-{
-    const bool northSouth = laneIsNorthSouth(lane);
-    switch (phase_)
+    for (std::size_t junction = 0; junction < signals_.size(); ++junction)
     {
-    case TrafficPhase::NorthSouthGreen: return northSouth ? SignalState::Green : SignalState::Red;
-    case TrafficPhase::NorthSouthYellow: return northSouth ? SignalState::Yellow : SignalState::Red;
-    case TrafficPhase::EastWestGreen: return northSouth ? SignalState::Red : SignalState::Green;
-    case TrafficPhase::EastWestYellow: return northSouth ? SignalState::Red : SignalState::Yellow;
-    default: return SignalState::Red;
+        if (network_.junctions()[junction].isSignalised())
+            advancePhase(junction);
     }
 }
 
-SignalState TrafficSystem::leftArrowFor(Lane lane) const
+SignalState TrafficSystem::signalFor(std::size_t junction, int arm) const
 {
-    const bool northSouth = laneIsNorthSouth(lane);
-    if ((northSouth && phase_ == TrafficPhase::NorthSouthLeftArrow) ||
-        (!northSouth && phase_ == TrafficPhase::EastWestLeftArrow))
-        return SignalState::Green;
-    return SignalState::Red;
+    return phaseSignal(signals_[junction].phase, arm, Turn::Straight);
+}
+
+SignalState TrafficSystem::leftArrowFor(std::size_t junction, int arm) const
+{
+    const TrafficPhase phase = signals_[junction].phase;
+    return isLeftArrow(phase) && phaseServesNorthSouth(phase) == armIsNorthSouth(arm)
+        ? SignalState::Green : SignalState::Red;
 }
 
 std::string TrafficSystem::phaseName() const
 {
-    if (mode_ == IntersectionMode::Roundabout)
-        return "GIVE WAY";
-
-    switch (phase_)
-    {
-    case TrafficPhase::NorthSouthLeftArrow: return "N/S LEFT ARROW";
-    case TrafficPhase::NorthSouthGreen: return "N/S GREEN";
-    case TrafficPhase::NorthSouthYellow: return "N/S YELLOW";
-    case TrafficPhase::AllRedBeforeEastWest: return "ALL RED";
-    case TrafficPhase::EastWestLeftArrow: return "E/W LEFT ARROW";
-    case TrafficPhase::EastWestGreen: return "E/W GREEN";
-    case TrafficPhase::EastWestYellow: return "E/W YELLOW";
-    case TrafficPhase::AllRedBeforeNorthSouth: return "ALL RED";
-    }
-    return "UNKNOWN";
-}
-
-std::string TrafficSystem::modeName() const
-{
-    return mode_ == IntersectionMode::Roundabout ? "ROUNDABOUT" : "SIGNALS";
+    const std::size_t centre = network_.centralJunction();
+    return network_.junctions()[centre].name + " " + phaseText(signals_[centre].phase);
 }
 
 std::string TrafficSystem::describe() const
 {
-    std::string text = "phase " + phaseName() + "\n";
+    std::string text = "signals:";
+    for (std::size_t junction = 0; junction < signals_.size(); ++junction)
+    {
+        if (network_.junctions()[junction].isSignalised())
+            text += " " + network_.junctions()[junction].name + " " + phaseText(signals_[junction].phase);
+    }
+    text += "\n";
+
     for (std::size_t index = 0; index < vehicles_.size(); ++index)
     {
         const Vehicle& vehicle = vehicles_[index];
         const RouteInfo& info = routeFor(vehicle);
         const Leader leader = vehicle.active ? findLeader(index) : Leader {};
         const char* blocker = vehicle.active && !vehicle.committed ? commitBlocker(index, leader) : nullptr;
-        char line[240];
+        char line[300];
         std::snprintf(line, sizeof(line),
-            "  car %2zu %s route %2zu s %6.2f / stop %5.2f  v %4.2f  %s claims %zu  leader %s gap %.2f  stopped %.0f s  %s\n",
-            index, vehicle.active ? "on " : "off", vehicle.routeIndex, vehicle.distance,
-            info.stopDistance, vehicle.currentSpeed, vehicle.committed ? "COMMITTED" : "waiting",
-            vehicle.claims.size(),
+            "  car %2zu %s %-7s %s%s->%s%s route %3zu s %6.2f / stop %6.2f  v %4.2f a %5.2f cmd %5.2f  %s claims %zu  leader %s gap %.2f  stopped %.0f s  %s\n",
+            index, vehicle.active ? "on " : "off", network_.junctions()[info.junction].name.c_str(),
+            armName(info.inArm), info.inLane == 0 ? "i" : "o", armName(info.outArm), info.outLane == 0 ? "i" : "o",
+            vehicle.routeIndex, vehicle.distance, info.stopDistance, vehicle.currentSpeed,
+            vehicle.acceleration, vehicle.active ? commandedAcceleration(vehicle, leader) : 0.0f,
+            vehicle.committed ? "COMMITTED" : "waiting", vehicle.claims.size(),
             leader.vehicle != nullptr ? std::to_string(leader.vehicle->id).c_str() : "-",
             leader.vehicle != nullptr ? leader.gap : 0.0f, vehicle.stoppedSeconds,
             blocker != nullptr ? blocker : "");
         text += line;
+
+        // For a car locked out by claims, who holds them.
+        if (blocker != nullptr && std::string(blocker) == "zone claimed by crossing traffic")
+        {
+            text += "        held by:";
+            for (const ConflictRef& ref : info.conflicts)
+            {
+                const std::size_t theirSlot = ref.conflict * 2 + static_cast<std::size_t>(1 - ref.side);
+                if (claimCounts_[theirSlot] == 0 || vehicle.distance > conflicts_[ref.conflict].out[static_cast<std::size_t>(ref.side)])
+                    continue;
+                for (const Vehicle& other : vehicles_)
+                {
+                    if (std::find(other.claims.begin(), other.claims.end(), theirSlot) != other.claims.end())
+                        text += " car " + std::to_string(other.id) + " (zone " + std::to_string(ref.conflict) +
+                                ", " + std::to_string(static_cast<int>(conflicts_[ref.conflict].in[static_cast<std::size_t>(1 - ref.side)] - other.distance)) + " m off)";
+                }
+            }
+            text += "\n";
+        }
     }
     return text;
 }

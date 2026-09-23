@@ -66,6 +66,18 @@
     <ClCompile Include="FrameStats.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="RoadNetwork.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="MeshBuilder.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="LightManager.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="RoadRenderer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Camera.h"><Filter>Header Files</Filter></ClInclude>
@@ -83,6 +95,10 @@
     <ClInclude Include="Screenshot.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Collision.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="FrameStats.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="RoadNetwork.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="MeshBuilder.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="LightManager.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="RoadRenderer.h"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="assets\asphalt-photoreal.png"><Filter>Resource Files</Filter></None>
@@ -96,5 +112,6 @@
     <None Include="shaders\bloom_up.frag"><Filter>Resource Files</Filter></None>
     <None Include="shaders\bloom_down.frag"><Filter>Resource Files</Filter></None>
     <None Include="shaders\post.vert"><Filter>Resource Files</Filter></None>
+    <None Include="shaders\lights.glsl"><Filter>Resource Files</Filter></None>
   </ItemGroup>
 </Project>

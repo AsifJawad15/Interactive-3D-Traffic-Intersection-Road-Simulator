@@ -17,7 +17,9 @@ void Camera::processKeyboard(GLFWwindow* window, float dt)
     if (mode_ != CameraMode::Free)
         return;
 
-    const float distance = speed_ * dt;
+    // Shift moves four times faster: the city is 200 m across.
+    const bool boost = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS;
+    const float distance = speed_ * dt * (boost ? 4.0f : 1.0f);
     const glm::vec3 right = glm::normalize(glm::cross(front_, up_));
 
     if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
@@ -33,7 +35,7 @@ void Camera::processKeyboard(GLFWwindow* window, float dt)
     if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS)
         position_ += up_ * distance;
 
-    position_.y = glm::clamp(position_.y, 1.0f, 55.0f);
+    position_.y = glm::clamp(position_.y, 1.0f, 400.0f);
     saveFreeCamera();
 }
 
@@ -74,7 +76,8 @@ void Camera::update(float dt, const std::vector<VehiclePose>& vehicles)
 
     if (mode_ == CameraMode::Top)
     {
-        position_ = {0.0f, 48.0f, 0.01f};
+        // High enough to see the whole city inside the loop road.
+        position_ = {0.0f, 300.0f, 0.01f};
         front_ = glm::normalize(glm::vec3{0.0f, 0.0f, 0.0f} - position_);
         return;
     }

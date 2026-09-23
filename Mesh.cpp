@@ -197,6 +197,11 @@ Mesh Mesh::makeCube()
 
 Mesh Mesh::makeBeveledCube(float bevel)
 {
+    return Mesh(beveledCubeData(bevel));
+}
+
+MeshData Mesh::beveledCubeData(float bevel)
+{
     bevel = glm::clamp(bevel, 0.001f, 0.24f);
     const float h = 0.5f - bevel;
     std::vector<Vertex> vertices;
@@ -259,7 +264,7 @@ Mesh Mesh::makeBeveledCube(float bevel)
         }
     }
 
-    return Mesh(vertices, indices);
+    return {std::move(vertices), std::move(indices)};
 }
 
 Mesh Mesh::makeCarCabin()
@@ -359,6 +364,14 @@ Mesh Mesh::makeBezierRevolution(
 {
     if (controlPoints.size() < 2)
         return Mesh();
+    return Mesh(bezierRevolutionData(controlPoints, stacks, slices));
+}
+
+MeshData Mesh::bezierRevolutionData(
+    const std::vector<glm::vec2>& controlPoints, unsigned int stacks, unsigned int slices)
+{
+    if (controlPoints.size() < 2)
+        return {};
 
     stacks = stacks < 2 ? 2 : stacks;
     slices = slices < 3 ? 3 : slices;
@@ -422,7 +435,7 @@ Mesh Mesh::makeBezierRevolution(
         }
     }
 
-    return Mesh(vertices, indices);
+    return {std::move(vertices), std::move(indices)};
 }
 
 void Mesh::release()

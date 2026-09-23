@@ -44,7 +44,6 @@ namespace
         int view = 0;
         float hour = -1.0f;
         bool hideHud = false;
-        bool roundabout = false;
         int shading = 2;
         int width = 1280;             // --size WxH
         int height = 720;
@@ -58,9 +57,11 @@ namespace
     {
         switch (view)
         {
-        case 1: camera.setFreePose({2.5f, 1.7f, -36.0f}, 90.0f, -3.0f); break;   // street level, south arm
-        case 2: camera.setFreePose({-34.0f, 3.2f, 6.0f}, 0.0f, -7.0f); break;    // side road, west arm
-        case 3: camera.setFreePose({0.0f, 58.0f, -72.0f}, 90.0f, -36.0f); break; // high overview
+        case 1: camera.setFreePose({3.5f, 1.7f, -44.0f}, 90.0f, -3.0f); break;     // street level, X0 south arm
+        case 2: camera.setFreePose({60.0f, 9.0f, 28.0f}, -25.0f, -14.0f); break;   // roundabout R1 with the fountain
+        case 3: camera.setFreePose({0.0f, 190.0f, -270.0f}, 90.0f, -33.0f); break; // the whole city
+        case 4: camera.setFreePose({-60.0f, 30.0f, -55.0f}, 60.0f, -24.0f); break; // T-junctions G and ST
+        case 5: camera.setFreePose({0.0f, 330.0f, 0.01f}, 90.0f, -89.0f); break;   // straight down
         default: camera.reset(); break;
         }
     }
@@ -191,8 +192,6 @@ namespace
             state->camera->nextFollow(state->traffic->vehicles().size());
         else if (key == GLFW_KEY_G && state->traffic != nullptr)
             state->traffic->advancePhase();
-        else if (key == GLFW_KEY_M && state->traffic != nullptr)
-            state->traffic->toggleMode();
         else if (key == GLFW_KEY_P)
             state->paused = !state->paused;
         else if (key == GLFW_KEY_H)
@@ -260,67 +259,66 @@ namespace
         return "PHONG";
     }
 
-    // Headless endurance test: runs the traffic for simulated minutes at the
-    // real 60 Hz step and checks that no two vehicle bodies ever overlapped,
-    // that nobody was stuck, and that every approach kept moving.
-    //     OpenGLMiniProject.exe --soak 30 7 [--cars 12] [--mode signals|roundabout|both]
-    int runSoak(float minutes, unsigned int seed, std::size_t cars, const std::string& modes, float traceFrom)
+    // Headless endurance test: runs the city's traffic for simulated minutes
+    // at the real 60 Hz step and checks that no two vehicle bodies ever
+    // overlapped, that nobody was stuck, and that the traffic spread over the
+    // junctions instead of piling up at one.
+    //     OpenGLMiniProject.exe --soak 30 7 [--cars 25] [--trace [T]]
+    int runSoak(float minutes, unsigned int seed, std::size_t cars, float traceFrom, float longestAllowedStop)
     {
         constexpr float step = 1.0f / 60.0f;
-        constexpr float longestAllowedStop = 60.0f;
+        constexpr double largestAllowedShare = 0.35;
         const long long steps = static_cast<long long>(minutes * 60.0f / step);
-        bool allPassed = true;
 
-        for (const IntersectionMode mode : {IntersectionMode::Signals, IntersectionMode::Roundabout})
+        const auto started = std::chrono::steady_clock::now();
+        TrafficSystem traffic(cars, seed);
+        // --trace [T] prints every vehicle every 2 s, twenty times, starting at
+        // simulated second T, or by default from the moment some vehicle has
+        // been standing still for too long.
+        int traceDumps = traceFrom >= -1.0f ? 20 : 0;
+        long long nextTraceStep = traceFrom >= 0.0f ? static_cast<long long>(traceFrom / step) : 0;
+        for (long long index = 0; index < steps; ++index)
         {
-            const bool signals = mode == IntersectionMode::Signals;
-            if ((signals && modes == "roundabout") || (!signals && modes == "signals"))
-                continue;
-
-            const auto started = std::chrono::steady_clock::now();
-            TrafficSystem traffic(cars, seed);
-            traffic.setMode(mode);
-            traffic.resetStats();
-            // --trace [T] prints the whole junction every 2 s, twenty times,
-            // starting at simulated second T, or by default from the moment
-            // some vehicle has been standing still for too long.
-            int traceDumps = traceFrom >= -1.0f ? 20 : 0;
-            long long nextTraceStep = traceFrom >= 0.0f ? static_cast<long long>(traceFrom / step) : 0;
-            for (long long index = 0; index < steps; ++index)
+            traffic.update(step);
+            const bool triggered = traceFrom >= 0.0f || traffic.stats().longestStop > longestAllowedStop;
+            if (traceDumps > 0 && index >= nextTraceStep && triggered)
             {
-                traffic.update(step);
-                const bool triggered = traceFrom >= 0.0f || traffic.stats().longestStop > longestAllowedStop;
-                if (traceDumps > 0 && index >= nextTraceStep && triggered)
-                {
-                    std::printf("t = %.1f s  %s", index * step, traffic.describe().c_str());
-                    nextTraceStep = index + 120;
-                    --traceDumps;
-                }
+                std::printf("t = %.1f s  %s", index * step, traffic.describe().c_str());
+                nextTraceStep = index + 120;
+                --traceDumps;
             }
-            const double wallSeconds = std::chrono::duration<double>(
-                std::chrono::steady_clock::now() - started).count();
-
-            const TrafficStats& stats = traffic.stats();
-            const auto [fewest, most] = std::minmax_element(
-                stats.tripsPerApproach.begin(), stats.tripsPerApproach.end());
-            const bool passed = stats.overlapSteps == 0 &&
-                                stats.longestStop <= longestAllowedStop &&
-                                *fewest > 0;
-            allPassed = allPassed && passed;
-
-            std::printf(
-                "%-10s seed %-5u cars %2zu  %5.1f min | overlaps %zu | closest gap %.2f m | "
-                "longest stop %5.1f s | trips %4zu (N %zu E %zu S %zu W %zu) | %.1f s wall | %s\n",
-                signals ? "SIGNALS" : "ROUNDABOUT", seed, cars, stats.simulatedSeconds / 60.0,
-                stats.overlapSteps, stats.closestBodyGap, stats.longestStop, stats.trips,
-                stats.tripsPerApproach[0], stats.tripsPerApproach[2],
-                stats.tripsPerApproach[1], stats.tripsPerApproach[3],
-                wallSeconds, passed ? "PASS" : "FAIL");
-            if (!passed)
-                std::printf("%s", traffic.describe().c_str());
-            (void)most;
         }
-        return allPassed ? EXIT_SUCCESS : EXIT_FAILURE;
+        const double wallSeconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - started).count();
+
+        // Share of all vehicle-time spent on each junction's routes.
+        const TrafficStats& stats = traffic.stats();
+        double total = 0.0;
+        for (double seconds : stats.junctionSeconds)
+            total += seconds;
+        std::size_t busiest = 0;
+        for (std::size_t junction = 1; junction < stats.junctionSeconds.size(); ++junction)
+        {
+            if (stats.junctionSeconds[junction] > stats.junctionSeconds[busiest])
+                busiest = junction;
+        }
+        const double share = total > 0.0 ? stats.junctionSeconds[busiest] / total : 0.0;
+
+        const bool passed = stats.overlapSteps == 0 &&
+                            stats.longestStop <= longestAllowedStop &&
+                            share <= largestAllowedShare &&
+                            stats.trips > 0;
+
+        std::printf(
+            "CITY seed %-5u cars %2zu  %5.1f min | overlaps %zu | closest gap %.2f m | longest stop %5.1f s | "
+            "routes driven %5zu, left town %4zu | busiest %s %.0f%% | %.1f s wall | %s\n",
+            seed, cars, stats.simulatedSeconds / 60.0, stats.overlapSteps, stats.closestBodyGap,
+            stats.longestStop, stats.trips, stats.leftTown,
+            traffic.network().junctions()[busiest].name.c_str(), share * 100.0,
+            wallSeconds, passed ? "PASS" : "FAIL");
+        if (!passed)
+            std::printf("%s", traffic.describe().c_str());
+        return passed ? EXIT_SUCCESS : EXIT_FAILURE;
     }
 
     // Headless smoothness test. It replays the real frame loop (fixed 60 Hz
@@ -340,13 +338,13 @@ namespace
 
         for (const float refreshRate : {144.0f, 60.0f, 75.0f})
         {
-            TrafficSystem traffic(8, 3);
+            TrafficSystem traffic(24, 3);
             std::vector<VehiclePose> smooth;
             std::vector<VehiclePose> stepped;
             std::vector<VehiclePose> previousSmooth;
             std::vector<VehiclePose> previousStepped;
-            std::vector<float> lastMoveSmooth(8, -1.0f);
-            std::vector<float> lastMoveStepped(8, -1.0f);
+            std::vector<float> lastMoveSmooth(24, -1.0f);
+            std::vector<float> lastMoveStepped(24, -1.0f);
 
             double judderSmooth = 0.0;
             double judderStepped = 0.0;
@@ -427,7 +425,7 @@ int main(int argc, char** argv)
         return passed ? EXIT_SUCCESS : EXIT_FAILURE;
     }
 
-    std::size_t vehicleCount = 8;
+    std::size_t vehicleCount = 24;
     for (int index = 1; index + 1 < argc; ++index)
     {
         if (std::strcmp(argv[index], "--cars") == 0)
@@ -442,12 +440,12 @@ int main(int argc, char** argv)
         const float minutes = index + 1 < argc ? static_cast<float>(std::atof(argv[index + 1])) : 30.0f;
         const unsigned int seed = index + 2 < argc ? static_cast<unsigned int>(std::strtoul(argv[index + 2], nullptr, 10)) : 1u;
         // traceFrom: below -1 = no trace, -1 = on a long stop, else a start time.
-        std::string modes = "both";
         float traceFrom = -2.0f;
+        float stopLimit = 60.0f;   // --stop-limit S: longest allowed wait
         for (int other = 1; other < argc; ++other)
         {
-            if (std::strcmp(argv[other], "--mode") == 0 && other + 1 < argc)
-                modes = argv[other + 1];
+            if (std::strcmp(argv[other], "--stop-limit") == 0 && other + 1 < argc)
+                stopLimit = static_cast<float>(std::atof(argv[other + 1]));
             if (std::strcmp(argv[other], "--trace") == 0)
             {
                 traceFrom = -1.0f;
@@ -455,7 +453,7 @@ int main(int argc, char** argv)
                     traceFrom = static_cast<float>(std::atof(argv[other + 1]));
             }
         }
-        return runSoak(std::max(minutes, 0.1f), seed, vehicleCount, modes, traceFrom);
+        return runSoak(std::max(minutes, 0.1f), seed, vehicleCount, traceFrom, stopLimit);
     }
 
     for (int index = 1; index < argc; ++index)
@@ -470,8 +468,10 @@ int main(int argc, char** argv)
             continue;
 
         TrafficSystem traffic;
-        std::cout << traffic.topDownPlot(false) << '\n' << traffic.topDownPlot(true);
-        return EXIT_SUCCESS;
+        std::cout << traffic.networkReport();
+        const bool written = traffic.writeNetworkImage("network.png");
+        std::cout << (written ? "Wrote network.png" : "Could not write network.png") << '\n';
+        return written ? EXIT_SUCCESS : EXIT_FAILURE;
     }
 
     CaptureOptions capture;
@@ -493,8 +493,6 @@ int main(int argc, char** argv)
             capture.hour = static_cast<float>(std::atof(argv[++index]));
         else if (argument == "--no-hud")
             capture.hideHud = true;
-        else if (argument == "--roundabout")
-            capture.roundabout = true;
         else if (argument == "--shading" && hasValue)
             capture.shading = std::clamp(std::atoi(argv[++index]), 0, 2);
         else if (argument == "--size" && hasValue)
@@ -614,7 +612,7 @@ int main(int argc, char** argv)
         glfwSetKeyCallback(window, keyCallback);
         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
-        Scene scene;
+        Scene scene(traffic);
         Overlay overlay;
         Sky sky;
         HdrTarget hdr;
@@ -627,8 +625,6 @@ int main(int argc, char** argv)
             applyCaptureView(camera, capture.view);
             if (capture.hour >= 0.0f)
                 dayNight.setTime(capture.hour);
-            if (capture.roundabout)
-                traffic.setMode(IntersectionMode::Roundabout);
             state.showHelp = !capture.hideHud;
             state.shadingMode = capture.shading;
             state.showFrameGraph = capture.graph;
@@ -669,7 +665,7 @@ int main(int argc, char** argv)
             sky.render(view, projection, camera.position(), dayNight, static_cast<float>(timeSeconds));
             scene.render(
                 view, projection, camera.position(),
-                traffic, poses, traffic.islandHeight(alpha),
+                traffic, poses,
                 dayNight, state.shadingMode,
                 camera.mode() == CameraMode::Driver,
                 camera.followedVehicleIndex(),
@@ -705,7 +701,7 @@ int main(int argc, char** argv)
                     outputHeight,
                     state.paused,
                     camera.modeName(),
-                    traffic.phaseName() + " | " + traffic.modeName(),
+                    traffic.phaseName(),
                     shadingModeName(state.shadingMode),
                     dayNight.timeText(),
                     dayNight.automatic(),

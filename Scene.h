@@ -1,7 +1,9 @@
 #pragma once
 
 #include "DayNight.h"
+#include "LightManager.h"
 #include "Mesh.h"
+#include "RoadRenderer.h"
 #include "Shader.h"
 #include "Simulation.h"
 #include "Texture.h"
@@ -15,7 +17,7 @@
 class Scene
 {
 public:
-    Scene();
+    explicit Scene(const TrafficSystem& traffic);
 
     void render(
         const glm::mat4& view,
@@ -23,7 +25,6 @@ public:
         const glm::vec3& cameraPosition,
         const TrafficSystem& traffic,
         const std::vector<VehiclePose>& vehicles,
-        float islandHeight,
         const DayNight& dayNight,
         int shadingMode,
         bool driverView,
@@ -93,15 +94,24 @@ private:
     float waveAmplitude_ = 0.0f;
     float elapsedSeconds_ = 0.0f;
 
+    // The road network, and every street lamp baked into three meshes.
+    RoadRenderer roads_;
+    LightManager lights_;
+    Mesh lampPosts_;
+    Mesh lampHeads_;
+    Mesh lampBulbs_;
+
+    void buildStreetLamps(const RoadNetwork& network);
     void drawRoads();
-    void drawRoadMarkings(float islandHeight);
+    void drawStreetLamps(bool illuminated);
     void drawBuildings();
-    void drawStreetLamp(const glm::vec3& position, bool illuminated);
+    void drawSignals(const TrafficSystem& traffic);
+    void drawGiveWaySigns(const RoadNetwork& network);
     void drawTrafficSignal(
         const glm::vec3& position, float yawDegrees, SignalState state, bool leftArrow, bool signalsLive);
-    void drawIsland(float islandHeight);
-    void drawFountain(float islandHeight);
-    void drawWaterJets(const glm::vec3& origin, float islandHeight);
+    void drawIsland(const glm::vec2& centre);
+    void drawFountain(const glm::vec2& centre);
+    void drawWaterJets(const glm::vec3& origin);
     void drawTrees();
     void drawStreetFurniture();
     void drawFloodlightMast(bool illuminated);
