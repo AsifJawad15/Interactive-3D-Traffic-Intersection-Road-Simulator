@@ -49,6 +49,7 @@ void Overlay::render(
     bool automaticDayNight,
     bool lampsOn,
     std::size_t vehicleCount,
+    std::size_t overlappingPairs,
     bool showHelp)
 {
     glDisable(GL_DEPTH_TEST);
@@ -64,8 +65,8 @@ void Overlay::render(
     std::array<char, 96> statusText {};
     std::snprintf(
         statusText.data(), statusText.size(),
-        "STATUS: %-7s   CARS: %zu   FPS: %.0f",
-        paused ? "PAUSED" : "RUNNING", vehicleCount, fps);
+        "STATUS: %-7s   CARS: %zu   OVERLAPS: %zu   FPS: %.0f",
+        paused ? "PAUSED" : "RUNNING", vehicleCount, overlappingPairs, fps);
 
     const float left = 26.0f;
     float line = 27.0f;

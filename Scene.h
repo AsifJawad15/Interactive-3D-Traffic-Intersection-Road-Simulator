@@ -96,7 +96,7 @@ private:
     void drawBuildings();
     void drawStreetLamp(const glm::vec3& position, bool illuminated);
     void drawTrafficSignal(
-        const glm::vec3& position, float yawDegrees, SignalState state, bool signalsLive);
+        const glm::vec3& position, float yawDegrees, SignalState state, bool leftArrow, bool signalsLive);
     void drawIsland(float islandHeight);
     void drawFountain(float islandHeight);
     void drawWaterJets(const glm::vec3& origin, float islandHeight);

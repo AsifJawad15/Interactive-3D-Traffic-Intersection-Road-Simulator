@@ -166,6 +166,8 @@
     <ClCompile Include="PostProcess.cpp" />
     <ClCompile Include="Framebuffer.cpp" />
     <ClCompile Include="Screenshot.cpp" />
+    <ClCompile Include="Collision.cpp" />
+    <ClCompile Include="TrafficBuild.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Camera.h" />
@@ -181,6 +183,7 @@
     <ClInclude Include="PostProcess.h" />
     <ClInclude Include="Framebuffer.h" />
     <ClInclude Include="Screenshot.h" />
+    <ClInclude Include="Collision.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="assets\asphalt-photoreal.png" />

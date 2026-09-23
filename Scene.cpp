@@ -9,6 +9,7 @@
 #include <array>
 #include <cmath>
 #include <numbers>
+#include <tuple>
 #include <vector>
 
 namespace
@@ -190,15 +191,21 @@ void Scene::render(
     // The signal heads go dark when the roundabout takes over: give-way rules
     // replace them, so leaving the lenses lit would be misleading.
     const bool signalsActive = islandHeight < 0.5f;
-    drawTrafficSignal({-7.0f, 0.0f, -8.2f}, 0.0f, traffic.signalFor(Lane::Northbound), signalsActive);
-    drawTrafficSignal({7.0f, 0.0f, 8.2f}, 180.0f, traffic.signalFor(Lane::Southbound), signalsActive);
-    drawTrafficSignal({-8.2f, 0.0f, 7.0f}, 90.0f, traffic.signalFor(Lane::Eastbound), signalsActive);
-    drawTrafficSignal({8.2f, 0.0f, -7.0f}, -90.0f, traffic.signalFor(Lane::Westbound), signalsActive);
+    for (const auto& [lane, position, yaw] : std::array<std::tuple<Lane, glm::vec3, float>, 4>{{
+             {Lane::Northbound, {-7.0f, 0.0f, -8.2f}, 0.0f},
+             {Lane::Southbound, {7.0f, 0.0f, 8.2f}, 180.0f},
+             {Lane::Eastbound, {-8.2f, 0.0f, 7.0f}, 90.0f},
+             {Lane::Westbound, {8.2f, 0.0f, -7.0f}, -90.0f}}})
+    {
+        drawTrafficSignal(position, yaw, traffic.signalFor(lane),
+                          traffic.leftArrowFor(lane) == SignalState::Green, signalsActive);
+    }
 
+    // Vehicles that have left the scene and wait to re-enter are not drawn.
     const auto& vehicles = traffic.vehicles();
     for (std::size_t index = 0; index < vehicles.size(); ++index)
     {
-        if (!driverView || index != selectedVehicleIndex)
+        if (vehicles[index].active && (!driverView || index != selectedVehicleIndex))
             drawVehicle(vehicles[index]);
     }
 
@@ -608,7 +615,7 @@ void Scene::drawStreetLamp(const glm::vec3& position, bool illuminated)
 }
 
 void Scene::drawTrafficSignal(
-    const glm::vec3& position, float yawDegrees, SignalState state, bool signalsLive)
+    const glm::vec3& position, float yawDegrees, SignalState state, bool leftArrow, bool signalsLive)
 {
     glm::mat4 parent(1.0f);
     parent = glm::translate(parent, position);
@@ -643,6 +650,28 @@ void Scene::drawTrafficSignal(
         lens = glm::rotate(lens, glm::radians(90.0f), {1.0f, 0.0f, 0.0f});
         lens = glm::scale(lens, {0.38f, 0.15f, 0.38f});
         drawCylinder(lens, color, 54.0f, emissive);
+    }
+
+    // A small box on the kerb side carries the left-turn arrow: a green bar
+    // and head, lit only during the protected left-turn phase.
+    glm::mat4 arrowHousing = glm::translate(parent, {0.56f, 3.84f, 0.0f});
+    arrowHousing = glm::scale(arrowHousing, {0.46f, 0.46f, 0.50f});
+    drawBeveledCube(arrowHousing, {0.025f, 0.03f, 0.035f}, white_, {1, 1}, 24.0f);
+
+    const bool arrowLit = signalsLive && leftArrow;
+    const glm::vec3 arrowColor = arrowLit ? glm::vec3{0.02f, 0.86f, 0.10f} : glm::vec3{0.008f, 0.12f, 0.02f};
+    const glm::vec3 arrowGlow = arrowLit ? arrowColor * 0.62f : glm::vec3{0.0f};
+
+    // The arrow points to the driver's left, which is +x in the head's frame.
+    glm::mat4 shaft = glm::translate(parent, {0.54f, 3.84f, -0.26f});
+    shaft = glm::scale(shaft, {0.24f, 0.06f, 0.03f});
+    drawBeveledCube(shaft, arrowColor, white_, {1, 1}, 54.0f, arrowGlow);
+    for (float slope : {1.0f, -1.0f})
+    {
+        glm::mat4 head = glm::translate(parent, {0.63f, 3.84f + slope * 0.045f, -0.26f});
+        head = glm::rotate(head, glm::radians(-slope * 40.0f), {0.0f, 0.0f, 1.0f});
+        head = glm::scale(head, {0.13f, 0.05f, 0.03f});
+        drawBeveledCube(head, arrowColor, white_, {1, 1}, 54.0f, arrowGlow);
     }
 }
 

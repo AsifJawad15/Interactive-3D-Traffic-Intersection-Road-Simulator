@@ -26,9 +26,12 @@ struct RouteSample
     float headingDegrees = 0.0f;
 
     // 0 on a straight, +1 while turning right, -1 while turning left.
-    // The simulation reads it to steer the front wheels and to pick a
-    // cornering speed.
+    // The simulation reads it to steer the front wheels.
     float turnSign = 0.0f;
+
+    // 1 / radius on an arc, 0 on a straight. Cornering speed is read from it:
+    // v = sqrt(lateral acceleration * radius).
+    float curvature = 0.0f;
 };
 
 class Route
@@ -57,6 +60,13 @@ public:
     // for the northbound approach and rotated by 90, 180 and 270 degrees to
     // produce the other three. Rotating by +90 maps northbound to eastbound.
     Route rotated(float degrees) const;
+
+    // The same route moved in the ground plane, for placing a junction's
+    // routes at its own position in a larger network.
+    Route translated(glm::vec2 offset) const;
+
+    // The same path driven the other way: the end becomes the start.
+    Route reversed() const;
 
 private:
     struct Segment

@@ -30,6 +30,7 @@ public:
         bool automaticDayNight,
         bool lampsOn,
         std::size_t vehicleCount,
+        std::size_t overlappingPairs,
         bool showHelp);
 
 private:

@@ -117,6 +117,7 @@ RouteSample Route::sample(float distance) const
         // The tangent to the circle, taken in the direction of travel.
         heading = sign * glm::vec2(-std::sin(theta), std::cos(theta));
         result.turnSign = sign;
+        result.curvature = 1.0f / found->radius;
     }
 
     result.position = glm::vec3(position.x, rideHeight, position.y);
@@ -151,6 +152,46 @@ Route Route::rotated(float degrees) const
             rotatedSegment.startAngle = segment.startAngle - phi;
         }
         result.segments_.push_back(rotatedSegment);
+    }
+
+    return result;
+}
+
+Route Route::translated(glm::vec2 offset) const
+{
+    Route result = *this;
+    for (Segment& segment : result.segments_)
+    {
+        if (segment.isArc)
+            segment.centre += offset;
+        else
+            segment.start += offset;
+    }
+    return result;
+}
+
+Route Route::reversed() const
+{
+    Route result;
+    result.totalLength_ = totalLength_;
+    result.segments_.reserve(segments_.size());
+
+    for (auto segment = segments_.rbegin(); segment != segments_.rend(); ++segment)
+    {
+        Segment flipped = *segment;
+        if (!segment->isArc)
+        {
+            // Start from the old end point and run back along the line.
+            flipped.start = segment->start + segment->direction * segment->length;
+            flipped.direction = -segment->direction;
+        }
+        else
+        {
+            // Start at the old end angle and sweep back the other way.
+            flipped.startAngle = segment->startAngle + segment->sweepAngle;
+            flipped.sweepAngle = -segment->sweepAngle;
+        }
+        result.segments_.push_back(flipped);
     }
 
     return result;

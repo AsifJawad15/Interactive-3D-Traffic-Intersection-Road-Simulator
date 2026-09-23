@@ -1,6 +1,6 @@
 # Enhancement Plan: OpenGLMiniProject → Open-World Smart City Traffic Simulator
 
-> Status: **Phase 0 complete. Phase 1 (collision fix) is next and waits for your go-ahead.** Written 2026-09-23.
+> Status: **Phases 0 and 1 complete. Phase 2 (smooth motion and 1080p) is next and waits for your go-ahead.** Written 2026-09-23.
 > **Scope revised 2026-09-23:**
 > - A smaller 3×3 city.
 > - Clouds and light rain only, with no storm and no fog weather.
@@ -20,9 +20,69 @@
 | Phase | Status | Date | Branch |
 |---|---|---|---|
 | 0. Rendering foundations | ✅ Done and verified | 2026-09-23 | `enhancement/phase-0-rendering` |
-| 1. Traffic core and collision fix | ⏸ Next, waiting for go-ahead | | |
-| 2. Smooth motion and 1080p | Not started | | |
+| 1. Traffic core and collision fix | ✅ Done and verified | 2026-09-23 | `enhancement/phase-1-traffic` |
+| 2. Smooth motion and 1080p | ⏸ Next, waiting for go-ahead | | |
 | 3 to 11 | Not started | | |
+
+### ✅ Checkpoint 1: traffic core and collision fix (2026-09-23)
+
+**What changed**
+- **Conflict zones, measured rather than guessed:**
+  - At start-up, every pair of routes from different approaches is sampled every 25 cm near the middle. A car-sized box, plus a 30 cm margin, is placed at each sample.
+  - Each connected patch of overlapping positions becomes one zone, stored as a car-centre interval on each route.
+  - The result is 30 zones for the signal routes and 60 for the roundabout routes.
+  - This replaces the plan's fixed 2.8 m distance test, which was too small for the tight 3 m right turn, where a car body swings well off its path.
+- **Shared spans:** routes that run along the same line (a shared approach lane, a shared exit lane, a shared stretch of ring) are found the same way. Cars on them follow each other.
+- **Commit and claim:**
+  - A car enters only after claiming every zone on its way at once.
+  - It releases each zone as its centre leaves it.
+  - Committed cars never wait on a claim; they only follow the car in front. So there is no deadlock and no collision.
+  - A car commits only when it is first in its lane, has room at the exit, and has no priority traffic within 3.5 s.
+- **Stop lines** move back automatically so each lies before its route's first zone. This fixes the roundabout entry, where the old give-way position left the car's nose inside the ring lane.
+- **Car following:**
+  - The IDM, with gaps measured along the route and across shared spans.
+  - Braking ahead of corners from `v² = v_c² + 2ad`.
+  - The sigmoid easing kept as a jerk limiter.
+  - A 0.6 m hard clamp as a safety net.
+- **Signals:**
+  - A protected left-turn arrow, shown only when a left-turner is at the front of a lane. It lasts up to 12 s so the two opposing lefts, whose arcs cross, can go one after the other.
+  - Green, yellow and a 2.5 s all-red.
+  - Actuated green: 6 s minimum, 16 s maximum, and it rests on green when nobody waits across.
+- **Realistic edge rules:**
+  - A car committed on green that has not reached its line when the light changes stops if it comfortably can, giving its claims back.
+  - A left-turner waiting at the front clears on yellow.
+  - At equal priority, the car that waited longer goes first.
+- **Safe re-entry:** a car leaving the scene waits hidden until its approach has a 16 m gap.
+- **Routes:** `Route` gains `curvature`, `translated()` and `reversed()`. Front-wheel steer is now `atan(wheelbase / r)`.
+- **Scene:** each signal head has a small left-arrow lens. The HUD shows `OVERLAPS`, and the app runs 8 cars by default (`--cars N`).
+- **New tools:**
+  - `--soak <minutes> <seed> [--cars N] [--mode ...]` is a headless endurance test.
+  - `--trace [T]` prints why each waiting car is waiting.
+  - `--plot` now marks the conflict zones.
+
+**New files:** `Collision.h/.cpp` (oriented boxes, separating-axis test) and `TrafficBuild.cpp` (routes, shared spans, conflict zones, `--self-test`, `--plot`).
+**Edited files:** `Simulation.h/.cpp` (rewritten), `Route.h/.cpp`, `Scene.h/.cpp`, `Overlay.h/.cpp`, `main.cpp`, `README.md` and both project files.
+
+**Verification results**
+- **Build:** Release x64 is clean, with no errors and no warnings.
+- **Self-test:** `--self-test` passes all 642 route, conflict-table and signal-safety checks.
+- **Soak, 30 simulated minutes, 12 cars, seeds 1 to 5, both modes:** all 10 runs pass.
+
+  | Mode | Body overlaps | Closest body gap | Longest stop | Trips per 30 min |
+  |---|---|---|---|---|
+  | Signals | **0** | 1.94 m | 40.9 to 49.0 s | 455 to 486, even across N/E/S/W |
+  | Roundabout | **0** | 1.02 m | 45.8 to 51.9 s | 369 to 397, even across N/E/S/W |
+
+- **Other car counts:**
+  - 8 cars (the app default), seeds 1 to 3: all pass.
+  - 16 cars (stress), seeds 1 to 3: signals all pass. The roundabout has 0 overlaps in every run, but one seed reached a 63 s stop. At 16 cars the single-lane roundabout is at capacity (trips level off at about 390).
+- **Before and after:** the unchanged code gridlocked within 63 s (signals) and 355 s (roundabout).
+- **In the app:** captures at noon in both modes show cars queuing behind the crosswalks, entries holding at the roundabout, `OVERLAPS: 0` on the HUD, and 144 FPS.
+
+**Known limitations, handled later**
+- **Conservative roundabout:** a circulating car claims every entry on its way when it commits. Entering cars sometimes wait while a circulating car is still some way off. This is the price of the deadlock-free guarantee. Phase 3's wide roundabouts, with their bigger ring, can take a finer claim rule.
+- **Opposing left turns:** on this narrow junction the two left arcs cross each other, so they cannot turn together. The 4-lane junctions in Phase 3 have separate turn lanes.
+- **Fixed-step motion:** the motion is still drawn at the 60 Hz simulation step, so there is some stepping on a 144 Hz screen. Phase 2 adds render interpolation.
 
 ### ✅ Checkpoint 0: rendering foundations (2026-09-23)
 
@@ -195,14 +255,20 @@ The renderer stays **forward**, which keeps the Flat/Gouraud/Phong demo working.
 
 ## 4. Traffic and collision design (the core fix)
 
-### 4.1 Lane graph
-- `RoadNetwork` builds the network as **lanes**, each a `Route`: edge lanes and junction-internal connector lanes.
-- **Successors:** every lane lists the lanes a car may take next.
-- **Roundabouts:** the ring is split into ring-lane segments between merge and diverge points. Cars on the ring follow each other instead of being treated as one big conflict.
-- **New `Route` helpers:** `translated()` and `reversed()`, plus curvature per sample.
+### 4.1 Routes and shared spans (built in Phase 1)
+- **Movements:** each junction movement is one `Route`, running from edge to edge through the junction. The single junction has 24 of them.
+- **Shared spans:** where two routes run along the same line, the stretch is found once and stored with its distance offset. This covers a shared approach lane, a shared exit lane, and a shared stretch of the roundabout ring.
+- **Following:** cars follow each other across shared spans. A few metres of "tail" after a split keep the two cars aware of each other while they are still close.
+- **Phase 3 network:** consecutive junction movements chain end to start, so following simply continues into the next junction.
+- **`Route` helpers:** `translated()` and `reversed()`, plus curvature per sample.
 
-### 4.2 Conflict points (precomputed once)
-- **Detection:** for each pair of lanes in a junction that do not share a start point, sample both every 0.25 m. Any place where the lanes come within 2.8 m of each other is a **conflict zone**, with an [in, out] distance on each lane. Merges extend the zone to the end of the connector.
+### 4.2 Conflict zones (precomputed once)
+- **Detection (as built):**
+  - For each pair of routes from different approaches, sample both every 0.25 m within 20 m of the junction.
+  - Place a car-sized oriented box, plus a 0.3 m margin, at each sample, and mark every pair of positions where the boxes overlap. Pairs that are just following each other on a shared span are skipped.
+  - Each connected patch of marks is one **conflict zone**, with an [in, out] interval of car-centre distance on each route.
+  - While a car's centre is outside its interval, nothing on the other route can touch it.
+- **Why not a distance threshold:** the original 2.8 m test was dropped. It under-covers tight turns, where the body swings well off its path.
 - **Priority rule for each conflict:**
   - straight beats left;
   - pedestrians beat turning cars;
@@ -406,12 +472,12 @@ Each new `.cpp`, `.h` and shader file is registered in `OpenGLMiniProject.vcxpro
 - **Files:** see Checkpoint 0.
 - **Check (passed):** roads read as grey asphalt by day. Night is dark but not crushed. Flat, Gouraud and Phong all still work.
 
-### Phase 1: Traffic core rewrite and collision fix (on the existing single junction)
+### Phase 1: Traffic core rewrite and collision fix (on the existing single junction) ✅ DONE (see Checkpoint 1)
 - The lane graph with connectors, conflict-point precompute, commit-and-claim, IDM following along paths, and all-red plus protected-left signal phases.
 - Roundabout merges handled through conflicts. Safe spawning with a gap check.
 - The OBB overlap counter, and a new **`--soak <minutes> <seed>`** headless test.
-- **Files:** new `Collision.*`, `LaneGraph` code inside `Simulation.*` (or a new `Traffic.*`). Edits to `Route.*` (translated, reversed, curvature), `main.cpp` (soak flag), and the `--plot` output.
-- **Check:** a 30-minute soak over 5 seeds on both modes with 12 cars gives **0 overlaps, no car stopped longer than 60 s, and every approach keeps flowing**. The collision in the middle is gone when viewed in the app.
+- **Files:** new `Collision.*` and `TrafficBuild.cpp`. `Simulation.*` rewritten. Edits to `Route.*` (translated, reversed, curvature), `main.cpp` (soak flag), and the `--plot` output.
+- **Check (passed):** a 30-minute soak over 5 seeds on both modes with 12 cars gives **0 overlaps, no car stopped longer than 60 s, and every approach keeps flowing**. The collision in the middle is gone when viewed in the app.
 
 ### Phase 2: Smooth motion and 1080p
 - **Motion:** render interpolation for vehicles (previous and current pose, α blend), and the critically damped camera spring.

@@ -12,6 +12,8 @@
 #include "Simulation.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
@@ -187,6 +189,69 @@ namespace
             return "GOURAUD";
         return "PHONG";
     }
+
+    // Headless endurance test: runs the traffic for simulated minutes at the
+    // real 60 Hz step and checks that no two vehicle bodies ever overlapped,
+    // that nobody was stuck, and that every approach kept moving.
+    //     OpenGLMiniProject.exe --soak 30 7 [--cars 12] [--mode signals|roundabout|both]
+    int runSoak(float minutes, unsigned int seed, std::size_t cars, const std::string& modes, float traceFrom)
+    {
+        constexpr float step = 1.0f / 60.0f;
+        constexpr float longestAllowedStop = 60.0f;
+        const long long steps = static_cast<long long>(minutes * 60.0f / step);
+        bool allPassed = true;
+
+        for (const IntersectionMode mode : {IntersectionMode::Signals, IntersectionMode::Roundabout})
+        {
+            const bool signals = mode == IntersectionMode::Signals;
+            if ((signals && modes == "roundabout") || (!signals && modes == "signals"))
+                continue;
+
+            const auto started = std::chrono::steady_clock::now();
+            TrafficSystem traffic(cars, seed);
+            traffic.setMode(mode);
+            traffic.resetStats();
+            // --trace [T] prints the whole junction every 2 s, twenty times,
+            // starting at simulated second T, or by default from the moment
+            // some vehicle has been standing still for too long.
+            int traceDumps = traceFrom >= -1.0f ? 20 : 0;
+            long long nextTraceStep = traceFrom >= 0.0f ? static_cast<long long>(traceFrom / step) : 0;
+            for (long long index = 0; index < steps; ++index)
+            {
+                traffic.update(step);
+                const bool triggered = traceFrom >= 0.0f || traffic.stats().longestStop > longestAllowedStop;
+                if (traceDumps > 0 && index >= nextTraceStep && triggered)
+                {
+                    std::printf("t = %.1f s  %s", index * step, traffic.describe().c_str());
+                    nextTraceStep = index + 120;
+                    --traceDumps;
+                }
+            }
+            const double wallSeconds = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - started).count();
+
+            const TrafficStats& stats = traffic.stats();
+            const auto [fewest, most] = std::minmax_element(
+                stats.tripsPerApproach.begin(), stats.tripsPerApproach.end());
+            const bool passed = stats.overlapSteps == 0 &&
+                                stats.longestStop <= longestAllowedStop &&
+                                *fewest > 0;
+            allPassed = allPassed && passed;
+
+            std::printf(
+                "%-10s seed %-5u cars %2zu  %5.1f min | overlaps %zu | closest gap %.2f m | "
+                "longest stop %5.1f s | trips %4zu (N %zu E %zu S %zu W %zu) | %.1f s wall | %s\n",
+                signals ? "SIGNALS" : "ROUNDABOUT", seed, cars, stats.simulatedSeconds / 60.0,
+                stats.overlapSteps, stats.closestBodyGap, stats.longestStop, stats.trips,
+                stats.tripsPerApproach[0], stats.tripsPerApproach[2],
+                stats.tripsPerApproach[1], stats.tripsPerApproach[3],
+                wallSeconds, passed ? "PASS" : "FAIL");
+            if (!passed)
+                std::printf("%s", traffic.describe().c_str());
+            (void)most;
+        }
+        return allPassed ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
 }
 
 int main(int argc, char** argv)
@@ -203,6 +268,37 @@ int main(int argc, char** argv)
         const bool passed = traffic.selfTest(report);
         std::cout << report;
         return passed ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+
+    std::size_t vehicleCount = 8;
+    for (int index = 1; index + 1 < argc; ++index)
+    {
+        if (std::strcmp(argv[index], "--cars") == 0)
+            vehicleCount = static_cast<std::size_t>(std::clamp(std::atoi(argv[index + 1]), 1, 40));
+    }
+
+    for (int index = 1; index < argc; ++index)
+    {
+        if (std::strcmp(argv[index], "--soak") != 0)
+            continue;
+
+        const float minutes = index + 1 < argc ? static_cast<float>(std::atof(argv[index + 1])) : 30.0f;
+        const unsigned int seed = index + 2 < argc ? static_cast<unsigned int>(std::strtoul(argv[index + 2], nullptr, 10)) : 1u;
+        // traceFrom: below -1 = no trace, -1 = on a long stop, else a start time.
+        std::string modes = "both";
+        float traceFrom = -2.0f;
+        for (int other = 1; other < argc; ++other)
+        {
+            if (std::strcmp(argv[other], "--mode") == 0 && other + 1 < argc)
+                modes = argv[other + 1];
+            if (std::strcmp(argv[other], "--trace") == 0)
+            {
+                traceFrom = -1.0f;
+                if (other + 1 < argc && argv[other + 1][0] != '-')
+                    traceFrom = static_cast<float>(std::atof(argv[other + 1]));
+            }
+        }
+        return runSoak(std::max(minutes, 0.1f), seed, vehicleCount, modes, traceFrom);
     }
 
     for (int index = 1; index < argc; ++index)
@@ -290,7 +386,7 @@ int main(int argc, char** argv)
     try
     {
         Camera camera;
-        TrafficSystem traffic;
+        TrafficSystem traffic(vehicleCount);
         DayNight dayNight;
         ApplicationState state;
         state.camera = &camera;
@@ -403,6 +499,7 @@ int main(int argc, char** argv)
                 dayNight.automatic(),
                 dayNight.streetLampsOn(),
                 traffic.vehicles().size(),
+                traffic.stats().overlapPairsNow,
                 state.showHelp);
 
             if (capture.enabled && ++capturedFrames >= capture.frames)

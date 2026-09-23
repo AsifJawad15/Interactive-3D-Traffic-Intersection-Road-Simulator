@@ -1,3 +1,7 @@
+// The running traffic: signals, the commit-and-claim junction rule, car
+// following, spawning and the collision measurements. The one-off geometry
+// (routes, shared lanes, conflict zones) and the self-test are in TrafficBuild.cpp.
+
 #include "Simulation.h"
 
 #include <glm/common.hpp>
@@ -7,17 +11,48 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <limits>
-#include <vector>
+#include <numeric>
 
 namespace
 {
-    constexpr float minimumCenterGap = 5.4f;
     constexpr float wheelRadius = 0.34f;
+    constexpr float wheelBase = 2.5f;
 
-    // Normalised logistic easing, scaled so progress 0 maps exactly to 0 and
-    // progress 1 maps exactly to 1. Speed changes therefore start and finish
-    // smoothly, with no discontinuity in acceleration.
+    // Intelligent Driver Model (Treiber, Hennecke & Helbing, 2000).
+    constexpr float maximumAcceleration = 1.6f;   // a
+    constexpr float comfortableBraking = 2.2f;    // b
+    constexpr float standstillGap = 2.0f;         // s0, bumper to bumper
+    constexpr float timeHeadway = 1.1f;           // T, seconds
+    constexpr float emergencyBraking = 8.0f;
+
+    // The safety net under the model: a car never gets closer than this to the
+    // car in front, whatever the acceleration says.
+    constexpr float hardMinimumGap = 0.6f;
+
+    // A car only takes its turn if priority traffic is further away than this.
+    constexpr float acceptedGapSeconds = 3.5f;
+
+    constexpr float leaderLookAhead = 80.0f;
+    constexpr float spawnClearance = 16.0f;
+
+    // Signal timing. Green and the left arrow are actuated: they end early
+    // once their own queue is empty and someone waits on the other road, and
+    // they never run past their maximum while anyone is waiting across.
+    constexpr float minimumLeftArrowSeconds = 3.0f;
+    // Long enough for the two opposing left turns to go one after the other:
+    // their arcs cross in the middle, so they cannot go together.
+    constexpr float maximumLeftArrowSeconds = 12.0f;
+    constexpr float minimumGreenSeconds = 6.0f;
+    constexpr float maximumGreenSeconds = 16.0f;
+    constexpr float yellowSeconds = 2.5f;
+    constexpr float allRedSeconds = 2.5f;
+    constexpr float demandRange = 30.0f;   // metres before the line
+
+    // Normalised logistic curve, scaled so 0 maps exactly to 0 and 1 exactly to
+    // 1. It shapes how fast the acceleration may change (the jerk), so small
+    // corrections are gentle and large ones are quick but never a step.
     float sigmoidProgress(float value)
     {
         value = glm::clamp(value, 0.0f, 1.0f);
@@ -36,220 +71,157 @@ namespace
         return lane == Lane::Northbound || lane == Lane::Southbound;
     }
 
-    // The project-wide heading convention: forward = (sin yaw, 0, cos yaw).
-    glm::vec3 forwardVector(float yawDegrees)
+    std::size_t laneIndex(Lane lane)
     {
-        const float yaw = glm::radians(yawDegrees);
-        return {std::sin(yaw), 0.0f, std::cos(yaw)};
+        return static_cast<std::size_t>(lane);
     }
 
-    // Rotating a route by +90 degrees maps the northbound approach onto the
-    // eastbound one, so this is the lane that rotation index r produces.
-    Lane laneForRotation(int rotationIndex)
+    // Soonest a car could cover `distance` if it accelerated flat out.
+    float earliestArrival(float distance, float speed, float topSpeed)
     {
-        switch (rotationIndex)
-        {
-        case 0: return Lane::Northbound;
-        case 1: return Lane::Eastbound;
-        case 2: return Lane::Southbound;
-        default: return Lane::Westbound;
-        }
+        if (distance <= 0.0f)
+            return 0.0f;
+        speed = std::min(speed, topSpeed);
+        const float timeToTop = (topSpeed - speed) / maximumAcceleration;
+        const float distanceToTop = speed * timeToTop + 0.5f * maximumAcceleration * timeToTop * timeToTop;
+        if (distance <= distanceToTop)
+            return (-speed + std::sqrt(speed * speed + 2.0f * maximumAcceleration * distance)) / maximumAcceleration;
+        return timeToTop + (distance - distanceToTop) / topSpeed;
     }
 
-    float signedAngleDifference(float a, float b)
+    // IDM acceleration towards a car (or a stop line) `gap` metres ahead.
+    float followingAcceleration(float speed, float desiredSpeed, float gap, float closingSpeed)
     {
-        float difference = a - b;
-        while (difference > 180.0f) difference -= 360.0f;
-        while (difference < -180.0f) difference += 360.0f;
-        return difference;
+        const float desiredGap = standstillGap + std::max(0.0f,
+            speed * timeHeadway + speed * closingSpeed / (2.0f * std::sqrt(maximumAcceleration * comfortableBraking)));
+        const float freeTerm = std::pow(speed / desiredSpeed, 4.0f);
+        const float gapTerm = desiredGap / std::max(gap, 0.1f);
+        return maximumAcceleration * (1.0f - freeTerm - gapTerm * gapTerm);
     }
 
-    float planarRadius(const glm::vec3& point)
+    bool isLeftArrow(TrafficPhase phase)
     {
-        return std::sqrt(point.x * point.x + point.z * point.z);
+        return phase == TrafficPhase::NorthSouthLeftArrow || phase == TrafficPhase::EastWestLeftArrow;
     }
+
+    bool isGreen(TrafficPhase phase)
+    {
+        return phase == TrafficPhase::NorthSouthGreen || phase == TrafficPhase::EastWestGreen;
+    }
+
+    bool phaseServesNorthSouth(TrafficPhase phase)
+    {
+        return static_cast<int>(phase) < static_cast<int>(TrafficPhase::AllRedBeforeEastWest);
+    }
+
+    const std::array<glm::vec3, 12> palette = {
+        glm::vec3{0.82f, 0.06f, 0.035f}, glm::vec3{0.07f, 0.30f, 0.88f},
+        glm::vec3{0.95f, 0.58f, 0.04f}, glm::vec3{0.13f, 0.62f, 0.34f},
+        glm::vec3{0.52f, 0.10f, 0.74f}, glm::vec3{0.86f, 0.86f, 0.89f},
+        glm::vec3{0.05f, 0.62f, 0.70f}, glm::vec3{0.16f, 0.17f, 0.19f},
+        glm::vec3{0.90f, 0.78f, 0.22f}, glm::vec3{0.55f, 0.08f, 0.14f},
+        glm::vec3{0.40f, 0.45f, 0.50f}, glm::vec3{0.95f, 0.40f, 0.55f}
+    };
 }
 
-TrafficSystem::TrafficSystem()
+TrafficSystem::TrafficSystem(std::size_t vehicleCount, unsigned int seed)
+    : vehicleCount_(vehicleCount), seed_(seed)
 {
     buildRoutes();
+    buildSharedSpans();
+    buildConflicts();
+    finishRoutes();
     reset();
 }
 
 // ---------------------------------------------------------------------------
-// Route construction
-// ---------------------------------------------------------------------------
-
-void TrafficSystem::buildRoutes()
-{
-    routes_.clear();
-
-    const float lane = laneOffset;
-    const float edge = roadHalfWidth;
-    const float rim = spawnRadius;
-
-    // ------------------------- Signalised routes -------------------------
-    const float signalStop = rim - stopLineRadius;
-
-    // Straight through.
-    {
-        Route route;
-        route.addLine({-lane, -rim}, {-lane, rim});
-        addRouteFamily(route, false, signalStop, 0.0f);
-    }
-
-    // Right turn. The radius is fixed by tangency rather than chosen by eye:
-    // the arc has to touch the incoming lane centre and the outgoing lane
-    // centre exactly at the road edge, which forces edge = lane + radius.
-    {
-        const float radius = edge - lane;
-        Route route;
-        route.addLine({-lane, -rim}, {-lane, -edge});
-        route.addArc({-lane - radius, -edge}, radius, 0.0f, 90.0f);
-        route.addLine({-edge, -lane}, {-rim, -lane});
-        addRouteFamily(route, false, signalStop, 0.0f);
-    }
-
-    // Left turn: the wide arc that crosses the middle of the intersection.
-    // The same tangency argument gives radius = edge + lane.
-    {
-        const float radius = edge + lane;
-        Route route;
-        route.addLine({-lane, -rim}, {-lane, -edge});
-        route.addArc({edge, -edge}, radius, 180.0f, -90.0f);
-        route.addLine({edge, lane}, {rim, lane});
-        addRouteFamily(route, false, signalStop, 0.0f);
-    }
-
-    // ------------------------- Roundabout routes -------------------------
-    // The entry arc curves right while the circulating ring curves left, so the
-    // two circles are EXTERNALLY tangent: the gap between their centres is
-    // ringRadius + entryRadius. The entry centre must lie one entry radius to
-    // the driver's right of the approach lane, which fixes its x; tangency then
-    // solves for its z. No magic numbers are needed.
-    const float centreX = -(lane + entryRadius);
-    const float centreSpan = ringRadius + entryRadius;
-    const float centreZ = -std::sqrt(centreSpan * centreSpan - centreX * centreX);
-    const glm::vec2 entryCentre {centreX, centreZ};
-
-    // The tangent point lies on the line joining the two centres.
-    const glm::vec2 mergePoint = entryCentre * (ringRadius / centreSpan);
-
-    const float mergeAngle = glm::degrees(std::atan2(mergePoint.y, mergePoint.x));
-    const float entrySweep = glm::degrees(
-        std::atan2(mergePoint.y - centreZ, mergePoint.x - centreX));
-
-    // The exit is the entry mirrored in z, so it leaves the ring heading +z.
-    // Every other exit is this one rotated by a multiple of 90 degrees.
-    Route exitTail;
-    exitTail.addArc({centreX, -centreZ}, entryRadius, -entrySweep, entrySweep);
-    exitTail.addLine({-lane, -centreZ}, {-lane, rim});
-
-    const float giveWay = rim + centreZ;   // length of the approach straight
-    const float mergeDistance = giveWay + entryRadius * glm::radians(entrySweep);
-
-    for (int exit = 1; exit <= 3; ++exit)
-    {
-        const float exitRotation = (exit == 1) ? 270.0f : (exit == 2 ? 0.0f : 90.0f);
-
-        // Circulation runs in the direction of DECREASING angle, which is what
-        // keeps the island on the driver's left in right-hand traffic.
-        float ringSweep = (-mergeAngle - exitRotation) - mergeAngle;
-        while (ringSweep > 0.0f)
-            ringSweep -= 360.0f;
-
-        Route route;
-        route.addLine({-lane, -rim}, {-lane, centreZ});
-        route.addArc(entryCentre, entryRadius, 0.0f, entrySweep);
-        route.addArc({0.0f, 0.0f}, ringRadius, mergeAngle, ringSweep);
-        route.append(exitTail.rotated(exitRotation));
-
-        addRouteFamily(route, true, giveWay, mergeDistance);
-    }
-}
-
-void TrafficSystem::addRouteFamily(
-    const Route& base, bool roundabout, float giveWayDistance, float mergeDistance)
-{
-    for (int rotation = 0; rotation < 4; ++rotation)
-    {
-        RouteInfo info;
-        info.route = rotation == 0 ? base : base.rotated(90.0f * static_cast<float>(rotation));
-        info.lane = laneForRotation(rotation);
-        info.roundabout = roundabout;
-        info.giveWayDistance = giveWayDistance;
-        info.mergeDistance = mergeDistance;
-        routes_.push_back(std::move(info));
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Vehicle placement
+// Placement and spawning
 // ---------------------------------------------------------------------------
 
 void TrafficSystem::reset()
 {
-    phase_ = TrafficPhase::NorthSouthGreen;
+    phase_ = TrafficPhase::NorthSouthLeftArrow;
     phaseElapsed_ = 0.0f;
     mode_ = IntersectionMode::Signals;
     islandHeight_ = 0.0f;
-    randomState_ = 12345u;
+    randomState_ = seed_;
     vehicles_.clear();
 
-    // Six vehicles, matching the "three to six vehicles" of the proposal.
-    const std::array<glm::vec3, 6> colors = {
-        glm::vec3{0.82f, 0.06f, 0.035f}, glm::vec3{0.07f, 0.30f, 0.88f},
-        glm::vec3{0.95f, 0.58f, 0.04f}, glm::vec3{0.13f, 0.62f, 0.34f},
-        glm::vec3{0.52f, 0.10f, 0.74f}, glm::vec3{0.86f, 0.86f, 0.89f}
-    };
-
-    for (std::size_t index = 0; index < colors.size(); ++index)
+    for (std::size_t index = 0; index < vehicleCount_; ++index)
     {
         Vehicle vehicle;
         vehicle.id = index;
-        vehicle.color = colors[index];
+        vehicle.color = palette[index % palette.size()];
         vehicle.maximumSpeed = 5.4f + static_cast<float>(index % 3) * 0.35f;
+        vehicle.claims.reserve(16);
         vehicles_.push_back(vehicle);
     }
 
     placeVehiclesOnApproaches();
+    resetStats();
+}
+
+void TrafficSystem::resetStats()
+{
+    stats_ = TrafficStats {};
+    for (Vehicle& vehicle : vehicles_)
+        vehicle.stoppedSeconds = 0.0f;
 }
 
 void TrafficSystem::placeVehiclesOnApproaches()
 {
-    // Two vehicles queue on each of two approaches and one on each of the
-    // others, spaced well beyond the minimum following gap.
-    static constexpr Lane order[6] = {
-        Lane::Northbound, Lane::Eastbound, Lane::Southbound,
-        Lane::Westbound, Lane::Northbound, Lane::Eastbound
+    // Every claim belongs to the old routes, so all of them go.
+    std::fill(claimCounts_.begin(), claimCounts_.end(), 0);
+
+    // Queue the vehicles on the four approaches in turn, one car-length and a
+    // good gap apart, all before their stop lines.
+    static constexpr Lane order[4] = {
+        Lane::Northbound, Lane::Eastbound, Lane::Southbound, Lane::Westbound
     };
-    static constexpr float starts[6] = {2.0f, 9.0f, 13.0f, 21.0f, 18.0f, 26.0f};
 
     for (std::size_t index = 0; index < vehicles_.size(); ++index)
     {
         Vehicle& vehicle = vehicles_[index];
-        vehicle.lane = order[index % 6];
-        vehicle.routeIndex = pickRoute(vehicle.lane);
-        vehicle.distance = starts[index % 6];
-        vehicle.currentSpeed = vehicle.maximumSpeed;
-        vehicle.targetSpeed = vehicle.maximumSpeed;
-        vehicle.transitionStartSpeed = vehicle.maximumSpeed;
-        vehicle.transitionElapsed = vehicle.transitionDuration;
-        vehicle.wheelAngleDegrees = 0.0f;
-        vehicle.steerAngleDegrees = 0.0f;
+        vehicle.claims.clear();
+        vehicle.committed = false;
 
-        const RouteSample sample = routes_[vehicle.routeIndex].route.sample(vehicle.distance);
-        vehicle.position = sample.position;
-        vehicle.yawDegrees = sample.headingDegrees;
-        vehicle.turnSign = sample.turnSign;
+        const std::size_t row = index / 4;
+        const std::size_t routeIndex = pickRoute(order[index % 4]);
+        const float distance = 2.0f + 13.0f * static_cast<float>(row);
+        if (distance > routes_[routeIndex].stopDistance - 3.0f)
+        {
+            vehicle.active = false;   // no room yet: it enters once a gap opens
+            continue;
+        }
+
+        vehicle.active = true;
+        placeOnRoute(vehicle, routeIndex, distance, vehicle.maximumSpeed * 0.6f);
     }
+}
+
+void TrafficSystem::placeOnRoute(Vehicle& vehicle, std::size_t routeIndex, float distance, float speed)
+{
+    vehicle.routeIndex = routeIndex;
+    vehicle.lane = routes_[routeIndex].lane;
+    vehicle.distance = distance;
+    vehicle.currentSpeed = speed;
+    vehicle.acceleration = 0.0f;
+    vehicle.stoppedSeconds = 0.0f;
+    vehicle.steerAngleDegrees = 0.0f;
+    vehicle.committed = false;
+
+    const RouteSample sample = routes_[routeIndex].route.sample(distance);
+    vehicle.position = sample.position;
+    vehicle.yawDegrees = sample.headingDegrees;
+    vehicle.turnSign = sample.turnSign;
 }
 
 unsigned int TrafficSystem::nextRandom()
 {
-    // Small deterministic generator, so every run of the demo is reproducible.
+    // Small deterministic generator, so every run with the same seed is
+    // identical and a soak-test failure can be replayed.
     randomState_ = randomState_ * 1664525u + 1013904223u;
-    return randomState_;
+    return randomState_ >> 8;
 }
 
 std::size_t TrafficSystem::pickRoute(Lane lane)
@@ -269,42 +241,56 @@ std::size_t TrafficSystem::pickRoute(Lane lane)
     return candidates[nextRandom() % count];
 }
 
-Lane TrafficSystem::leastCrowdedApproach() const
+bool TrafficSystem::trySpawn(Vehicle& vehicle)
 {
+    // Re-enter on the approach with the most room, but only if the gap to the
+    // last car on it is comfortably larger than a stopping distance.
     static constexpr Lane lanes[4] = {
         Lane::Northbound, Lane::Eastbound, Lane::Southbound, Lane::Westbound
     };
+    const bool roundabout = mode_ == IntersectionMode::Roundabout;
+    const std::size_t first = nextRandom() % 4;
 
-    Lane best = lanes[0];
     float bestClearance = -1.0f;
-
-    for (Lane lane : lanes)
+    Lane bestLane = Lane::Northbound;
+    for (std::size_t offset = 0; offset < 4; ++offset)
     {
-        glm::vec3 entry {0.0f};
-        bool found = false;
-        for (const RouteInfo& info : routes_)
-        {
-            if (info.lane == lane && info.roundabout == (mode_ == IntersectionMode::Roundabout))
-            {
-                entry = info.route.sample(0.0f).position;
-                found = true;
-                break;
-            }
-        }
-        if (!found)
-            continue;
-
+        const Lane lane = lanes[(first + offset) % 4];
         float clearance = std::numeric_limits<float>::max();
-        for (const Vehicle& vehicle : vehicles_)
-            clearance = std::min(clearance, glm::length(vehicle.position - entry));
-
+        for (const Vehicle& other : vehicles_)
+        {
+            if (!other.active || &other == &vehicle)
+                continue;
+            const RouteInfo& info = routeFor(other);
+            if (info.lane != lane || info.roundabout != roundabout)
+                continue;
+            // Routes from one approach share their first stretch exactly, so
+            // distance along any of them is distance along the approach lane.
+            clearance = std::min(clearance, other.distance - other.halfLength - vehicle.halfLength);
+        }
         if (clearance > bestClearance)
         {
             bestClearance = clearance;
-            best = lane;
+            bestLane = lane;
         }
     }
-    return best;
+
+    if (bestClearance < spawnClearance)
+        return false;
+
+    const float speed = vehicle.maximumSpeed *
+        glm::clamp((bestClearance - 10.0f) / 15.0f, 0.4f, 1.0f);
+    vehicle.active = true;
+    vehicle.claims.clear();
+    placeOnRoute(vehicle, pickRoute(bestLane), 0.0f, speed);
+    return true;
+}
+
+void TrafficSystem::releaseClaims(Vehicle& vehicle)
+{
+    for (std::size_t slot : vehicle.claims)
+        --claimCounts_[slot];
+    vehicle.claims.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -314,13 +300,14 @@ Lane TrafficSystem::leastCrowdedApproach() const
 void TrafficSystem::update(float dt)
 {
     dt = glm::clamp(dt, 0.0f, 0.05f);
+    if (dt <= 0.0f)
+        return;
+    stats_.simulatedSeconds += dt;
 
     // The signal cycle keeps running in both modes so that switching back is
     // seamless; in roundabout mode the vehicles simply ignore it.
     phaseElapsed_ += dt;
-    const bool yellowPhase = phase_ == TrafficPhase::NorthSouthYellow ||
-                             phase_ == TrafficPhase::EastWestYellow;
-    if (phaseElapsed_ >= (yellowPhase ? yellowDuration_ : greenDuration_))
+    if (signalPhaseOver())
         advancePhase();
 
     // The island rises out of the road when the roundabout takes over.
@@ -331,222 +318,551 @@ void TrafficSystem::update(float dt)
     else
         islandHeight_ = std::max(targetIslandHeight, islandHeight_ - islandStep);
 
-    for (std::size_t index = 0; index < vehicles_.size(); ++index)
-        setTargetSpeed(vehicles_[index], desiredSpeed(index));
+    // 1. Vehicles waiting off-screen come back when there is room.
+    for (Vehicle& vehicle : vehicles_)
+    {
+        if (!vehicle.active)
+            trySpawn(vehicle);
+    }
 
-    for (std::size_t index = 0; index < vehicles_.size(); ++index)
+    // 2. Everyone looks at the traffic as it stands at the start of the step.
+    //    Leaders only ever move forward, so this view is on the safe side.
+    const std::size_t count = vehicles_.size();
+    std::vector<Leader> leaders(count);
+    for (std::size_t index = 0; index < count; ++index)
+    {
+        if (vehicles_[index].active)
+            leaders[index] = findLeader(index);
+    }
+
+    // 3. A car let through on green that has not reached its line when the
+    //    light changes stops after all if it comfortably can. It is still
+    //    outside every zone, so giving its claims back is always safe.
+    if (mode_ == IntersectionMode::Signals)
+    {
+        for (Vehicle& vehicle : vehicles_)
+        {
+            if (!vehicle.active || !vehicle.committed)
+                continue;
+            const RouteInfo& info = routeFor(vehicle);
+            const float toLine = info.stopDistance - vehicle.distance;
+            const float comfortableStop =
+                vehicle.currentSpeed * vehicle.currentSpeed / (2.0f * comfortableBraking);
+            if (toLine > 0.0f && toLine >= comfortableStop && !movementPermitted(vehicle))
+            {
+                releaseClaims(vehicle);
+                vehicle.committed = false;
+            }
+        }
+    }
+
+    // 4. Junction decisions, nearest to the line first so a queue is served in
+    //    order. Each commit takes its claims at once, so the next car in the
+    //    loop already sees them: two cars can never commit into one zone.
+    std::vector<std::size_t> order(count);
+    std::iota(order.begin(), order.end(), std::size_t {0});
+    std::sort(order.begin(), order.end(), [this](std::size_t a, std::size_t b)
+    {
+        // Cars already standing at their lines go first, longest wait first;
+        // then everyone else by distance to the line.
+        const float toLineA = routes_[vehicles_[a].routeIndex].stopDistance - vehicles_[a].distance;
+        const float toLineB = routes_[vehicles_[b].routeIndex].stopDistance - vehicles_[b].distance;
+        const bool atLineA = toLineA < 0.5f;
+        const bool atLineB = toLineB < 0.5f;
+        if (atLineA != atLineB)
+            return atLineA;
+        if (atLineA && vehicles_[a].stoppedSeconds != vehicles_[b].stoppedSeconds)
+            return vehicles_[a].stoppedSeconds > vehicles_[b].stoppedSeconds;
+        if (toLineA != toLineB)
+            return toLineA < toLineB;
+        return a < b;
+    });
+    for (std::size_t index : order)
+    {
+        const Vehicle& vehicle = vehicles_[index];
+        if (vehicle.active && !vehicle.committed)
+            tryCommit(index, leaders[index]);
+    }
+
+    // 5. Move.
+    for (std::size_t index = 0; index < count; ++index)
     {
         Vehicle& vehicle = vehicles_[index];
+        if (!vehicle.active)
+            continue;
 
-        vehicle.transitionElapsed += dt;
-        const float progress = sigmoidProgress(vehicle.transitionElapsed / vehicle.transitionDuration);
-        vehicle.currentSpeed = vehicle.transitionStartSpeed +
-            (vehicle.targetSpeed - vehicle.transitionStartSpeed) * progress;
-        if (vehicle.transitionElapsed >= vehicle.transitionDuration)
-            vehicle.currentSpeed = vehicle.targetSpeed;
+        const Leader& leader = leaders[index];
+        const RouteInfo& info = routeFor(vehicle);
 
-        float travel = vehicle.currentSpeed * dt;
+        // The acceleration follows the model's command at a limited rate, and
+        // the limit itself eases in along the sigmoid. Braking may change
+        // faster than speeding up.
+        const float command = commandedAcceleration(vehicle, leader);
+        const float change = command - vehicle.acceleration;
+        const float jerkLimit = (change < 0.0f ? 24.0f : 5.0f) *
+                                (0.25f + 0.75f * sigmoidProgress(std::abs(change) / 3.0f));
+        vehicle.acceleration += glm::clamp(change, -jerkLimit * dt, jerkLimit * dt);
 
-        const float leaderGap = closestLeaderGap(index);
-        if (leaderGap < std::numeric_limits<float>::max())
-            travel = std::min(travel, std::max(leaderGap - minimumCenterGap, 0.0f));
+        float speed = std::max(0.0f, vehicle.currentSpeed + vehicle.acceleration * dt);
+        float travel = speed * dt;
 
-        const float lineDistance = distanceToGiveWayLine(vehicle);
-        const bool stopAtLine = mustStopAtLine(vehicle, index);
-        if (stopAtLine && lineDistance > 0.0f)
-            travel = std::min(travel, lineDistance);
+        // The safety net: never closer than the hard minimum to the car in
+        // front, and never past the stop line without having committed.
+        float limit = std::numeric_limits<float>::max();
+        if (leader.vehicle != nullptr)
+            limit = std::max(0.0f, leader.gap - hardMinimumGap);
+        if (!vehicle.committed)
+            limit = std::min(limit, std::max(0.0f, info.stopDistance - vehicle.distance));
+        if (travel > limit)
+        {
+            travel = limit;
+            speed = std::min(speed, travel / dt);
+        }
+        if (speed <= 0.0f && vehicle.acceleration < 0.0f)
+            vehicle.acceleration = 0.0f;
 
         vehicle.distance += travel;
+        vehicle.currentSpeed = speed;
         vehicle.wheelAngleDegrees = std::fmod(
             vehicle.wheelAngleDegrees + glm::degrees(travel / wheelRadius), 360.0f);
 
-        // Reaching the end of a route means leaving the scene: the vehicle
-        // re-enters on whichever approach currently has the most room.
-        if (vehicle.distance >= routeFor(vehicle).route.totalLength())
+        // Let go of every zone the car has now completely left.
+        for (std::size_t claim = 0; claim < vehicle.claims.size();)
         {
-            vehicle.lane = leastCrowdedApproach();
-            vehicle.routeIndex = pickRoute(vehicle.lane);
-            vehicle.distance = 0.0f;
-            vehicle.currentSpeed = vehicle.maximumSpeed;
-            vehicle.targetSpeed = vehicle.maximumSpeed;
-            vehicle.transitionStartSpeed = vehicle.maximumSpeed;
-            vehicle.transitionElapsed = vehicle.transitionDuration;
+            const std::size_t slot = vehicle.claims[claim];
+            if (vehicle.distance > conflicts_[slot / 2].out[slot % 2])
+            {
+                --claimCounts_[slot];
+                vehicle.claims[claim] = vehicle.claims.back();
+                vehicle.claims.pop_back();
+            }
+            else
+            {
+                ++claim;
+            }
         }
 
-        const RouteSample sample = routeFor(vehicle).route.sample(vehicle.distance);
+        // Reaching the end of a route means leaving the scene; the vehicle
+        // re-enters on an approach with room, now or on a later step.
+        if (vehicle.distance >= info.route.totalLength())
+        {
+            ++stats_.trips;
+            ++stats_.tripsPerApproach[laneIndex(info.lane)];
+            releaseClaims(vehicle);
+            vehicle.committed = false;
+            vehicle.active = false;
+            if (!trySpawn(vehicle))
+                continue;
+        }
+
+        const RouteInfo& current = routeFor(vehicle);
+        const RouteSample sample = current.route.sample(vehicle.distance);
         vehicle.position = sample.position;
         vehicle.yawDegrees = sample.headingDegrees;
         vehicle.turnSign = sample.turnSign;
 
-        // The front wheels ease towards the steering angle the curve implies.
-        // A right turn (positive sweep) decreases yaw, hence the minus sign.
-        const float desiredSteer = -sample.turnSign * 24.0f;
+        // The front wheels ease towards the angle the curve needs,
+        // atan(wheelbase / radius). A right turn (positive sweep) decreases
+        // yaw, hence the minus sign.
+        const float desiredSteer = -sample.turnSign *
+            std::min(38.0f, glm::degrees(std::atan(wheelBase * sample.curvature)));
         vehicle.steerAngleDegrees +=
             (desiredSteer - vehicle.steerAngleDegrees) * std::min(1.0f, dt * 6.0f);
 
-        if ((stopAtLine && lineDistance > 0.0f && travel >= lineDistance - 0.0001f) ||
-            (leaderGap <= minimumCenterGap + 0.001f && travel <= 0.0001f))
+        if (vehicle.currentSpeed < 0.05f)
         {
-            vehicle.currentSpeed = 0.0f;
-            vehicle.targetSpeed = 0.0f;
-            vehicle.transitionStartSpeed = 0.0f;
-            vehicle.transitionElapsed = vehicle.transitionDuration;
+            vehicle.stoppedSeconds += dt;
+            stats_.longestStop = std::max(stats_.longestStop, vehicle.stoppedSeconds);
+        }
+        else
+        {
+            vehicle.stoppedSeconds = 0.0f;
         }
     }
+
+    measureBodies(dt);
 }
 
 // ---------------------------------------------------------------------------
-// Decisions
+// Following
 // ---------------------------------------------------------------------------
 
-float TrafficSystem::closestLeaderGap(std::size_t vehicleIndex) const
+bool TrafficSystem::projectOnto(const Vehicle& other, std::size_t routeIndex, float& distanceOnRoute) const
 {
-    const Vehicle& me = vehicles_[vehicleIndex];
-    const glm::vec3 forward = forwardVector(me.yawDegrees);
-    float closest = std::numeric_limits<float>::max();
-
-    // One forward scan covers queueing behind a leader, turning cars crossing
-    // each other, and circulating cars on the ring.
-    for (std::size_t index = 0; index < vehicles_.size(); ++index)
+    if (other.routeIndex == routeIndex)
     {
-        if (index == vehicleIndex)
-            continue;
-
-        const glm::vec3 toOther = vehicles_[index].position - me.position;
-        const float along = glm::dot(toOther, forward);
-        if (along <= 0.0f)
-            continue;
-
-        const float lateral = std::abs(toOther.x * forward.z - toOther.z * forward.x);
-        if (lateral > 2.2f)
-            continue;
-
-        closest = std::min(closest, along);
-    }
-    return closest;
-}
-
-bool TrafficSystem::ringConflict(std::size_t vehicleIndex) const
-{
-    if (mode_ != IntersectionMode::Roundabout)
-        return false;
-
-    const Vehicle& me = vehicles_[vehicleIndex];
-    const RouteInfo& info = routeFor(me);
-    if (!info.roundabout || me.distance >= info.giveWayDistance)
-        return false;
-
-    const glm::vec3 mergePoint = info.route.sample(info.mergeDistance).position;
-
-    for (std::size_t index = 0; index < vehicles_.size(); ++index)
-    {
-        if (index == vehicleIndex)
-            continue;
-
-        const Vehicle& other = vehicles_[index];
-        const RouteInfo& otherInfo = routeFor(other);
-        if (!otherInfo.roundabout || other.distance < otherInfo.mergeDistance)
-            continue;   // not circulating yet, so it cannot have priority
-
-        const glm::vec3 toMerge = mergePoint - other.position;
-        if (glm::length(toMerge) > 11.0f)
-            continue;
-        if (glm::dot(toMerge, forwardVector(other.yawDegrees)) <= 0.0f)
-            continue;   // already past my merge point
-
+        distanceOnRoute = other.distance;
         return true;
     }
 
-    // Traffic already on the ring never yields, so this rule cannot deadlock.
+    for (const SharedSpan& span : routes_[routeIndex].shared)
+    {
+        if (span.other != other.routeIndex)
+            continue;
+        const float mapped = other.distance - span.offset;
+        if (mapped >= span.from && mapped <= span.to + span.tail)
+        {
+            distanceOnRoute = mapped;
+            return true;
+        }
+    }
     return false;
 }
 
-float TrafficSystem::distanceToGiveWayLine(const Vehicle& vehicle) const
+TrafficSystem::Leader TrafficSystem::findLeader(std::size_t vehicleIndex) const
 {
-    return routeFor(vehicle).giveWayDistance - vehicle.distance;
+    const Vehicle& me = vehicles_[vehicleIndex];
+    const RouteInfo& info = routeFor(me);
+    Leader leader;
+
+    for (std::size_t index = 0; index < vehicles_.size(); ++index)
+    {
+        const Vehicle& other = vehicles_[index];
+        if (index == vehicleIndex || !other.active)
+            continue;
+
+        float along = 0.0f;
+        if (!projectOnto(other, me.routeIndex, along))
+            continue;
+
+        // On a shared stretch, the other car only counts while I have not yet
+        // turned off it myself.
+        if (other.routeIndex != me.routeIndex)
+        {
+            bool stillShared = false;
+            for (const SharedSpan& span : info.shared)
+            {
+                if (span.other == other.routeIndex && me.distance <= span.to + span.tail &&
+                    along >= span.from && along <= span.to + span.tail)
+                    stillShared = true;
+            }
+            if (!stillShared)
+                continue;
+        }
+
+        const float ahead = along - me.distance;
+        if (ahead <= 0.0f || ahead > leaderLookAhead)
+            continue;
+
+        const float gap = ahead - me.halfLength - other.halfLength;
+        if (gap < leader.gap)
+        {
+            leader.vehicle = &other;
+            leader.gap = gap;
+            leader.speed = other.currentSpeed;
+        }
+    }
+    return leader;
 }
 
-bool TrafficSystem::mustStopAtLine(const Vehicle& vehicle, std::size_t vehicleIndex) const
+float TrafficSystem::commandedAcceleration(const Vehicle& vehicle, const Leader& leader) const
 {
-    const float lineDistance = distanceToGiveWayLine(vehicle);
-    if (lineDistance <= 0.0f)
-        return false;   // already committed to the intersection
-
-    if (mode_ == IntersectionMode::Signals)
+    const RouteInfo& info = routeFor(vehicle);
+    const float speed = vehicle.currentSpeed;
+    const auto curveSpeedAt = [&info](float distance)
     {
-        const SignalState signal = signalFor(vehicle.lane);
-        return signal == SignalState::Red ||
-               (signal == SignalState::Yellow && lineDistance > 4.8f);
+        const std::size_t metre = static_cast<std::size_t>(std::max(0.0f, distance));
+        return info.curveSpeed[std::min(metre, info.curveSpeed.size() - 1)];
+    };
+
+    // Free road: the driver's own top speed, or the corner speed here.
+    const float desired = std::max(0.5f, std::min(vehicle.maximumSpeed, curveSpeedAt(vehicle.distance) + 0.2f));
+    float acceleration = maximumAcceleration * (1.0f - std::pow(speed / desired, 4.0f));
+
+    // Corners ahead: brake early and evenly so the car arrives at each one at
+    // its corner speed, v^2 = vc^2 + 2 a d.
+    const float lookAhead = std::min(40.0f, speed * speed / 2.0f + 5.0f);
+    for (float ahead = 1.0f; ahead <= lookAhead; ahead += 1.0f)
+    {
+        const float cornerSpeed = curveSpeedAt(vehicle.distance + ahead);
+        if (speed > cornerSpeed)
+            acceleration = std::min(acceleration, (cornerSpeed * cornerSpeed - speed * speed) / (2.0f * ahead));
     }
 
-    return ringConflict(vehicleIndex);
+    if (leader.vehicle != nullptr)
+        acceleration = std::min(acceleration,
+            followingAcceleration(speed, desired, leader.gap, speed - leader.speed));
+
+    // Until it has been let through, the stop line acts as a stationary car.
+    // The standstill gap is added so the model settles with the car centre
+    // exactly on its waiting position.
+    if (!vehicle.committed)
+    {
+        const float toLine = info.stopDistance - vehicle.distance;
+        acceleration = std::min(acceleration,
+            followingAcceleration(speed, desired, toLine + standstillGap, speed));
+    }
+
+    return glm::clamp(acceleration, -emergencyBraking, maximumAcceleration);
 }
 
-float TrafficSystem::desiredSpeed(std::size_t vehicleIndex) const
+// ---------------------------------------------------------------------------
+// Junction decisions: commit and claim
+// ---------------------------------------------------------------------------
+
+SignalState TrafficSystem::movementSignal(Lane lane, Turn turn) const
+{
+    if (turn == Turn::Left && leftArrowFor(lane) == SignalState::Green)
+        return SignalState::Green;
+    return signalFor(lane);
+}
+
+bool TrafficSystem::movementPermitted(const Vehicle& vehicle) const
+{
+    if (mode_ == IntersectionMode::Roundabout)
+        return true;
+
+    const RouteInfo& info = routeFor(vehicle);
+    const SignalState signal = movementSignal(info.lane, info.turn);
+    if (signal == SignalState::Green)
+        return true;
+    if (signal == SignalState::Red)
+        return false;
+
+    // Yellow: a left-turner already waiting at the front of its lane clears
+    // the junction now, while oncoming traffic stops. Everyone else goes only
+    // when stopping would need harder braking than is safe.
+    const float toLine = info.stopDistance - vehicle.distance;
+    if (info.turn == Turn::Left && toLine < 0.5f && vehicle.currentSpeed < 0.5f)
+        return true;
+    return vehicle.currentSpeed > 1.0f &&
+           toLine < vehicle.currentSpeed * vehicle.currentSpeed / (2.0f * 4.0f);
+}
+
+bool TrafficSystem::exitHasRoom(const Vehicle& vehicle) const
+{
+    // Never enter the box unless there is space to leave it: a car stuck
+    // inside would block every crossing route.
+    const RouteInfo& info = routeFor(vehicle);
+    const float needed = info.junctionExit + 2.0f * vehicle.halfLength + standstillGap;
+
+    for (const Vehicle& other : vehicles_)
+    {
+        if (!other.active || &other == &vehicle || other.currentSpeed > 1.0f)
+            continue;
+        float along = 0.0f;
+        if (!projectOnto(other, vehicle.routeIndex, along))
+            continue;
+
+        // Only a slow car standing in the space just beyond the box counts.
+        if (along + other.halfLength > info.junctionExit && along - other.halfLength < needed)
+            return false;
+    }
+    return true;
+}
+
+bool TrafficSystem::tryCommit(std::size_t vehicleIndex, const Leader& leader)
+{
+    if (commitBlocker(vehicleIndex, leader) != nullptr)
+        return false;
+
+    // Commit: claim every zone still ahead, in one go.
+    Vehicle& vehicle = vehicles_[vehicleIndex];
+    vehicle.committed = true;
+    for (const ConflictRef& ref : routeFor(vehicle).conflicts)
+    {
+        if (vehicle.distance > conflicts_[ref.conflict].out[ref.side])
+            continue;
+        const std::size_t slot = ref.conflict * 2 + static_cast<std::size_t>(ref.side);
+        ++claimCounts_[slot];
+        vehicle.claims.push_back(slot);
+    }
+    return true;
+}
+
+const char* TrafficSystem::commitBlocker(std::size_t vehicleIndex, const Leader& leader) const
 {
     const Vehicle& vehicle = vehicles_[vehicleIndex];
-    float target = vehicle.maximumSpeed;
+    const RouteInfo& info = routeFor(vehicle);
+    const bool roundabout = mode_ == IntersectionMode::Roundabout;
 
-    const float gap = closestLeaderGap(vehicleIndex);
-    if (gap < 6.4f)
-        target = 0.0f;
-    else if (gap < 8.5f)
-        target = std::min(target, 1.8f);
-    else if (gap < 11.5f)
-        target = std::min(target, 3.6f);
-    else if (gap < 14.0f)
-        target = std::min(target, 4.8f);
+    // Decide early enough on a green light not to brake for nothing, but no
+    // earlier: a claim taken far from the line blocks crossing traffic for
+    // nothing. At a roundabout, decide close to the line like a real driver.
+    const float toLine = info.stopDistance - vehicle.distance;
+    const float speed = vehicle.currentSpeed;
+    const float decisionDistance = roundabout
+        ? std::max(8.0f, speed * speed / 4.0f + 6.0f)
+        : std::max(5.0f, speed * 1.5f + speed * speed / (2.0f * comfortableBraking));
+    if (toLine > decisionDistance)
+        return "not at the line yet";
 
-    const float lineDistance = distanceToGiveWayLine(vehicle);
-    if (mustStopAtLine(vehicle, vehicleIndex) && lineDistance > 0.0f && lineDistance < 18.0f)
+    if (!movementPermitted(vehicle))
+        return "signal";
+
+    // First in, first through: never commit past a car still waiting ahead.
+    if (leader.vehicle != nullptr && !leader.vehicle->committed)
+        return "queued behind a waiting car";
+
+    if (!exitHasRoom(vehicle))
+        return "no room at the exit";
+
+    for (const ConflictRef& ref : info.conflicts)
     {
-        if (lineDistance < 2.4f)
-            target = 0.0f;
-        else if (lineDistance < 5.5f)
-            target = std::min(target, 1.4f);
-        else if (lineDistance < 10.0f)
-            target = std::min(target, 2.8f);
-        else if (lineDistance < 14.0f)
-            target = std::min(target, 4.2f);
-        else
-            target = std::min(target, 5.0f);
+        const Conflict& conflict = conflicts_[ref.conflict];
+        const int mine = ref.side;
+        const int theirs = 1 - mine;
+        if (vehicle.distance > conflict.out[mine])
+            continue;
+
+        // Someone on the crossing route already owns this zone.
+        if (claimCounts_[ref.conflict * 2 + static_cast<std::size_t>(theirs)] > 0)
+            return "zone claimed by crossing traffic";
+
+        // Give way to crossing traffic that has priority (or that is too close
+        // to stop comfortably) and could reach the zone within the accepted gap.
+        for (std::size_t index = 0; index < vehicles_.size(); ++index)
+        {
+            const Vehicle& other = vehicles_[index];
+            if (!other.active || other.committed || other.routeIndex != conflict.route[theirs])
+                continue;
+            if (!movementPermitted(other))
+                continue;
+
+            const RouteInfo& otherInfo = routeFor(other);
+            const float otherToLine = otherInfo.stopDistance - other.distance;
+
+            // A car queued behind someone still waiting cannot go first.
+            const Leader otherLeader = findLeader(index);
+            if (otherLeader.vehicle != nullptr && !otherLeader.vehicle->committed)
+                continue;
+
+            // Equal priority is served in turn: whoever has been waiting at
+            // the line longer goes first, so a steady stream on one side cannot
+            // starve the other.
+            if (conflict.prioritySide < 0 && otherToLine < 0.5f &&
+                other.stoppedSeconds > vehicle.stoppedSeconds + 0.5f)
+                return "taking turns with a car that waited longer";
+
+            const bool theyHavePriority = conflict.prioritySide == theirs;
+            const bool theyCannotStop = other.currentSpeed > 1.0f &&
+                otherToLine < other.currentSpeed * other.currentSpeed / (2.0f * comfortableBraking);
+            if (!theyHavePriority && !theyCannotStop)
+                continue;
+
+            const float toZone = conflict.in[theirs] - other.distance;
+            if (toZone < 0.0f)
+                continue;
+            if (earliestArrival(toZone, other.currentSpeed, other.maximumSpeed) < acceptedGapSeconds)
+                return theyHavePriority ? "giving way to priority traffic" : "giving way to a car that cannot stop";
+        }
     }
-
-    // Corner slowly. Reading the curve a few metres ahead means the car brakes
-    // BEFORE the bend rather than in the middle of it.
-    const RouteSample ahead = routeFor(vehicle).route.sample(vehicle.distance + 4.0f);
-    if (std::abs(ahead.turnSign) > 0.5f || std::abs(vehicle.turnSign) > 0.5f)
-        target = std::min(target, vehicle.maximumSpeed * 0.55f);
-
-    return target;
+    return nullptr;
 }
 
-void TrafficSystem::setTargetSpeed(Vehicle& vehicle, float targetSpeed)
-{
-    targetSpeed = glm::clamp(targetSpeed, 0.0f, vehicle.maximumSpeed);
-    if (std::abs(targetSpeed - vehicle.targetSpeed) < 0.12f)
-        return;
+// ---------------------------------------------------------------------------
+// Measurements
+// ---------------------------------------------------------------------------
 
-    vehicle.transitionStartSpeed = vehicle.currentSpeed;
-    vehicle.targetSpeed = targetSpeed;
-    vehicle.transitionElapsed = 0.0f;
-    const float speedChange = std::abs(vehicle.targetSpeed - vehicle.transitionStartSpeed);
-    vehicle.transitionDuration = 0.8f + 0.75f * (speedChange / vehicle.maximumSpeed);
+OrientedBox TrafficSystem::bodyOf(const Vehicle& vehicle) const
+{
+    return makeOrientedBox({vehicle.position.x, vehicle.position.z}, vehicle.yawDegrees,
+                           {vehicle.halfWidth, vehicle.halfLength});
+}
+
+void TrafficSystem::measureBodies(float)
+{
+    // Every step, every pair of real vehicle outlines is tested. This is the
+    // invariant the whole junction design exists for: it must stay at zero.
+    std::size_t overlapping = 0;
+    for (std::size_t a = 0; a < vehicles_.size(); ++a)
+    {
+        if (!vehicles_[a].active)
+            continue;
+        const OrientedBox boxA = bodyOf(vehicles_[a]);
+        for (std::size_t b = a + 1; b < vehicles_.size(); ++b)
+        {
+            if (!vehicles_[b].active)
+                continue;
+            const glm::vec3 between = vehicles_[a].position - vehicles_[b].position;
+            if (glm::dot(between, between) > 100.0f)
+                continue;
+
+            const float separation = boxSeparation(boxA, bodyOf(vehicles_[b]));
+            stats_.closestBodyGap = std::min(stats_.closestBodyGap, separation);
+            if (separation < 0.0f)
+                ++overlapping;
+        }
+    }
+    stats_.overlapPairsNow = overlapping;
+    if (overlapping > 0)
+        ++stats_.overlapSteps;
 }
 
 // ---------------------------------------------------------------------------
 // Signals and modes
 // ---------------------------------------------------------------------------
 
+bool TrafficSystem::signalDemand(bool northSouth, bool leftTurnsOnly) const
+{
+    // Signal mode only: roundabout routes never wait for a light.
+    if (mode_ != IntersectionMode::Signals)
+        return false;
+
+    for (std::size_t index = 0; index < vehicles_.size(); ++index)
+    {
+        const Vehicle& vehicle = vehicles_[index];
+        if (!vehicle.active || vehicle.committed)
+            continue;
+        const RouteInfo& info = routeFor(vehicle);
+        if (laneIsNorthSouth(info.lane) != northSouth ||
+            info.stopDistance - vehicle.distance >= demandRange)
+            continue;
+        if (!leftTurnsOnly)
+            return true;
+
+        // The arrow is only worth holding for a left-turner that could use
+        // it: one at the front of its queue, not stuck behind a straight car.
+        if (info.turn != Turn::Left)
+            continue;
+        const Leader leader = findLeader(index);
+        if (leader.vehicle == nullptr || leader.vehicle->committed)
+            return true;
+    }
+    return false;
+}
+
+bool TrafficSystem::signalPhaseOver() const
+{
+    const float elapsed = phaseElapsed_;
+    const bool servesNorthSouth = phaseServesNorthSouth(phase_);
+
+    if (isLeftArrow(phase_))
+    {
+        if (elapsed >= maximumLeftArrowSeconds)
+            return true;
+        return elapsed >= minimumLeftArrowSeconds && !signalDemand(servesNorthSouth, true);
+    }
+
+    if (isGreen(phase_))
+    {
+        // With nobody waiting across, the green simply rests. In roundabout
+        // mode there is never demand, so it falls back to the maximum and the
+        // (dark) cycle keeps turning.
+        const bool crossDemand = signalDemand(!servesNorthSouth, false);
+        if (mode_ != IntersectionMode::Signals)
+            return elapsed >= maximumGreenSeconds;
+        if (!crossDemand)
+            return false;
+        if (elapsed >= maximumGreenSeconds)
+            return true;
+        return elapsed >= minimumGreenSeconds && !signalDemand(servesNorthSouth, false);
+    }
+
+    const bool yellow = phase_ == TrafficPhase::NorthSouthYellow || phase_ == TrafficPhase::EastWestYellow;
+    return elapsed >= (yellow ? yellowSeconds : allRedSeconds);
+}
+
 void TrafficSystem::advancePhase()
 {
-    switch (phase_)
-    {
-    case TrafficPhase::NorthSouthGreen:  phase_ = TrafficPhase::NorthSouthYellow; break;
-    case TrafficPhase::NorthSouthYellow: phase_ = TrafficPhase::EastWestGreen; break;
-    case TrafficPhase::EastWestGreen:    phase_ = TrafficPhase::EastWestYellow; break;
-    case TrafficPhase::EastWestYellow:   phase_ = TrafficPhase::NorthSouthGreen; break;
-    }
+    auto next = static_cast<TrafficPhase>((static_cast<int>(phase_) + 1) % 8);
+
+    // The left-turn arrow only runs when someone is waiting to turn left.
+    if ((next == TrafficPhase::NorthSouthLeftArrow && !signalDemand(true, true)) ||
+        (next == TrafficPhase::EastWestLeftArrow && !signalDemand(false, true)))
+        next = static_cast<TrafficPhase>(static_cast<int>(next) + 1);
+
+    phase_ = next;
     phaseElapsed_ = 0.0f;
 }
 
@@ -572,13 +888,23 @@ void TrafficSystem::toggleMode()
 SignalState TrafficSystem::signalFor(Lane lane) const
 {
     const bool northSouth = laneIsNorthSouth(lane);
-    if (phase_ == TrafficPhase::NorthSouthGreen)
-        return northSouth ? SignalState::Green : SignalState::Red;
-    if (phase_ == TrafficPhase::NorthSouthYellow)
-        return northSouth ? SignalState::Yellow : SignalState::Red;
-    if (phase_ == TrafficPhase::EastWestGreen)
-        return northSouth ? SignalState::Red : SignalState::Green;
-    return northSouth ? SignalState::Red : SignalState::Yellow;
+    switch (phase_)
+    {
+    case TrafficPhase::NorthSouthGreen: return northSouth ? SignalState::Green : SignalState::Red;
+    case TrafficPhase::NorthSouthYellow: return northSouth ? SignalState::Yellow : SignalState::Red;
+    case TrafficPhase::EastWestGreen: return northSouth ? SignalState::Red : SignalState::Green;
+    case TrafficPhase::EastWestYellow: return northSouth ? SignalState::Red : SignalState::Yellow;
+    default: return SignalState::Red;
+    }
+}
+
+SignalState TrafficSystem::leftArrowFor(Lane lane) const
+{
+    const bool northSouth = laneIsNorthSouth(lane);
+    if ((northSouth && phase_ == TrafficPhase::NorthSouthLeftArrow) ||
+        (!northSouth && phase_ == TrafficPhase::EastWestLeftArrow))
+        return SignalState::Green;
+    return SignalState::Red;
 }
 
 std::string TrafficSystem::phaseName() const
@@ -588,10 +914,14 @@ std::string TrafficSystem::phaseName() const
 
     switch (phase_)
     {
-    case TrafficPhase::NorthSouthGreen:  return "N/S GREEN";
+    case TrafficPhase::NorthSouthLeftArrow: return "N/S LEFT ARROW";
+    case TrafficPhase::NorthSouthGreen: return "N/S GREEN";
     case TrafficPhase::NorthSouthYellow: return "N/S YELLOW";
-    case TrafficPhase::EastWestGreen:    return "E/W GREEN";
-    case TrafficPhase::EastWestYellow:   return "E/W YELLOW";
+    case TrafficPhase::AllRedBeforeEastWest: return "ALL RED";
+    case TrafficPhase::EastWestLeftArrow: return "E/W LEFT ARROW";
+    case TrafficPhase::EastWestGreen: return "E/W GREEN";
+    case TrafficPhase::EastWestYellow: return "E/W YELLOW";
+    case TrafficPhase::AllRedBeforeNorthSouth: return "ALL RED";
     }
     return "UNKNOWN";
 }
@@ -601,159 +931,25 @@ std::string TrafficSystem::modeName() const
     return mode_ == IntersectionMode::Roundabout ? "ROUNDABOUT" : "SIGNALS";
 }
 
-// ---------------------------------------------------------------------------
-// Geometry self-test (no OpenGL context required)
-// ---------------------------------------------------------------------------
-
-std::string TrafficSystem::topDownPlot(bool roundabout) const
+std::string TrafficSystem::describe() const
 {
-    // A square window of the middle of the scene, one character per metre in x
-    // and two metres in z so the aspect looks roughly square in a terminal.
-    constexpr int halfWidth = 26;
-    constexpr int halfHeight = 13;
-    constexpr int columns = halfWidth * 2 + 1;
-    constexpr int rows = halfHeight * 2 + 1;
-
-    std::vector<char> grid(static_cast<std::size_t>(columns) * rows, ' ');
-    const auto plot = [&grid](int column, int row, char symbol)
+    std::string text = "phase " + phaseName() + "\n";
+    for (std::size_t index = 0; index < vehicles_.size(); ++index)
     {
-        if (column < 0 || column >= columns || row < 0 || row >= rows)
-            return;
-        char& cell = grid[static_cast<std::size_t>(row) * columns + column];
-        if (cell == ' ' || symbol == '#')
-            cell = symbol;
-    };
-    const auto toColumn = [](float x) { return static_cast<int>(std::lround(x)) + halfWidth; };
-    const auto toRow = [](float z) { return static_cast<int>(std::lround(z * 0.5f)) + halfHeight; };
-
-    // The island first, so route marks can overwrite nothing and a collision
-    // between the two is immediately visible.
-    for (int row = 0; row < rows; ++row)
-    {
-        for (int column = 0; column < columns; ++column)
-        {
-            const float x = static_cast<float>(column - halfWidth);
-            const float z = static_cast<float>(row - halfHeight) * 2.0f;
-            if (std::sqrt(x * x + z * z) <= islandRadius)
-                plot(column, row, '#');
-        }
+        const Vehicle& vehicle = vehicles_[index];
+        const RouteInfo& info = routeFor(vehicle);
+        const Leader leader = vehicle.active ? findLeader(index) : Leader {};
+        const char* blocker = vehicle.active && !vehicle.committed ? commitBlocker(index, leader) : nullptr;
+        char line[240];
+        std::snprintf(line, sizeof(line),
+            "  car %2zu %s route %2zu s %6.2f / stop %5.2f  v %4.2f  %s claims %zu  leader %s gap %.2f  stopped %.0f s  %s\n",
+            index, vehicle.active ? "on " : "off", vehicle.routeIndex, vehicle.distance,
+            info.stopDistance, vehicle.currentSpeed, vehicle.committed ? "COMMITTED" : "waiting",
+            vehicle.claims.size(),
+            leader.vehicle != nullptr ? std::to_string(leader.vehicle->id).c_str() : "-",
+            leader.vehicle != nullptr ? leader.gap : 0.0f, vehicle.stoppedSeconds,
+            blocker != nullptr ? blocker : "");
+        text += line;
     }
-
-    for (const RouteInfo& info : routes_)
-    {
-        if (info.roundabout != roundabout)
-            continue;
-
-        const char symbol = info.lane == Lane::Northbound ? 'N'
-                          : info.lane == Lane::Eastbound ? 'E'
-                          : info.lane == Lane::Southbound ? 'S' : 'W';
-
-        for (float distance = 0.0f; distance <= info.route.totalLength(); distance += 0.25f)
-        {
-            const glm::vec3 point = info.route.sample(distance).position;
-            plot(toColumn(point.x), toRow(point.z), symbol);
-        }
-    }
-
-    std::string output = roundabout ? "Roundabout routes (# = island)\n"
-                                    : "Signalised routes (# = island footprint)\n";
-    for (int row = 0; row < rows; ++row)
-    {
-        output.append(&grid[static_cast<std::size_t>(row) * columns], columns);
-        output += "\n";
-    }
-    return output;
-}
-
-bool TrafficSystem::selfTest(std::string& report) const
-{
-    report.clear();
-    bool passed = true;
-
-    const auto fail = [&report, &passed](const std::string& message)
-    {
-        report += "FAIL: " + message + "\n";
-        passed = false;
-    };
-
-    if (routes_.size() != 24)
-        fail("expected 24 routes (2 modes x 4 approaches x 3 choices), got " +
-             std::to_string(routes_.size()));
-
-    // Both endpoints of every route must sit on a lane centre at the scene edge.
-    const float expectedEndRadius =
-        std::sqrt(spawnRadius * spawnRadius + laneOffset * laneOffset);
-
-    for (std::size_t index = 0; index < routes_.size(); ++index)
-    {
-        const RouteInfo& info = routes_[index];
-        const std::string name = "route " + std::to_string(index);
-
-        if (info.route.totalLength() <= 0.0f)
-        {
-            fail(name + " has zero length");
-            continue;
-        }
-
-        const RouteSample start = info.route.sample(0.0f);
-        const RouteSample finish = info.route.sample(info.route.totalLength());
-
-        if (std::abs(planarRadius(start.position) - expectedEndRadius) > 0.5f)
-            fail(name + " does not start on a lane centre at the scene edge");
-        if (std::abs(planarRadius(finish.position) - expectedEndRadius) > 0.5f)
-            fail(name + " does not finish on a lane centre at the scene edge");
-
-        // Walking the route in small steps must never jump in position or in
-        // heading: that is what proves the segments actually join up.
-        constexpr float step = 0.05f;
-        RouteSample previous = start;
-        float closestToCentre = std::numeric_limits<float>::max();
-
-        for (float distance = step; distance <= info.route.totalLength(); distance += step)
-        {
-            const RouteSample current = info.route.sample(distance);
-
-            const float moved = glm::length(current.position - previous.position);
-            if (moved > step * 1.5f + 0.001f)
-            {
-                fail(name + " jumps in position at s = " + std::to_string(distance));
-                break;
-            }
-
-            const float turned = std::abs(
-                signedAngleDifference(current.headingDegrees, previous.headingDegrees));
-            if (turned > 6.0f)
-            {
-                fail(name + " jumps in heading at s = " + std::to_string(distance));
-                break;
-            }
-
-            closestToCentre = std::min(closestToCentre, planarRadius(current.position));
-            previous = current;
-        }
-
-        // Circulating traffic must stay outside the raised island.
-        if (info.roundabout && closestToCentre < islandRadius + 0.8f)
-            fail(name + " passes too close to the island (" +
-                 std::to_string(closestToCentre) + " m)");
-    }
-
-    // Opposing signal phases must never both be green.
-    const std::array<TrafficPhase, 4> phases = {
-        TrafficPhase::NorthSouthGreen, TrafficPhase::NorthSouthYellow,
-        TrafficPhase::EastWestGreen, TrafficPhase::EastWestYellow
-    };
-    TrafficSystem probe;
-    for (TrafficPhase phase : phases)
-    {
-        probe.phase_ = phase;
-        const bool northGreen = probe.signalFor(Lane::Northbound) == SignalState::Green;
-        const bool eastGreen = probe.signalFor(Lane::Eastbound) == SignalState::Green;
-        if (northGreen && eastGreen)
-            fail("north-south and east-west are green at the same time");
-    }
-
-    if (passed)
-        report = "All route and signal checks passed.\n";
-    return passed;
+    return text;
 }
