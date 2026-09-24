@@ -5,12 +5,15 @@
 #include "DayNight.h"
 #include "FrameStats.h"
 #include "Framebuffer.h"
+#include "LightManager.h"
 #include "Overlay.h"
 #include "PostProcess.h"
 #include "Scene.h"
 #include "Sky.h"
 #include "Screenshot.h"
 #include "Simulation.h"
+
+#include <glm/gtc/matrix_transform.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -59,9 +62,11 @@ namespace
         {
         case 1: camera.setFreePose({3.5f, 1.7f, -44.0f}, 90.0f, -3.0f); break;     // street level, X0 south arm
         case 2: camera.setFreePose({60.0f, 9.0f, 28.0f}, -25.0f, -14.0f); break;   // roundabout R1 with the fountain
-        case 3: camera.setFreePose({0.0f, 190.0f, -270.0f}, 90.0f, -33.0f); break; // the whole city
+        case 3: camera.setFreePose({0.0f, 300.0f, -480.0f}, 90.0f, -33.0f); break; // the whole city
         case 4: camera.setFreePose({-60.0f, 30.0f, -55.0f}, 60.0f, -24.0f); break; // T-junctions G and ST
-        case 5: camera.setFreePose({0.0f, 330.0f, 0.01f}, 90.0f, -89.0f); break;   // straight down
+        case 5: camera.setFreePose({0.0f, 430.0f, 0.01f}, 90.0f, -89.0f); break;   // straight down
+        case 6: camera.setFreePose({-38.0f, 13.0f, -128.0f}, 36.0f, -16.0f); break; // roundabout R2
+        case 7: camera.setFreePose({-170.0f, 22.0f, 170.0f}, -20.0f, -14.0f); break; // the ring road, NW corner
         default: camera.reset(); break;
         }
     }
@@ -311,9 +316,9 @@ namespace
 
         std::printf(
             "CITY seed %-5u cars %2zu  %5.1f min | overlaps %zu | closest gap %.2f m | longest stop %5.1f s | "
-            "routes driven %5zu, left town %4zu | busiest %s %.0f%% | %.1f s wall | %s\n",
+            "routes driven %5zu | busiest %s %.0f%% | %.1f s wall | %s\n",
             seed, cars, stats.simulatedSeconds / 60.0, stats.overlapSteps, stats.closestBodyGap,
-            stats.longestStop, stats.trips, stats.leftTown,
+            stats.longestStop, stats.trips,
             traffic.network().junctions()[busiest].name.c_str(), share * 100.0,
             wallSeconds, passed ? "PASS" : "FAIL");
         if (!passed)
@@ -379,7 +384,7 @@ namespace
                         const float distanceStepped = glm::length(stepped[index].position - previousStepped[index].position);
                         const float moveSmooth = distanceSmooth / frameSeconds;     // on-screen speed
                         const float moveStepped = distanceStepped / frameSeconds;
-                        if (distanceSmooth > 2.0f)   // re-entered at the edge: not motion
+                        if (distanceSmooth > 2.0f)   // a jump, not motion (never expected)
                         {
                             lastMoveSmooth[index] = lastMoveStepped[index] = -1.0f;
                             continue;
@@ -407,6 +412,112 @@ namespace
         }
         return allPassed ? EXIT_SUCCESS : EXIT_FAILURE;
     }
+
+    // Headless check that street lamps never pop in or out. At night a camera
+    // drives every road of the city at street level and at follow-camera
+    // height, and turns on the spot in the middle of every junction. Each
+    // frame the light budget chooses its lights, exactly as the renderer
+    // does, and the test records how much any light's strength changes from
+    // one frame to the next - counting only lights whose reach is on screen
+    // in both frames, since nobody sees the others change. A light that fades
+    // in over a quarter of a second at 60 FPS changes by 0.07 per frame.
+    //     OpenGLMiniProject.exe --light-test
+    int runLightTest()
+    {
+        constexpr float dt = 1.0f / 60.0f;
+        constexpr float allowedStep = 0.1f;
+
+        const RoadNetwork network = RoadNetwork::makeCity();
+        std::vector<PointLight> lights;
+        for (const StreetLamp& lamp : network.streetLamps())
+            lights.push_back(PointLight::fromStreetLamp(lamp));
+
+        LightBudget budget;
+        std::vector<LightBudget::Choice> chosen;
+        std::vector<float> previous(lights.size(), 0.0f);
+        std::vector<float> current(lights.size(), 0.0f);
+        std::vector<bool> previousInView(lights.size(), false);
+        const glm::mat4 projection = glm::perspective(glm::radians(55.0f), 16.0f / 9.0f, 0.12f, 1200.0f);
+
+        std::size_t frames = 0;
+        std::size_t pops = 0;
+        float worst = 0.0f;
+        glm::vec3 worstAt {0.0f};
+        std::size_t budgetFull = 0;
+        bool first = true;
+
+        const auto frame = [&](const glm::vec3& eye, float yawDegrees, float pitchDegrees)
+        {
+            const glm::vec3 front {std::cos(glm::radians(yawDegrees)) * std::cos(glm::radians(pitchDegrees)),
+                                   std::sin(glm::radians(pitchDegrees)),
+                                   std::sin(glm::radians(yawDegrees)) * std::cos(glm::radians(pitchDegrees))};
+            const glm::mat4 viewProjection = projection * glm::lookAt(eye, eye + front, glm::vec3{0.0f, 1.0f, 0.0f});
+            budget.choose(lights, eye, viewProjection, true, chosen);
+
+            std::fill(current.begin(), current.end(), 0.0f);
+            for (const LightBudget::Choice& choice : chosen)
+                current[choice.light] = choice.fade;
+            budgetFull += chosen.size() >= static_cast<std::size_t>(LightBudget::maximumLights) ? 1 : 0;
+
+            for (std::size_t index = 0; index < lights.size(); ++index)
+            {
+                const bool inView = LightBudget::reachInView(lights[index], viewProjection);
+                if (!first && inView && previousInView[index])
+                {
+                    const float step = std::abs(current[index] - previous[index]);
+                    pops += step > allowedStep ? 1 : 0;
+                    if (step > worst)
+                    {
+                        worst = step;
+                        worstAt = eye;
+                    }
+                }
+                previousInView[index] = inView;
+            }
+            std::swap(previous, current);
+            first = false;
+            ++frames;
+        };
+
+        // Drive every road both ways, looking along it: 12 m/s, at street
+        // level, follow-camera height and as a low fly-over.
+        for (const float height : {1.7f, 5.0f, 30.0f})
+        {
+            for (const RoadNetwork::Road& road : network.roads())
+            {
+                for (int direction = 0; direction < 2; ++direction)
+                {
+                    const glm::vec2 from = direction == 0 ? road.start : road.end;
+                    const glm::vec2 to = direction == 0 ? road.end : road.start;
+                    const glm::vec2 along = glm::normalize(to - from);
+                    const glm::vec2 lane = from + glm::vec2{-along.y, along.x} * RoadNetwork::laneOffsets[1];
+                    const float yaw = glm::degrees(std::atan2(along.y, along.x));
+                    const float length = glm::length(to - from);
+                    first = true;   // a new path: the camera jumps here
+                    for (float travelled = 0.0f; travelled <= length; travelled += 12.0f * dt)
+                    {
+                        const glm::vec2 p = lane + along * travelled;
+                        frame({p.x, height, p.y}, yaw, height > 20.0f ? -30.0f : (height > 2.0f ? -12.0f : -2.0f));
+                    }
+                }
+            }
+        }
+
+        // Turn on the spot in every junction, a full circle in six seconds.
+        for (const Junction& junction : network.junctions())
+        {
+            first = true;
+            for (float yaw = 0.0f; yaw < 360.0f; yaw += 1.0f)
+                frame({junction.centre.x, 1.7f, junction.centre.y}, yaw, -2.0f);
+        }
+
+        const bool passed = pops == 0;
+        std::printf("%zu lamps, %zu frames (budget full in %.0f%%) | largest change of one light in one frame %.3f "
+                    "at (%.0f, %.1f, %.0f) | frames over %.2f: %zu | %s\n",
+                    lights.size(), frames, 100.0 * static_cast<double>(budgetFull) / static_cast<double>(frames),
+                    worst, worstAt.x, worstAt.y, worstAt.z, allowedStep, pops, passed ? "PASS" : "FAIL");
+        return passed ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
 }
 
 int main(int argc, char** argv)
@@ -425,7 +536,7 @@ int main(int argc, char** argv)
         return passed ? EXIT_SUCCESS : EXIT_FAILURE;
     }
 
-    std::size_t vehicleCount = 24;
+    std::size_t vehicleCount = 36;   // the closed 400 m city holds up to 40 (tested by --soak)
     for (int index = 1; index + 1 < argc; ++index)
     {
         if (std::strcmp(argv[index], "--cars") == 0)
@@ -460,6 +571,8 @@ int main(int argc, char** argv)
     {
         if (std::strcmp(argv[index], "--motion-test") == 0)
             return runMotionTest();
+        if (std::strcmp(argv[index], "--light-test") == 0)
+            return runLightTest();
     }
 
     for (int index = 1; index < argc; ++index)

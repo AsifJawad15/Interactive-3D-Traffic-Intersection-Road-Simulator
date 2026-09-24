@@ -1,6 +1,5 @@
 // The running traffic: signals, the commit-and-claim junction rule, car
-// following, routing through the city, spawning and the collision
-// measurements. The one-off geometry (routes, shared lanes, conflict zones)
+// following, routing round the city and the collision measurements. The one-off geometry (routes, shared lanes, conflict zones)
 // and the self-test are in TrafficBuild.cpp.
 
 #include "Simulation.h"
@@ -39,7 +38,6 @@ namespace
     constexpr float starvationSeconds = 20.0f;
 
     constexpr float leaderLookAhead = 80.0f;
-    constexpr float spawnClearance = 18.0f;
 
     // Signal timing. Green and the left arrow are actuated: they end early
     // once their own queue is empty and someone waits on the other road, and
@@ -149,7 +147,7 @@ TrafficSystem::TrafficSystem(std::size_t vehicleCount, unsigned int seed)
 }
 
 // ---------------------------------------------------------------------------
-// Placement, routing and spawning
+// Placement and routing
 // ---------------------------------------------------------------------------
 
 void TrafficSystem::reset()
@@ -250,7 +248,7 @@ void TrafficSystem::enterRoute(Vehicle& vehicle, std::size_t routeIndex)
     const RouteInfo& info = routes_[routeIndex];
     // A route with nothing to cross (a bend) is driven straight through.
     vehicle.committed = !info.needsCommit;
-    vehicle.nextRouteIndex = info.leavesTown ? noRoute : chooseNextRoute(routeIndex);
+    vehicle.nextRouteIndex = chooseNextRoute(routeIndex);
 }
 
 void TrafficSystem::placeOnRoute(Vehicle& vehicle, std::size_t routeIndex, float distance, float speed)
@@ -304,6 +302,9 @@ std::size_t TrafficSystem::chooseNextRoute(std::size_t routeIndex)
             }
         }
         weights[option] = 1.0f / (1.0f + 0.6f * static_cast<float>(load));
+        // Changing lane is the less likely choice, so traffic does not weave.
+        if (candidate.inLane != candidate.outLane)
+            weights[option] *= 0.5f;
         total += weights[option];
     }
 
@@ -315,54 +316,6 @@ std::size_t TrafficSystem::chooseNextRoute(std::size_t routeIndex)
             return candidates[option];
     }
     return candidates.back();
-}
-
-bool TrafficSystem::trySpawn(Vehicle& vehicle)
-{
-    // Through-traffic comes into town on one of the eight lanes of the four
-    // roads in, choosing the lane with the most room - but only if the gap to
-    // the last car on it is comfortably larger than a stopping distance.
-    const std::size_t count = townEntryRoutes_.size();
-    if (count == 0)
-        return false;
-    const std::size_t first = nextRandom() % count;
-
-    float bestClearance = -1.0f;
-    std::size_t bestRoute = townEntryRoutes_[first];
-    for (std::size_t offset = 0; offset < count; ++offset)
-    {
-        const std::size_t candidate = townEntryRoutes_[(first + offset) % count];
-        float clearance = std::numeric_limits<float>::max();
-        for (const Vehicle& other : vehicles_)
-        {
-            float along = 0.0f;
-            if (!other.active || &other == &vehicle || !projectOnto(other, candidate, along))
-                continue;
-            clearance = std::min(clearance, along - other.halfLength - vehicle.halfLength);
-        }
-        if (clearance > bestClearance)
-        {
-            bestClearance = clearance;
-            bestRoute = candidate;
-        }
-    }
-
-    if (bestClearance < spawnClearance)
-        return false;
-
-    // Any route from that lane; they all share it up to the junction.
-    std::size_t options[4] {};
-    std::size_t optionCount = 0;
-    for (std::size_t candidate : townEntryRoutes_)
-    {
-        if (sameStartLane(candidate, bestRoute) && optionCount < 4)
-            options[optionCount++] = candidate;
-    }
-
-    const float speed = vehicle.maximumSpeed * glm::clamp((bestClearance - 10.0f) / 20.0f, 0.4f, 1.0f);
-    vehicle.active = true;
-    placeOnRoute(vehicle, options[nextRandom() % optionCount], 0.0f, speed);
-    return true;
 }
 
 void TrafficSystem::releaseClaims(Vehicle& vehicle)
@@ -427,14 +380,7 @@ void TrafficSystem::update(float dt)
         vehicle.previousSteerAngleDegrees = vehicle.steerAngleDegrees;
     }
 
-    // 1. Vehicles waiting out of town come back when a road in has room.
-    for (Vehicle& vehicle : vehicles_)
-    {
-        if (!vehicle.active)
-            trySpawn(vehicle);
-    }
-
-    // 2. Everyone looks at the traffic as it stands at the start of the step.
+    // 1. Everyone looks at the traffic as it stands at the start of the step.
     //    Leaders only ever move forward, so this view is on the safe side.
     const std::size_t count = vehicles_.size();
     std::vector<Leader>& leaders = leaders_;
@@ -445,7 +391,7 @@ void TrafficSystem::update(float dt)
             leaders[index] = findLeader(index);
     }
 
-    // 3. A car let through on green that has not reached its line when the
+    // 2. A car let through on green that has not reached its line when the
     //    light changes stops after all if it comfortably can. It is still
     //    outside every zone, so giving its claims back is always safe.
     for (Vehicle& vehicle : vehicles_)
@@ -465,7 +411,7 @@ void TrafficSystem::update(float dt)
         }
     }
 
-    // 4. Junction decisions, cars standing at their lines first (longest wait
+    // 3. Junction decisions, cars standing at their lines first (longest wait
     //    first), then by distance to the line. Each commit takes its claims at
     //    once, so the next car already sees them: two cars can never commit
     //    into one zone.
@@ -493,7 +439,7 @@ void TrafficSystem::update(float dt)
             tryCommit(index, leaders[index]);
     }
 
-    // 5. Move.
+    // 4. Move.
     for (std::size_t index = 0; index < count; ++index)
     {
         Vehicle& vehicle = vehicles_[index];
@@ -552,27 +498,15 @@ void TrafficSystem::update(float dt)
         }
 
         // The end of a route is the middle of the next road: carry on into
-        // the next junction's route, or leave town and come back later on
-        // one of the roads in.
+        // the next junction's route. The network is closed and every route
+        // has a successor (the self-test checks it), so cars drive for ever.
         const float length = info.route.totalLength();
         if (vehicle.distance >= length)
         {
             ++stats_.trips;
-            if (vehicle.nextRouteIndex == noRoute)
-            {
-                ++stats_.leftTown;
-                releaseClaims(vehicle);
-                vehicle.committed = false;
-                vehicle.active = false;
-                if (!trySpawn(vehicle))
-                    continue;
-            }
-            else
-            {
-                const float overshoot = vehicle.distance - length;
-                enterRoute(vehicle, vehicle.nextRouteIndex);
-                vehicle.distance = overshoot;
-            }
+            const float overshoot = vehicle.distance - length;
+            enterRoute(vehicle, vehicle.nextRouteIndex);
+            vehicle.distance = overshoot;
         }
 
         const RouteInfo& current = routeFor(vehicle);

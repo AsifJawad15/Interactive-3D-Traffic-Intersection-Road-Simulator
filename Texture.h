@@ -56,6 +56,9 @@ public:
         GLenum magFilter = GL_LINEAR,
         bool srgb = false);
     static Texture makeWhite();
+    // A one-texel grey: as a specular map it scales the highlight down to
+    // `level` / 255, for matte surfaces such as grass.
+    static Texture makeGrey(unsigned char level);
     static Texture makeAsphalt(int size = 128);
     static Texture makeGrass(int size = 128);
     static Texture makeSidewalk(int size = 128);

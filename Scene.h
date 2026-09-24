@@ -48,6 +48,9 @@ private:
     Mesh lampPost_;
 
     Texture white_;
+    // Specular map for grass and leaves: a sun highlight on a lawn seen from
+    // above would otherwise wash the whole city out to white.
+    Texture matte_;
     Texture asphalt_;
     Texture grass_;
     Texture sidewalk_;

@@ -17,7 +17,7 @@ void Camera::processKeyboard(GLFWwindow* window, float dt)
     if (mode_ != CameraMode::Free)
         return;
 
-    // Shift moves four times faster: the city is 200 m across.
+    // Shift moves four times faster: the city is 400 m across.
     const bool boost = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS;
     const float distance = speed_ * dt * (boost ? 4.0f : 1.0f);
     const glm::vec3 right = glm::normalize(glm::cross(front_, up_));
@@ -76,8 +76,9 @@ void Camera::update(float dt, const std::vector<VehiclePose>& vehicles)
 
     if (mode_ == CameraMode::Top)
     {
-        // High enough to see the whole city inside the loop road.
-        position_ = {0.0f, 300.0f, 0.01f};
+        // High enough to see the whole city, out to the sidewalk round the
+        // ring road (about 215 m either way at a 55 degree field of view).
+        position_ = {0.0f, 430.0f, 0.01f};
         front_ = glm::normalize(glm::vec3{0.0f, 0.0f, 0.0f} - position_);
         return;
     }
@@ -204,7 +205,14 @@ glm::mat4 Camera::projectionMatrix(float aspectRatio) const
 {
     const float fov = mode_ == CameraMode::Driver ? 68.0f : fieldOfView_;
     // The far plane reaches the fogged horizon; fog hides everything beyond it.
-    return glm::perspective(glm::radians(fov), aspectRatio, 0.1f, 1200.0f);
+    // The near plane moves out as the camera climbs. With a 24-bit depth
+    // buffer the depth step grows as distance^2 / near: at 0.1 m it would be
+    // 11 cm at 430 m, enough for the ground to show through the asphalt from
+    // the top view. Nothing is ever within a few metres of a high camera, so a
+    // near plane of about 1/80 of the height costs nothing and keeps the step
+    // to millimetres; at street level and in the driver's seat it stays 0.1 m.
+    const float nearPlane = glm::clamp(0.1f + 0.012f * position_.y, 0.1f, 6.0f);
+    return glm::perspective(glm::radians(fov), aspectRatio, nearPlane, 1200.0f);
 }
 
 void Camera::updateVectors()

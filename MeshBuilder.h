@@ -19,9 +19,10 @@
 class MeshBuilder
 {
 public:
-    // A flat polygon at height y, seen from above, fanned from `apex` (by
-    // default its centroid). The outline must be star-shaped around the apex:
-    // every point of it visible from there.
+    // A flat polygon at height y, seen from above. With an `apex` it is fanned
+    // from there, and the outline must be star-shaped around it (every point
+    // visible from the apex). Without one, any simple outline works, however
+    // concave (an L-shaped block): it is cut into triangles by ear clipping.
     void addFlatPolygon(const std::vector<glm::vec2>& outline, float y, float tile,
                         const glm::vec2* apex = nullptr);
 
@@ -41,8 +42,8 @@ public:
     void addPaintRectangle(glm::vec2 centre, glm::vec2 direction, float length, float width, float y);
 
     // Vertical faces along a closed outline from y0 up to y1, facing away
-    // from the outline's inside (for kerbs).
-    void addWall(const std::vector<glm::vec2>& outline, float y0, float y1, bool closed = true);
+    // from the outline's inside (for kerbs), or towards it with `inward`.
+    void addWall(const std::vector<glm::vec2>& outline, float y0, float y1, bool closed = true, bool inward = false);
 
     // A copy of existing geometry, moved into place.
     void append(const MeshData& data, const glm::mat4& transform);

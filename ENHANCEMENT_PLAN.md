@@ -1,7 +1,8 @@
 # Enhancement Plan: OpenGLMiniProject → Open-World Smart City Traffic Simulator
 
-> Status: **Phases 0 to 2 complete. Phase 3 (road network) is next and waits for your go-ahead.** Written 2026-09-23.
+> Status: **Phases 0 to 3 complete. Phase 4 (player car) is next and waits for your go-ahead.** Written 2026-09-23.
 > **Revised 2026-09-24:** every junction keeps its own permanent type (T-junction, signalised intersection or roundabout), and no intersection is ever turned into a roundabout (section 3.2).
+> **Revised 2026-09-24 (later):** the city is closed. No road leads out of town: the 3×3 core sits inside a ring road, like a maze, and the same cars drive round it for ever with no respawning (section 3.2).
 > **Scope revised 2026-09-23:**
 > - A smaller 3×3 city.
 > - Clouds and light rain only, with no storm and no fog weather.
@@ -23,44 +24,55 @@
 | 0. Rendering foundations | ✅ Done and verified | 2026-09-23 | `enhancement/phase-0-rendering` |
 | 1. Traffic core and collision fix | ✅ Done and verified | 2026-09-23 | `enhancement/phase-1-traffic` |
 | 2. Smooth motion and 1080p | ✅ Done and verified | 2026-09-24 | `enhancement/phase-2-smooth` |
-| 3. Road network | 🔶 In progress: traffic done and verified, rendering built but not yet reviewed | 2026-09-24 | `enhancement/phase-3-network` |
+| 3. Road network | ✅ Done and verified | 2026-09-24 | `enhancement/phase-3-network` |
 | 4 to 11 | Not started | | |
 
-### 🔶 Checkpoint 3 (in progress): resume here after a pause (2026-09-24)
+### ✅ Checkpoint 3: the closed city road network (2026-09-24)
 
-**Done and verified**
-- **`RoadNetwork.h/.cpp`:** the 3×3 city with a fixed type at every junction.
-  - X0 and X1 are signalised crossroads. R1 is a roundabout with the fountain, and R2 is a roundabout. G is a give-way T-junction and ST a signalised T-junction, and there are three bends.
-  - Four roads lead out of town, each 240 m to its spawn or exit point.
-  - The module also provides block outlines (corners follow a kerb fillet, a bend or a roundabout), splitter islands, and street-lamp positions, including the four Lab 3 lamps at X0.
-- **Traffic (`Simulation.*`, `TrafficBuild.*`):** rebuilt on top of the network.
-  - **Routes:** 92 routes run from the middle of one road to the middle of the next, and cars chain from route to route. Following looks ahead into the next route, and turn choices spread traffic by load.
-  - **Signals:** there is one controller per signalised junction; `M` and the old single-junction modes are removed.
-  - **Spawning:** cars come in at the eight lanes into town. The give-way T gives priority to its major arms.
-  - **Lane rules:** at crossroads the inner lane goes straight or left, and the outer lane straight or right. At roundabouts the outer lane takes exits 1–2 and the inner lane exits 2–3.
-- **New junction rules:**
-  - **"Slip in":** a car may enter a zone claimed by someone else only if its pessimistic clearing time plus 1.5 s is less than the claimant's earliest possible arrival.
-  - **Starvation guard:** after 20 s at its line, a car makes crossing traffic hold back.
-  - **Turn-taking:** a car only defers to a longer waiter who could actually go.
-  - **First in, first through:** now limited to the same junction.
-  - **Give-way traffic:** it decides at its stopping distance + 2 m.
-- **Results:**
-  - `--self-test` passes all 2664 checks: 9 junctions, 92 routes and 406 conflict zones. Routes are continuous, clear kerbs and islands, and connect into one strongly connected network.
-  - **25 cars, 30-minute soak, seeds 1 to 8:** 0 overlaps, worst stop 29–45 s, busiest junction R2 at 20–22 % (the limit is 35 %). All pass.
-  - **40 cars (stress):** 0 overlaps, but the worst stop is 57–70 s, so one seed in three fails. R2 is at about 31 %.
-  - `--motion-test` passes, with judder at or below 0.0016.
-- **Rendering (built and running):**
-  - `MeshBuilder`, `RoadRenderer` (asphalt, kerbs, sidewalks, lawns, white and yellow paint, zebras, lane arrows, stop and give-way lines taken from `stopMarkings()`), `LightManager`, and `shaders/lights.glsl` (a 32-light budget in a UBO with windowed falloff).
-  - `Scene` draws the lamps baked into 3 meshes, an island at every roundabout with the fountain at R1, signal heads per junction, and give-way signs. `Mesh` gained `MeshData`.
-  - 1080p captures run at a steady 72 FPS with 1.3–1.9 ms of GPU time.
-- **Tools:** new camera capture views 0–5 (3 = the whole city, 5 = straight down); the `--roundabout` capture flag was removed. `--plot` writes `network.png`. New `--stop-limit S` for soaks. Shift gives the free camera a ×4 boost, and the top camera is at 300 m.
+**What changed**
+- **A closed maze instead of roads out of town (your request mid-phase):** there are no roads out of town and no respawning. The same cars drive round the city for ever.
+  - The tested 3×3 core stays where it was. The four roads that used to leave town now run 100 m into a **ring road** at ±200 m, and two more links join the core to the ring (G2–G4 and G3–G6). The city is 400 m across with 19 junctions.
+  - **Junction types:** X0 and X1 are signalised crossroads; R1 (fountain) and R2 are roundabouts; ST, ST2 and ST3 are signalised T-junctions; G and G2 to G7 are give-way T-junctions, where the straight road through has priority; and there are five bends (the NE bend and the ring's four corners). The old NW and SE bends became the T-junctions G2 and G3.
+  - `RoadNetwork` now describes the **blocks as grid cells** (10 blocks: squares, long rectangles, and an L round the NE bend). `traceOutline` walks each block's boundary and turns every corner into the right kerb shape: a fillet, the inside or outside of a bend, or a roundabout circle. The same tracing, run the other way round the whole city, gives the outer kerb, a sidewalk and a lawn out to 900 m.
+  - **Removed:** `leaveTown`, spawning (`trySpawn`), town-entry routes and the "left town" statistic. Cars are placed once at the start.
+- **Lane changes after a junction:** on a closed ring, one lane per direction can only ever go straight on (every side road is on the other side). Without lane changes, 10 routes per lane formed a loop no car could enter or leave, and the self-test caught it.
+  - At every crossroads and T-junction, a car going straight on may now move into the other lane 16–40 m past the centre, along an S of two equal arcs (`laneChangeRoute`, r = (l² + d²) / 2d).
+  - These S-curves are measured as conflict zones like any crossing, so they stay collision-free by construction. Conflict sampling at intersections now reaches 44 m out.
+  - A car keeping its lane has priority over one moving into it. Of two cars swapping lanes, the one moving towards the kerb goes first. Lane changes are half as likely in the route choice.
+- **Default traffic:** 36 cars (was 24); at most 40 with `--cars`.
+- **Rendering fixes from the screenshot review:**
+  - **Washed-out top view:** a sun highlight on grass turned the whole city white from above. Lawns, the ground, the island grass and tree canopies now use a dim one-texel specular map (`Texture::makeGrey(20)`); the white tree tops are gone too.
+  - **Depth fighting seen from high up:** the grass showed through the asphalt, and the R2 island had radial "spokes". With a 0.1 m near plane the 24-bit depth step at 430 m is 11 cm. The near plane now grows with camera height (0.1 m + 1.2 % of the height, at most 6 m), and the ground slab sits 1 m below the city.
+  - **X0 props:** four of the old trees stood inside the new signal heads; they moved back onto the lawns, clear of the signals, lamps and buildings.
+  - The HUD still listed the retired `M` key; it now lists Shift (fast camera), and `G` is described as advancing every signal.
+- **Tools:**
+  - `--light-test` is new: a headless night drive along every road plus a full turn in every junction, checking that no light on screen changes strength by more than 0.1 in one frame. `LightBudget` was split out of `LightManager` for it, with no OpenGL.
+  - Capture views 6 (R2) and 7 (the ring road). Views 3 and 5 and the top camera are raised for the bigger city.
 
-**Still to do in Phase 3 (in this order)**
-1. **Review the screenshots** (`--capture x.png --size 1920x1080 --view 0|2|3|5 --time 12`, then `--time 22` for night): check the road meshes, kerbs, markings, arrows and signal heads. Fix any wrong winding, gaps or overlaps. The old props at X0 (8 buildings, 12 trees, crates, signs) were kept; check them against the new kerbs.
-2. **Night check:** roads lit, and no light popping while moving (`LightManager` fade).
-3. **Update `README.md`:** the city, the removal of `M`, the new tools, and the lab mapping. The Lab 3 lamps are now in the light budget.
-4. **Write the final Checkpoint 3**, commit, and push.
+**New or rewritten:** `RoadNetwork.h/.cpp` (layout, cell blocks, outline tracing), `LightManager.h/.cpp` (`LightBudget`, `PointLight::fromStreetLamp`), `README.md`.
+**Edited:** `TrafficBuild.cpp`, `Simulation.h/.cpp`, `RoadRenderer.cpp`, `MeshBuilder.h/.cpp` (ear clipping, inward walls), `Scene.h/.cpp`, `Camera.cpp`, `Texture.h/.cpp`, `Overlay.cpp`, `main.cpp`.
 
+**Verification results**
+- **Build:** Release x64 builds with no errors and no warnings.
+- **`--self-test`:** all 5721 checks pass (19 junctions, 220 routes, 822 conflict zones). The whole network is strongly connected, every route has a successor and a predecessor, and every body stays clear of kerbs, islands and the outer kerb.
+- **30-minute soaks, seeds 1 to 8:**
+
+  | Cars | Overlaps | Longest stop | Busiest junction | Result |
+  |---|---|---|---|---|
+  | 25 | 0 | 22–31 s | 8–9 % | 8 of 8 pass |
+  | 36 (default) | 0 | 28–48 s | 8–11 % | 8 of 8 pass |
+  | 40 (the cap) | 0 | 29–43 s | 8–11 % | 8 of 8 pass |
+
+  The old weak spot is gone: 40 cars used to fail one seed in three (a 70 s wait at R2). At 60 cars R2 saturates (waits of 62–104 s, 3 of 6 seeds fail), so the cap stays at 40.
+- **`--motion-test`:** judder 0.0007 (144 Hz), 0.0014 (60 Hz), 0.0011 (75 Hz). All pass.
+- **`--light-test`:** 182 lamps, 109,008 frames. The largest change of one visible light in one frame is 0.011, so nothing pops. Within a lamp's reach there are never more than 32 lamps, so the budget never fills and the fade is purely by distance.
+- **1080p, 400 frames per view:** a steady 72 FPS, 99th percentile 15–19 ms, and 1.5–2.8 ms of GPU time. Each run has one ~70 ms frame: the known one-time driver stall (Checkpoint 2).
+- **Screenshots, day and night, views 0 to 7:** roads, kerbs, sidewalks, markings, arrows, stop lines and signal heads look correct, including the L-shaped block, the outer sidewalk and both roundabouts. Night roads are lit.
+
+**Known leftovers**
+- **Top view orientation:** the top view shows +x ("east") on the left. That is the existing right-handed Y-up convention with +z called north, unchanged since Phase 1; only the labels would change.
+- **Buildings:** only the X0 core has buildings; the other blocks are lawn until Phase 6 (city dressing).
+- **Lane changes:** these only happen just past a crossroads or T-junction, not along a road or at a roundabout.
 
 ### ✅ Checkpoint 2: smooth motion and 1080p (2026-09-24)
 
@@ -228,7 +240,7 @@ that can switch between signals and a roundabout (`M`), six cars, a day/night cy
 lamps, one floodlight, Flat/Gouraud/Phong switching, Bezier surfaces and textures.
 
 You want it to become a small but lively city that runs smoothly:
-- **Roads:** a 3×3 road network with the outer loop road and wider 4-lane roads. It mixes signalised intersections, roundabouts and T-junctions, each in its own permanent place.
+- **Roads:** a closed road network (a 3×3 core inside a ring road, with no roads out of town) and wider 4-lane roads. It mixes signalised intersections, roundabouts and T-junctions, each in its own permanent place.
 - **Vehicles:** car, taxi, SUV, van, pickup, bus, truck, motorbike, police and ambulance.
 - **Pedestrians:** walking on footpaths and crossing at signals and zebra crossings.
 - **City dressing:** enough buildings, shops, props and trees that the city never looks blank, but well short of GTA density. No black-looking roads.
@@ -316,47 +328,48 @@ OpenGL has **no hardware ray-tracing API**. A full software BVH ray tracer is ex
 - **Cost:** SSR and SSAO run at **half resolution** with a depth-aware (bilateral) upsample. The budget for Enhanced is **3 ms or less at 1080p**.
 - **When OFF:** plain forward shading with PCF shadow maps. This is the fast default.
 
-### 3.2 City layout: a 3×3 junction grid, 100 m apart (about 200 × 200 m inside the loop)
+### 3.2 City layout: a closed maze, a 3×3 core inside a ring road (400 × 400 m)
 **Every junction has one permanent type** (revised 2026-09-24). T-junctions, signalised intersections and roundabouts each have their own place in the city. A roundabout never replaces an intersection, so the city keeps a mix of all three.
+**The city is closed** (revised later on 2026-09-24). No road leads out of town. The four roads that used to leave it now run into a ring road, so cars never despawn or respawn: they drive round the maze for ever.
 
 ```
-                │ road out of town (north)
-     B──────────X1─────────B
-     │          │          │
-     G──────────X0─────────R1───── road out of town (east)
-     │          │          │
- ────ST─────────R2─────────B
- road out       │ road out of town (south)
- (west)
+  z=+200  NWc ----- G4 ------ ST2 ------------------ NEc
+           |         |         |                      |
+  z=+100   |        G2 ------- X1 ----- NE bend       |
+           |         |         |           |          |
+  z=   0   |         G ------- X0 ------- R1 ------- G5
+           |         |         |           |          |
+  z=-100  G7 ------- ST ------ R2 -------- G3 ------ G6
+           |                   |                      |
+  z=-200  SWc --------------- ST3 ------------------ SEc
 ```
 
 | Mark | Type | Where |
 |---|---|---|
 | **X0** | Signalised 4-way intersection: the main crossroads, and the Phase 1 junction with its left-turn arrows, all-red and pedestrian signals | Centre |
-| **X1** | Signalised 4-way intersection | Top middle; its fourth arm leaves town to the north |
-| **R1** | 4-arm roundabout with the Bezier **fountain** island | Middle right; its fourth arm leaves town to the east |
-| **R2** | 4-arm roundabout | Bottom middle; its fourth arm leaves town to the south |
-| **G** | Give-way T-junction (the loop road has priority) | Middle left |
-| **ST** | Signalised T-junction | Bottom-left corner; a road leaves town to the west |
-| **B** | Bend (corner of the outer loop road) | The other three corners |
+| **X1** | Signalised 4-way intersection | Top middle of the core |
+| **R1** | 4-arm roundabout with the Bezier **fountain** island | Middle right of the core |
+| **R2** | 4-arm roundabout | Bottom middle of the core |
+| **ST**, **ST2**, **ST3** | Signalised T-junctions | Bottom left of the core; top and bottom of the ring |
+| **G**, **G2** to **G7** | Give-way T-junctions (the straight road through has priority) | Round the core and on the ring |
+| **NE bend**, **NWc**, **NEc**, **SWc**, **SEc** | Bends | The core's NE corner and the ring's four corners |
 
-- **Junctions:** 2 signalised intersections, 2 roundabouts, 2 T-junctions (one give-way, one signalised) and 3 bends. The perimeter forms the loop road.
-- **Roads out of town:** four roads lead out to the outskirts. That is where through-traffic enters and leaves the city.
-- **The `M` key:** it is retired when the city arrives in Phase 3. The island-rising animation belonged to the single-junction demo; in the city, the roundabouts simply are roundabouts. Until Phase 3, the single Phase 1 junction still toggles with `M`.
-- **Blocks:** 4 city blocks:
+- **Junctions:** 2 signalised intersections, 2 roundabouts, 3 signalised T-junctions, 7 give-way T-junctions and 5 bends: 19 in all.
+- **The `M` key:** retired in Phase 3. The island-rising animation belonged to the single-junction demo; in the city, the roundabouts simply are roundabouts.
+- **Blocks:** 10 blocks made of grid cells (squares, long rectangles and an L round the NE bend). Phase 6 dresses them:
   - a park with a small plaza;
   - a gas station with a short row of shops;
-  - two blocks of shops with apartments above.
-- **Scale:** grid size and spacing are single constants, so the city can still grow to 4×4 later if the frame rate allows.
+  - blocks of shops with apartments above.
+- **Scale:** the spacing (100 m) is a single constant, and blocks are lists of grid cells, so the maze can change shape by editing `RoadNetwork::makeCity`.
 - **Open-world feel:** vehicles never despawn. They random-walk the network forever, with density-aware turn choices so no single area clogs. Buses run a fixed loop line.
-- **Outskirts:** beyond the loop there is a single row of low buildings, then grass, low hills and a lit distant skyline ring at 350 to 700 m. The faint Phase 0 horizon haze blends the world edge into the sky. A soft invisible boundary sits 40 m outside the loop.
+- **Outskirts:** a sidewalk runs round the outside of the ring, then lawn out to 900 m, where the Phase 0 horizon haze blends the world edge into the sky. Later phases may add a row of low buildings and a distant skyline.
 
 ### 3.3 Road cross-section (wider roads)
 - **Lanes:** 2 lanes per direction, each 3.5 m wide. Lane centres are at ±1.75 m and ±5.25 m, with a double yellow centre line.
 - **Width:** the carriageway half-width is 7.0 m. Kerbs are 0.15 m high. Sidewalks are 4.5 m wide. Buildings are set back 12 m from the centreline.
 - **Signalised junctions:** the corner kerb radius is 5 m. The right turn uses radius 6.75 (outer lane) and the left turn uses radius 13.75 (inner lane). Both come from the existing tangency formulas with the new lane offsets.
 - **Roundabouts:** a single wide circulating lane of radius 13, an island of radius 9.5 with an apron, and entry and exit arcs of radius 8. Entry and exit arcs are built for both approach lanes, with the existing tangent-circle construction. Splitter islands and zebra crossings sit on every arm.
-- **Lane discipline:** the inner lane goes straight or left, and the outer lane goes straight or right. Turns decide which lane a car ends up in, so no lane changes are needed. Any lane may enter a roundabout.
+- **Lane discipline:** the inner lane goes straight or left, and the outer lane goes straight or right. Any lane may enter a roundabout. A car going straight on through a crossroads or T-junction may move into the other lane just past it (an S of two equal arcs, measured as a conflict zone). The closed ring needs this: there, one lane per direction can only go straight on.
 
 ### 3.4 Lighting: a simple light budget (no clustered lighting)
 The renderer stays **forward**, which keeps the Flat/Gouraud/Phong demo working.
@@ -606,11 +619,11 @@ Each new `.cpp`, `.h` and shader file is registered in `OpenGLMiniProject.vcxpro
   - **Spikes:** the only frame over 25 ms not caused by the launch or the fullscreen switch is a single driver stall about 6 s after launch, inside `SwapBuffers`. Our own work in that frame is 0.5 ms; see Checkpoint 2.
   - **720p:** forcing the render scale to 0.67 still looks clean.
 
-### Phase 3: Road network (3×3), wider roads, roundabouts, the loop
-- **Network:** `RoadNetwork` with the 3×3 layout of section 3.2.
+### Phase 3: Road network (closed maze), wider roads, roundabouts, the ring ✅ DONE (see Checkpoint 3)
+- **Network:** `RoadNetwork` with the closed layout of section 3.2.
   - The generic junction generator builds signalised 4-way intersections, signalised T-junctions, give-way T-junctions, bends and 4-arm roundabouts.
   - Each junction keeps its own permanent type.
-  - Also: 4-lane roads, four roads out of town, and density-aware random routing.
+  - Also: 4-lane roads, lane changes after a junction, no roads out of town, and density-aware random routing.
 - **Road meshes:** generated from the network: roads, kerbs with corner fillets, sidewalks, markings (lane dashes, double yellow, stop lines, turn arrows, zebras, yield teeth), splitter islands and islands. Markings are batched.
 - **Lighting:** street lamps along every road through the **simple light budget** (section 3.4). The central four lab lamps and the floodlight spot light are kept.
 - **Other:** the `M` key is retired, because no junction changes type. The fountain moves to roundabout R1, and the camera presets are updated.
@@ -728,7 +741,7 @@ Built in this order, each step checked with captures before the next:
 ## 10. Risks and mitigations
 | Risk | Mitigation |
 |---|---|
-| Scope is large | Strict phase order. Each phase ships on its own. The city is 3×3, and the grid size constant can change it. |
+| Scope is large | Strict phase order. Each phase ships on its own. The city is a 3×3 core inside a ring road, and `RoadNetwork::makeCity` can reshape it. |
 | Jitter from the fixed simulation step | Render interpolation (section 4.7) and critically damped cameras, checked in Phase 2 before anything else is added. |
 | Frame rate drops below 60 at 1080p | Batching, instancing, culling, quality presets, and the auto render-scale fallback to 720p. Timer queries show where the time goes. |
 | Enhanced mode too slow | SSR and SSAO at half resolution, fewer ray-march steps on Medium, and Enhanced OFF on Low. |

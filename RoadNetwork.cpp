@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numbers>
+#include <utility>
 
 namespace
 {
@@ -66,13 +67,21 @@ const char* armName(int arm)
 
 RoadNetwork RoadNetwork::makeCity()
 {
-    //                 | road out of town (north)
-    //      B ---------X1--------- B
-    //      |          |          |
-    //      G ---------X0-------- R1 ---- road out of town (east)
-    //      |          |          |
-    //  ---ST ---------R2--------- B
-    //  road out (west)|  road out of town (south)
+    // A closed maze of roads 400 m across: the original 3 x 3 core (X0 ...
+    // SE bend) inside a ring road, joined to it by six links, so there are
+    // many ways between any two places and no road leads out of town.
+    //
+    //   z=+200  NWc ----- G4 ------ ST2 ------------------ NEc
+    //            |         |         |                      |
+    //   z=+100   |        G2 ------- X1 ----- NE bend       |
+    //            |         |         |           |          |
+    //   z=   0   |         G ------- X0 ------- R1 ------- G5
+    //            |         |         |           |          |
+    //   z=-100  G7 ------- ST ------ R2 -------- G3 ------ G6
+    //            |                   |                      |
+    //   z=-200  SWc --------------- ST3 ------------------ SEc
+    //
+    //         x=-200    -100         0         +100       +200
     RoadNetwork network;
     const float d = spacing;
 
@@ -86,47 +95,88 @@ RoadNetwork RoadNetwork::makeCity()
         return network.junctions_.size() - 1;
     };
 
+    // The core.
     const std::size_t x0 = add("X0", JunctionType::SignalCross, {0.0f, 0.0f});
     const std::size_t x1 = add("X1", JunctionType::SignalCross, {0.0f, d});
     const std::size_t r1 = add("R1", JunctionType::Roundabout, {d, 0.0f});
     const std::size_t r2 = add("R2", JunctionType::Roundabout, {0.0f, -d});
     const std::size_t g = add("G", JunctionType::GiveWayT, {-d, 0.0f});
     const std::size_t st = add("ST", JunctionType::SignalT, {-d, -d});
-    const std::size_t nw = add("NW bend", JunctionType::Bend, {-d, d});
+    const std::size_t g2 = add("G2", JunctionType::GiveWayT, {-d, d});
     const std::size_t ne = add("NE bend", JunctionType::Bend, {d, d});
-    const std::size_t se = add("SE bend", JunctionType::Bend, {d, -d});
+    const std::size_t g3 = add("G3", JunctionType::GiveWayT, {d, -d});
+    // The ring road.
+    const std::size_t g4 = add("G4", JunctionType::GiveWayT, {-d, 2.0f * d});
+    const std::size_t st2 = add("ST2", JunctionType::SignalT, {0.0f, 2.0f * d});
+    const std::size_t g5 = add("G5", JunctionType::GiveWayT, {2.0f * d, 0.0f});
+    const std::size_t g6 = add("G6", JunctionType::GiveWayT, {2.0f * d, -d});
+    const std::size_t st3 = add("ST3", JunctionType::SignalT, {0.0f, -2.0f * d});
+    const std::size_t g7 = add("G7", JunctionType::GiveWayT, {-2.0f * d, -d});
+    const std::size_t nwc = add("NW corner", JunctionType::Bend, {-2.0f * d, 2.0f * d});
+    const std::size_t nec = add("NE corner", JunctionType::Bend, {2.0f * d, 2.0f * d});
+    const std::size_t sec = add("SE corner", JunctionType::Bend, {2.0f * d, -2.0f * d});
+    const std::size_t swc = add("SW corner", JunctionType::Bend, {-2.0f * d, -2.0f * d});
     network.centralJunction_ = x0;
     network.junctions_[r1].fountain = true;
 
-    // Grid roads.
+    // Core roads.
     network.connect(x0, ArmNorth, x1, ArmSouth);
     network.connect(x0, ArmEast, r1, ArmWest);
     network.connect(x0, ArmSouth, r2, ArmNorth);
     network.connect(x0, ArmWest, g, ArmEast);
-    network.connect(x1, ArmWest, nw, ArmEast);
+    network.connect(x1, ArmWest, g2, ArmEast);
     network.connect(x1, ArmEast, ne, ArmWest);
     network.connect(r1, ArmNorth, ne, ArmSouth);
-    network.connect(r1, ArmSouth, se, ArmNorth);
+    network.connect(r1, ArmSouth, g3, ArmNorth);
     network.connect(r2, ArmWest, st, ArmEast);
-    network.connect(r2, ArmEast, se, ArmWest);
-    network.connect(g, ArmNorth, nw, ArmSouth);
+    network.connect(r2, ArmEast, g3, ArmWest);
+    network.connect(g, ArmNorth, g2, ArmSouth);
     network.connect(g, ArmSouth, st, ArmNorth);
 
-    // Roads out of town.
-    network.leaveTown(x1, ArmNorth);
-    network.leaveTown(r1, ArmEast);
-    network.leaveTown(r2, ArmSouth);
-    network.leaveTown(st, ArmWest);
+    // Links from the core out to the ring.
+    network.connect(x1, ArmNorth, st2, ArmSouth);
+    network.connect(r1, ArmEast, g5, ArmWest);
+    network.connect(r2, ArmSouth, st3, ArmNorth);
+    network.connect(st, ArmWest, g7, ArmEast);
+    network.connect(g2, ArmNorth, g4, ArmSouth);
+    network.connect(g3, ArmEast, g6, ArmWest);
 
-    // At the give-way T-junction the loop road has priority over the side road.
-    network.junctions_[g].majorArm[ArmNorth] = true;
-    network.junctions_[g].majorArm[ArmSouth] = true;
+    // The ring, clockwise from the north-west corner.
+    network.connect(nwc, ArmEast, g4, ArmWest);
+    network.connect(g4, ArmEast, st2, ArmWest);
+    network.connect(st2, ArmEast, nec, ArmWest);
+    network.connect(nec, ArmSouth, g5, ArmNorth);
+    network.connect(g5, ArmSouth, g6, ArmNorth);
+    network.connect(g6, ArmSouth, sec, ArmNorth);
+    network.connect(sec, ArmWest, st3, ArmEast);
+    network.connect(st3, ArmWest, swc, ArmEast);
+    network.connect(swc, ArmNorth, g7, ArmSouth);
+    network.connect(g7, ArmNorth, nwc, ArmSouth);
 
+    // At every give-way T-junction the straight road through it has priority
+    // over the side road.
+    for (Junction& junction : network.junctions_)
+    {
+        if (junction.type != JunctionType::GiveWayT)
+            continue;
+        for (int arm = 0; arm < 4; ++arm)
+        {
+            const auto index = static_cast<std::size_t>(arm);
+            junction.majorArm[index] = junction.hasArm[index] && junction.hasArm[static_cast<std::size_t>((arm + 2) % 4)];
+        }
+    }
+
+    // The blocks, as the grid cells each one covers.
     network.blocks_ = {
-        Block{{-d, 0.0f}, {0.0f, d}},
-        Block{{0.0f, 0.0f}, {d, d}},
-        Block{{-d, -d}, {0.0f, 0.0f}},
-        Block{{0.0f, -d}, {d, 0.0f}}
+        // The four blocks of the core.
+        Block{{{-1, 0}}}, Block{{{0, 0}}}, Block{{{-1, -1}}}, Block{{{0, -1}}},
+        // Between the core and the ring.
+        Block{{{-2, -1}, {-2, 0}, {-2, 1}}},   // west, tall
+        Block{{{-1, 1}}},                      // north-west
+        Block{{{0, 1}, {1, 1}, {1, 0}}},       // north-east, L-shaped round the NE bend
+        Block{{{1, -1}}},                      // east
+        Block{{{0, -2}, {1, -2}}},             // south-east, wide
+        Block{{{-2, -2}, {-1, -2}}}            // south-west, wide
     };
 
     network.placeLamps();
@@ -142,16 +192,7 @@ void RoadNetwork::connect(std::size_t a, int armA, std::size_t b, int armB)
     first.armLength[static_cast<std::size_t>(armA)] = half;
     second.hasArm[static_cast<std::size_t>(armB)] = true;
     second.armLength[static_cast<std::size_t>(armB)] = half;
-    roads_.push_back({a, armA, static_cast<int>(b), armB, first.centre, second.centre});
-}
-
-void RoadNetwork::leaveTown(std::size_t junction, int arm)
-{
-    Junction& j = junctions_[junction];
-    j.hasArm[static_cast<std::size_t>(arm)] = true;
-    j.armLength[static_cast<std::size_t>(arm)] = outOfTownLength;
-    j.leavesTown[static_cast<std::size_t>(arm)] = true;
-    roads_.push_back({junction, arm, -1, 0, j.centre, j.centre + armDirection(arm) * visibleRoadLength});
+    roads_.push_back({a, armA, b, armB, first.centre, second.centre});
 }
 
 int RoadNetwork::junctionAt(glm::vec2 centre) const
@@ -215,20 +256,101 @@ void RoadNetwork::appendCorner(std::vector<glm::vec2>& outline, glm::vec2 corner
     outline.insert(outline.end(), points.begin(), points.end());
 }
 
+void RoadNetwork::appendOuterBend(std::vector<glm::vec2>& outline, glm::vec2 corner, glm::vec2 in, glm::vec2 out,
+                                  float inset) const
+{
+    // The kerb here is on the outside of a bend's curve: the bend's two arms
+    // point back along `in` and on along `out`, and the kerb is a quarter
+    // circle round the same centre as the road, beyond its outer edge.
+    const glm::vec2 centre = corner + (out - in) * bendRadius;
+    const glm::vec2 leftOfIn {-in.y, in.x};
+    const glm::vec2 leftOfOut {-out.y, out.x};
+    appendArc(outline, centre, bendRadius + halfWidth + inset,
+              std::atan2(leftOfIn.y, leftOfIn.x), std::atan2(leftOfOut.y, leftOfOut.x));
+}
+
+std::vector<glm::vec2> RoadNetwork::traceOutline(const std::vector<Cell>& cells, float inset, bool outside) const
+{
+    const auto contains = [&cells](int x, int z)
+    {
+        return std::any_of(cells.begin(), cells.end(), [x, z](const Cell& cell) { return cell.x == x && cell.z == z; });
+    };
+
+    // Every cell side with no cell of the set beyond it is on the boundary.
+    // Each one is directed so the set is on its left (counter-clockwise), or
+    // the other way round for the ground outside.
+    struct Edge
+    {
+        glm::ivec2 from;
+        glm::ivec2 to;
+    };
+    std::vector<Edge> edges;
+    for (const Cell& cell : cells)
+    {
+        const glm::ivec2 sw {cell.x, cell.z};
+        const glm::ivec2 se {cell.x + 1, cell.z};
+        const glm::ivec2 ne {cell.x + 1, cell.z + 1};
+        const glm::ivec2 nw {cell.x, cell.z + 1};
+        if (!contains(cell.x, cell.z - 1)) edges.push_back({sw, se});
+        if (!contains(cell.x + 1, cell.z)) edges.push_back({se, ne});
+        if (!contains(cell.x, cell.z + 1)) edges.push_back({ne, nw});
+        if (!contains(cell.x - 1, cell.z)) edges.push_back({nw, sw});
+    }
+    if (outside)
+    {
+        for (Edge& edge : edges)
+            std::swap(edge.from, edge.to);
+    }
+
+    // Chain the edges into one loop of grid points. Blocks are simple shapes
+    // with no holes and no two corners touching, so every grid point on the
+    // boundary has exactly one edge leaving it.
+    std::vector<glm::ivec2> loop;
+    loop.push_back(edges.front().from);
+    glm::ivec2 current = edges.front().to;
+    while (current != loop.front() && loop.size() <= edges.size())
+    {
+        loop.push_back(current);
+        const auto next = std::find_if(edges.begin(), edges.end(), [current](const Edge& edge) { return edge.from == current; });
+        current = next->to;
+    }
+
+    // Each grid point where the boundary turns is a corner of the kerb. Turning
+    // left, the area is on the inside of the corner (a kerb fillet, the inside
+    // of a bend, or a roundabout); turning right, it wraps round the outside of
+    // a bend. Where the boundary runs straight on, the kerb is straight too.
+    std::vector<glm::vec2> outline;
+    for (std::size_t index = 0; index < loop.size(); ++index)
+    {
+        const glm::ivec2 previous = loop[(index + loop.size() - 1) % loop.size()];
+        const glm::ivec2 point = loop[index];
+        const glm::ivec2 next = loop[(index + 1) % loop.size()];
+        const glm::vec2 in = glm::vec2(point - previous);
+        const glm::vec2 out = glm::vec2(next - point);
+        const float turn = in.x * out.y - in.y * out.x;
+        const glm::vec2 corner = glm::vec2(point) * spacing;
+        if (turn > 0.0f)
+            appendCorner(outline, corner, out - in, inset, in.x != 0.0f);
+        else if (turn < 0.0f)
+            appendOuterBend(outline, corner, in, out, inset);
+    }
+    return outline;
+}
+
 std::vector<glm::vec2> RoadNetwork::blockOutline(std::size_t block, float inset) const
 {
-    const Block& b = blocks_[block];
-    std::vector<glm::vec2> outline;
-    outline.reserve(4 * (arcSegments + 1));
+    return traceOutline(blocks_[block].cells, inset, false);
+}
 
-    // Counter-clockwise seen from above (x east, z north): south-west,
-    // south-east, north-east, north-west. Each corner piece runs from the
-    // side it arrives on to the side it leaves by.
-    appendCorner(outline, {b.minimum.x, b.minimum.y}, {1.0f, 1.0f}, inset, false);
-    appendCorner(outline, {b.maximum.x, b.minimum.y}, {-1.0f, 1.0f}, inset, true);
-    appendCorner(outline, {b.maximum.x, b.maximum.y}, {-1.0f, -1.0f}, inset, false);
-    appendCorner(outline, {b.minimum.x, b.maximum.y}, {1.0f, -1.0f}, inset, true);
-    return outline;
+std::vector<glm::vec2> RoadNetwork::outsideOutline(float inset) const
+{
+    std::vector<Cell> city;
+    for (int x = -gridHalf; x < gridHalf; ++x)
+    {
+        for (int z = -gridHalf; z < gridHalf; ++z)
+            city.push_back({x, z});
+    }
+    return traceOutline(city, inset, true);
 }
 
 std::vector<glm::vec2> RoadNetwork::splitterIsland(std::size_t junction, int arm) const
@@ -266,19 +388,7 @@ void RoadNetwork::placeLamps()
         const Junction& from = junctions_[road.from];
         const glm::vec2 direction = glm::normalize(road.end - road.start);
         const glm::vec2 side {direction.y, -direction.x};
-
-        if (road.to < 0)
-        {
-            // Out of town: one side only, thinning out into the countryside.
-            for (float t = junctionReach(from) + 6.0f; t < 200.0f; t += 36.0f)
-            {
-                const glm::vec2 p = road.start + direction * t + side * lampOffset;
-                lamps_.push_back({{p.x, roadY, p.y}, false});
-            }
-            continue;
-        }
-
-        const Junction& to = junctions_[static_cast<std::size_t>(road.to)];
+        const Junction& to = junctions_[road.to];
         const float length = glm::length(road.end - road.start);
         const float first = junctionReach(from) + 4.0f;
         const float last = length - junctionReach(to) - 4.0f;

@@ -71,8 +71,8 @@ struct Vehicle
     float turnSign = 0.0f;
     float steerAngleDegrees = 0.0f;
 
-    // A vehicle that has left town and is waiting for a safe gap to come
-    // back in on one of the roads into town. It is not drawn.
+    // False only if the car could not be placed at the start (the city was
+    // too full). An inactive car is not simulated or drawn.
     bool active = true;
 
     // True once the vehicle has been allowed through its junction. It then
@@ -113,7 +113,6 @@ struct TrafficStats
     float closestBodyGap = 1.0e9f;      // smallest body separation seen, metres
     float longestStop = 0.0f;           // longest time any vehicle stood still
     std::size_t trips = 0;              // routes completed
-    std::size_t leftTown = 0;           // vehicles that drove out of town
     std::vector<double> junctionSeconds;   // vehicle-seconds spent on each junction's routes
 };
 
@@ -196,8 +195,6 @@ private:
         int outLane = 0;
         Turn turn = Turn::Straight;
         int priorityRank = 0;
-        bool entersTown = false;   // starts where a road comes into town
-        bool leavesTown = false;   // ends where a road leaves town
 
         // Where the vehicle centre waits for the signal or for a gap. It always
         // lies before every conflict zone, so a waiting car blocks nobody.
@@ -242,7 +239,6 @@ private:
     std::vector<Conflict> conflicts_;
     std::vector<int> claimCounts_;   // two slots per conflict, one per side
     std::vector<SignalController> signals_;   // one per junction (unused when unsignalised)
-    std::vector<std::size_t> townEntryRoutes_;
     std::vector<Vehicle> vehicles_;
     std::size_t vehicleCount_ = 24;
     unsigned int seed_ = 12345u;
@@ -259,9 +255,8 @@ private:
     void buildConflicts();
     void finishRoutes();
 
-    // --- placement and spawning
+    // --- placement and routing
     void placeVehiclesInTown();
-    bool trySpawn(Vehicle& vehicle);
     std::size_t chooseNextRoute(std::size_t routeIndex);
     void placeOnRoute(Vehicle& vehicle, std::size_t routeIndex, float distance, float speed);
     void enterRoute(Vehicle& vehicle, std::size_t routeIndex);

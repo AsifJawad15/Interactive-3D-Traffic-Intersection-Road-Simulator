@@ -198,16 +198,15 @@ RoadRenderer::RoadRenderer(const TrafficSystem& traffic)
         const float length = glm::length(road.end - road.start);
 
         // Stop short of a bend's curve, which is drawn with the bend.
+        const Junction& to = junctions[road.to];
         const bool bendAtStart = from.type == JunctionType::Bend;
-        const bool bendAtEnd = road.to >= 0 && junctions[static_cast<std::size_t>(road.to)].type == JunctionType::Bend;
+        const bool bendAtEnd = to.type == JunctionType::Bend;
         const glm::vec2 a = road.start + direction * (bendAtStart ? RoadNetwork::bendRadius : 0.0f);
         const glm::vec2 b = road.end - direction * (bendAtEnd ? RoadNetwork::bendRadius : 0.0f);
         asphaltParts.addFlatQuad(a - side * half, b - side * half, b + side * half, a + side * half, y, asphaltTile);
 
         const float markStart = RoadNetwork::junctionReach(from);
-        const float markEnd = road.to >= 0
-            ? length - RoadNetwork::junctionReach(junctions[static_cast<std::size_t>(road.to)])
-            : 700.0f;
+        const float markEnd = length - RoadNetwork::junctionReach(to);
         if (markEnd > markStart)
             addRoadMarkings(white, yellow, {road.start + direction * markStart, road.start + direction * markEnd});
     }
@@ -276,6 +275,8 @@ RoadRenderer::RoadRenderer(const TrafficSystem& traffic)
 
             for (int arm = 0; arm < 4; ++arm)
             {
+                if (!junction.hasArm[static_cast<std::size_t>(arm)])
+                    continue;
                 const std::vector<glm::vec2> island = network.splitterIsland(index, arm);
                 const glm::vec2 apex = c + armDirection(arm) * 17.0f;
                 sidewalkParts.addFlatPolygon(island, top, sidewalkTile, &apex);
@@ -310,6 +311,18 @@ RoadRenderer::RoadRenderer(const TrafficSystem& traffic)
         kerbParts.addWall(kerb, y, top);
         sidewalkParts.addFlatRing(kerb, inner, top, sidewalkTile);
         lawnParts.addFlatPolygon(inner, top + 0.01f, lawnTile);
+    }
+
+    // ---- Outside the ring road: kerb, sidewalk, and grass out to the fog ----
+    {
+        constexpr float grassReach = 900.0f;
+        const std::vector<glm::vec2> kerb = network.outsideOutline(0.0f);
+        const std::vector<glm::vec2> inner = network.outsideOutline(RoadNetwork::sidewalkWidth);
+        // The outline winds clockwise with the city inside it; the kerb faces
+        // the road, which is inside.
+        kerbParts.addWall(kerb, y, top, true, true);
+        sidewalkParts.addFlatRing(kerb, inner, top, sidewalkTile);
+        lawnParts.addFlatRing(inner, network.outsideOutline(grassReach), top + 0.01f, lawnTile);
     }
 
     // ---- Stop and give-way lines, exactly where the traffic waits --------------

@@ -14,7 +14,8 @@
 // the painted lanes and the driven lanes cannot disagree.
 //
 // World x is east and world z is north. Every junction keeps one permanent
-// type: a crossroads never turns into a roundabout.
+// type: a crossroads never turns into a roundabout. The network is closed:
+// no road leaves town, so the same cars circulate for ever.
 
 enum class JunctionType
 {
@@ -22,7 +23,7 @@ enum class JunctionType
     SignalT,       // signalised T-junction
     GiveWayT,      // T-junction where the side road gives way
     Roundabout,    // 4-arm roundabout
-    Bend           // corner of the loop road
+    Bend           // a road turning a corner, with no side road
 };
 
 // Arms by compass direction from the junction centre.
@@ -44,9 +45,8 @@ struct Junction
     glm::vec2 centre {0.0f};
     std::array<bool, 4> hasArm {};
     // Distance from the centre to where this junction's routes start and end:
-    // the middle of the road to the next junction, or the edge of town.
+    // the middle of the road to the next junction.
     std::array<float, 4> armLength {};
-    std::array<bool, 4> leavesTown {};
     // Give-way T-junction: the arms of the road that has priority.
     std::array<bool, 4> majorArm {};
     bool fountain = false;
@@ -94,9 +94,11 @@ public:
     static constexpr float roundaboutCrossingFar = 28.0f;
 
     // ---- City layout -------------------------------------------------------
+    // Junctions sit on a 5 x 5 grid of points `spacing` apart, from -2 to +2
+    // in each direction. The squares between the grid points are the cells
+    // that make up the blocks.
     static constexpr float spacing = 100.0f;
-    static constexpr float outOfTownLength = 240.0f;  // where through-traffic appears and leaves
-    static constexpr float visibleRoadLength = 900.0f;
+    static constexpr int gridHalf = 2;
 
     static RoadNetwork makeCity();
 
@@ -105,11 +107,19 @@ public:
     int junctionAt(glm::vec2 centre) const;
     std::size_t centralJunction() const { return centralJunction_; }
 
-    // The four city blocks inside the loop road. The outline follows the kerb
-    // (inset 0) or runs parallel to it further in; its corners follow the
-    // junction there: a kerb fillet, the inside of a bend, or the roundabout.
+    // The city blocks: every area enclosed by roads, each made of one or more
+    // grid cells (square, long or L-shaped). The outline follows the kerb
+    // (inset 0) or runs parallel to it further in, counter-clockwise. Its
+    // corners follow the junction there: a kerb fillet, either side of a
+    // bend, or the roundabout. Every outline of one block has the same number
+    // of points, so two of them can be joined into a ring (the sidewalk).
     std::size_t blockCount() const { return blocks_.size(); }
     std::vector<glm::vec2> blockOutline(std::size_t block, float inset) const;
+
+    // The outer kerb of the ring road, seen from outside the city: inset 0 is
+    // the kerb, larger insets run parallel to it further out. Clockwise, so
+    // the ground outside the city is on the left, as a block's is.
+    std::vector<glm::vec2> outsideOutline(float inset) const;
 
     // Raised splitter island on a roundabout arm, as a closed outline.
     std::vector<glm::vec2> splitterIsland(std::size_t junction, int arm) const;
@@ -117,12 +127,13 @@ public:
     // Street lamps along every road, plus the four Lab 3 lamps at the centre.
     const std::vector<StreetLamp>& streetLamps() const { return lamps_; }
 
-    // Every road between two junctions (or from a junction out of town).
+    // Every road between two junctions. A road may run straight on past grid
+    // points where nothing joins it.
     struct Road
     {
         std::size_t from = 0;
         int fromArm = 0;
-        int to = -1;       // -1: leaves town
+        std::size_t to = 0;
         int toArm = 0;
         glm::vec2 start {0.0f};
         glm::vec2 end {0.0f};
@@ -134,10 +145,14 @@ public:
     static float junctionReach(const Junction& junction);
 
 private:
+    struct Cell
+    {
+        int x = 0;   // the cell spans x * spacing .. (x + 1) * spacing
+        int z = 0;
+    };
     struct Block
     {
-        glm::vec2 minimum {0.0f};   // south-west corner junction centre
-        glm::vec2 maximum {0.0f};   // north-east corner junction centre
+        std::vector<Cell> cells;
     };
 
     std::vector<Junction> junctions_;
@@ -147,8 +162,14 @@ private:
     std::size_t centralJunction_ = 0;
 
     void connect(std::size_t a, int armA, std::size_t b, int armB);
-    void leaveTown(std::size_t junction, int arm);
     void placeLamps();
+    // The kerb around a set of cells. `outside` traces the set's boundary
+    // the other way round, for the ground around the whole city.
+    std::vector<glm::vec2> traceOutline(const std::vector<Cell>& cells, float inset, bool outside) const;
     void appendCorner(std::vector<glm::vec2>& outline, glm::vec2 corner, glm::vec2 quadrant,
                       float inset, bool reverse) const;
+    // Where the kerb runs round the OUTSIDE of a bend: `in` and `out` are the
+    // directions of travel along the kerb into and out of the corner.
+    void appendOuterBend(std::vector<glm::vec2>& outline, glm::vec2 corner, glm::vec2 in, glm::vec2 out,
+                         float inset) const;
 };

@@ -1,20 +1,22 @@
-# 3D Smart Traffic Intersection
+# 3D Smart Traffic City
 
-An interactive traffic roundabout simulation in modern OpenGL.
+An interactive city traffic simulation in modern OpenGL.
 
 **CSE 4102 — Computer Graphics and Image Processing Laboratory**
 Asif Jawad · Roll 2107007 · Section A
 
-A four-arm intersection that runs in two modes. In **signalised mode** the lights
-cycle and vehicles queue, stop and turn. Pressing `M` sinks the signals and
-raises a central island out of the road: the same vehicles now **circulate around
-a roundabout**, giving way on entry and leaving by their chosen exit, with an
-animated fountain at the centre. A day–night cycle drives the sun, four street
-lamps and a floodlight, and the shading model can be switched between flat,
-Gouraud and Phong while the simulation runs.
+A small closed city, 400 m across, laid out like a maze: a core of six junctions
+inside a ring road, joined to it by six links. Every junction has its own
+permanent type: two **signalised crossroads**, two **roundabouts** (one with an
+animated Bezier fountain), a **signalised T-junction**, seven **give-way
+T-junctions**, two more signalised T-junctions on the ring, and five bends. No
+road leaves town: the same cars drive round the city for ever, choosing a new
+turn at every junction, with nobody appearing or disappearing. A day–night cycle
+drives the sun, 182 street lamps and a floodlight, and the shading model can be
+switched between flat, Gouraud and Phong while the simulation runs.
 
 The traffic is **collision-free by construction**: every place where two routes
-could touch is measured once at start-up, and a vehicle only enters the junction
+could touch is measured once at start-up, and a vehicle only enters a junction
 after claiming all of those places on its way (see *How the traffic works*). A
 headless soak test drives the traffic for half an hour of simulated time and
 checks the real vehicle outlines every step.
@@ -35,7 +37,8 @@ MSBuild.exe OpenGLMiniProject.vcxproj -p:Configuration=Release -p:Platform=x64
 ```
 
 Run the executable **from the project directory**, not from `x64\Release`, so
-that `shaders/` and `assets/` resolve.
+that `shaders/` and `assets/` resolve. `--cars N` sets the number of cars
+(default 36, at most 40).
 
 ---
 
@@ -45,12 +48,12 @@ that `shaders/` and `assets/` resolve.
 | --- | --- |
 | `W` `A` `S` `D` | Move the free camera |
 | `Q` / `E` | Move down / up |
+| `Shift` | Move the free camera four times faster |
 | Mouse | Look around |
 | `C` | Cycle camera: Free → Top → Follow → Driver |
 | `V` | Driver view / free view |
 | `Tab` | Select the next vehicle to follow |
-| **`M`** | **Switch between signalised and roundabout mode** |
-| `G` | Advance the traffic signal phase manually |
+| `G` | Advance every traffic signal by one phase |
 | `P` | Pause / resume |
 | `1` `2` `3` | Flat / Gouraud / Phong shading |
 | `T` | Toggle the automatic day–night cycle |
@@ -65,7 +68,9 @@ that `shaders/` and `assets/` resolve.
 | `Esc` | Exit |
 
 The window opens at 1920×1080, or maximised when the screen is only 1080p tall
-(`F11` then gives true fullscreen 1080p; `--fullscreen` starts that way).
+(`F11` then gives true fullscreen 1080p; `--fullscreen` starts that way). The old
+`M` key (switching one junction between signals and a roundabout) is gone: every
+junction now keeps its own type.
 
 ---
 
@@ -73,12 +78,47 @@ The window opens at 1920×1080, or maximised when the screen is only 1080p tall
 
 | Lab | Topic | Where it lives |
 | --- | --- | --- |
-| **1** | 2D primitives, 2D transformations | `Route::rotated` (`Route.cpp`) applies the 2D rotation matrix that generates the east, south and west approaches from the single northbound route. Lane markings and crossings in `Scene::drawRoadMarkings` are transformed quads. |
-| **2** | 3D drawing, camera, model / view / projection | `Mesh.cpp` builds indexed VAO/VBO/EBO geometry; `Camera.cpp` provides four camera modes using `glm::lookAt` and `glm::perspective`; `Scene::render` uploads `uModel`, `uView` and `uProjection` every frame. |
-| **3** | Illumination model and shading | `shaders/scene.frag` implements ambient + one directional sun + four attenuated point lights (`k_c = 1`, `k_l = 0.09`, `k_q = 0.032`, the lab's constants) + **one spot light** with cosine cut-off angles. `uShadingMode` selects flat, Gouraud or Phong from one shader pair. |
-| **4** | Texture mapping | `Texture::fromFile(path, wrapS, wrapT, minFilter, magFilter)` mirrors the lab's `loadTexture` signature, so wrapping and filtering are explicit at every call site. The roadside crates carry the lab's own **diffuse + specular map pair** (`container2.png`, `container2_specular.png`), sampled as `uDiffuseTexture` and `uSpecularTexture`. |
+| **1** | 2D primitives, 2D transformations | `Route::rotated` and `Route::translated` (`Route.cpp`) apply the 2D rotation and translation that place one authored northbound route onto every arm of every junction. Lane markings, zebras, arrows and stop lines in `RoadRenderer.cpp` are rectangles rotated onto the direction of their road. |
+| **2** | 3D drawing, camera, model / view / projection | `Mesh.cpp` builds indexed VAO/VBO/EBO geometry and `MeshBuilder` bakes the whole road network into six meshes; `Camera.cpp` provides four camera modes using `glm::lookAt` and `glm::perspective`; `Scene::render` uploads `uModel`, `uView` and `uProjection` every frame. |
+| **3** | Illumination model and shading | `shaders/scene.frag` implements ambient + one directional sun + attenuated point lights (`k_c = 1`, `k_l = 0.09`, `k_q = 0.032`, the lab's constants) + **one spot light** with cosine cut-off angles. The four Lab 3 lamps at the central crossroads are always lit; the other street lamps share a budget of 32 lights per frame (`LightManager.cpp`, `shaders/lights.glsl`). `uShadingMode` selects flat, Gouraud or Phong from one shader pair. |
+| **4** | Texture mapping | `Texture::fromFile(path, wrapS, wrapT, minFilter, magFilter)` mirrors the lab's `loadTexture` signature, so wrapping and filtering are explicit at every call site. The roadside crates carry the lab's own **diffuse + specular map pair** (`container2.png`, `container2_specular.png`), sampled as `uDiffuseTexture` and `uSpecularTexture`; grass and leaves use a dim one-texel specular map so they stay matte. |
 | **4b** | Texture sources | `assets/asphalt-photoreal.png` and the container pair are real image files. `assets/grass.png`, `assets/sidewalk.png` and `assets/facade.png` are optional: if present they are loaded, and if absent the matching procedural generator in `Texture.cpp` is used instead, so the project runs with no assets at all. |
 | **5** | Bezier curves and surfaces | `Mesh::makeBezierRevolution` (`Mesh.cpp`) ports `nCr` and the Bernstein evaluation from the Lab 5 curve program and sweeps the resulting profile about the Y axis. Control points are written in source (top of `Scene.cpp`) instead of picked with the mouse. It generates the **fountain basin and column, the tree trunks and canopies, the street lamp posts and the sign posts**. |
+
+---
+
+## The city
+
+```
+  z=+200  NWc ----- G4 ------ ST2 ------------------ NEc
+           |         |         |                      |
+  z=+100   |        G2 ------- X1 ----- NE bend       |
+           |         |         |           |          |
+  z=   0   |         G ------- X0 ------- R1 ------- G5
+           |         |         |           |          |
+  z=-100  G7 ------- ST ------ R2 -------- G3 ------ G6
+           |                   |                      |
+  z=-200  SWc --------------- ST3 ------------------ SEc
+
+        x=-200    -100         0         +100       +200
+```
+
+`X` = signalised crossroads, `R` = roundabout (R1 has the fountain), `ST` =
+signalised T-junction, `G` = give-way T-junction (the straight road through it
+has priority), `NWc`… = bends. `RoadNetwork::makeCity` (`RoadNetwork.cpp`)
+describes this once, as pure geometry; the traffic builds its routes from it and
+the renderer builds its meshes from it, so the painted lanes and the driven
+lanes cannot disagree.
+
+Every road has two lanes each way (3.5 m), kerbs, 4.5 m sidewalks and street
+lamps every 15 m on alternate sides. The ten **blocks** between the roads are
+described as the grid cells they cover: squares, long rectangles, and an L that
+wraps round the outside of the NE bend. `RoadNetwork::traceOutline` walks the
+boundary of the cells and turns each corner into the right kerb shape: a fillet
+at an intersection, the inside or the outside of a bend, or the circle of a
+roundabout. The same tracing, run the other way round the whole city, gives the
+kerb and sidewalk outside the ring road. Lawns are triangulated by ear clipping,
+since an L-shaped block is not convex.
 
 ---
 
@@ -100,11 +140,15 @@ the same update evaluated on a curved segment. Each sample also returns the
 curvature `1/r`: the front wheels steer to `atan(wheelbase / r)` and the
 cornering speed is `v = √(a_lat · r)`.
 
+A route runs from the middle of one road, through a junction, to the middle of
+the next road, where the next junction's routes begin. A car simply chains from
+route to route.
+
 ### Four-fold symmetry
 
 Every route is authored once for the northbound approach and rotated by 90°, 180°
-and 270°. That removes three quarters of the geometry and three quarters of the
-chances to get it wrong.
+and 270° onto the junction's real arms, then moved to the junction. That removes
+three quarters of the geometry and three quarters of the chances to get it wrong.
 
 ### Turn radii come from tangency, not from taste
 
@@ -118,26 +162,44 @@ left, so their circles are **externally tangent**: the distance between centres 
 driver's right of the approach lane pins its `x`, and tangency solves for its `z`.
 The merge point is then simply the point on the line joining the two centres.
 
+A **lane change** is an S of two opposite arcs of equal radius. Each covers half
+the length `l` and half the sideways shift `d`, which fixes the radius
+`r = (l² + d²) / 2d`; the heading never jumps.
+
 ---
 
 ## How the traffic works
 
+### Lanes and route choice
+
+At a crossroads or T-junction the inner lane goes straight on or left and the
+outer lane straight on or right; at a roundabout the outer lane takes the first
+and second exits and the inner lane the second and third. A car going straight on
+may also move over into the other lane once it is through the junction (between
+16 and 40 m past its centre). That is the only place cars change lane, and in a
+closed city it matters: round the ring road one lane only ever goes straight on,
+so without it a car there could never leave. At every junction a car picks its
+next route at random, weighted away from exits many cars are already heading for,
+and half as likely when it means changing lane.
+
 ### Conflict zones (measured once, `TrafficBuild.cpp`)
 
-For every pair of routes from different approaches, both routes are sampled every
-25 cm near the middle, a car-sized box (plus a 30 cm margin) is placed at each
-sample, and every pair of positions at which the two boxes overlap is marked.
-Each connected patch of marks is a **conflict zone**, stored as an interval of
-car-centre distance on each route. The key property: while a car's centre is
-outside its interval, no car on the other route can touch it, wherever that car
-is. The signal routes have 30 zones, the roundabout routes 60.
+For every pair of routes of the same junction that do not start in the same lane,
+both routes are sampled every 25 cm near the middle, a car-sized box (plus a
+30 cm margin) is placed at each sample, and every pair of positions at which the
+two boxes overlap is marked. Each connected patch of marks is a **conflict
+zone**, stored as an interval of car-centre distance on each route. The key
+property: while a car's centre is outside its interval, no car on the other route
+can touch it, wherever that car is. The city has 220 routes and 822 zones; the
+lane changes are measured the same way as any crossing.
 
 Routes that run along the same line — a shared approach lane, a shared exit lane,
 a shared stretch of the ring — are found the same way and stored as **shared
 spans**. On a shared span the cars simply follow each other.
 
 The stop line of each route is moved, if needed, to just before its first zone,
-so a waiting car can never be touched by crossing traffic.
+so a waiting car can never be touched by crossing traffic, and the painted line
+is drawn exactly there.
 
 ### Commit and claim (`Simulation.cpp`)
 
@@ -147,10 +209,14 @@ A car approaching the junction **commits** only when, in one check:
   is a left-turner already waiting at the front, clearing the junction);
 * the car in front of it in its lane has already committed (first in, first through);
 * there is room for it beyond the junction, so it never blocks the box;
-* nobody on a crossing route holds a claim on any zone on its way;
-* no car with priority (straight on over a right turn over a left turn;
-  circulating traffic over entering traffic) could reach a shared zone within
-  3.5 s. Equal priority is served in turn: the car that has waited longer goes first.
+* nobody on a crossing route holds a claim on any zone on its way — unless the car
+  is certain to be out of that zone before the claimant could possibly arrive;
+* no car with priority could reach a shared zone within 3.5 s. Priority goes to
+  straight on over a right turn over a left turn, to the major road at a give-way
+  T-junction, to circulating traffic at a roundabout, and to a car keeping its
+  lane over one moving into it. Equal priority is served in turn: the car that has
+  waited longer goes first, and after 20 s at the line a car makes crossing
+  traffic hold back for it.
 
 On commit it **claims every zone on its way at once**, and releases each one as
 soon as its centre has left that zone. A committed car never waits for a claim —
@@ -163,11 +229,11 @@ line when the light changes gives its claims back and stops, if it comfortably c
 
 Speed comes from the **Intelligent Driver Model**: acceleration
 `a·[1 − (v/v₀)⁴ − (s*/s)²]` with `s* = s₀ + vT + vΔv / 2√(ab)`, where the gap `s`
-is measured bumper to bumper **along the route**, across shared spans. An
-unclaimed stop line acts as a stationary car. Corners ahead are braked for
-evenly, from `v² = v_c² + 2ad`. The **sigmoid easing** limits how quickly the
-acceleration itself may change (the jerk), and a hard clamp keeps every car at
-least 0.6 m behind the one in front whatever the model says.
+is measured bumper to bumper **along the route**, across shared spans and on into
+the next route. An unclaimed stop line acts as a stationary car. Corners ahead
+are braked for evenly, from `v² = v_c² + 2ad`. The **sigmoid easing** limits how
+quickly the acceleration itself may change (the jerk), and a hard clamp keeps
+every car at least 0.6 m behind the one in front whatever the model says.
 
 ### Smooth motion
 
@@ -188,41 +254,46 @@ automatic mode that happens only if the frame rate stays below 55 FPS for 3 s.
 
 ### Signals
 
-Each axis gets a protected **left-turn arrow** (only when someone at the front of
-a lane wants to turn left), then green for everyone with left turns giving way,
-then yellow and a 2.5 s **all-red** clearance. Green is actuated: it ends early
-once its own queue is empty and someone waits across, and it never runs past 16 s
-while anyone waits.
+Every signalised junction has its own controller, and they start on alternating
+axes so the city does not change colour all at once. Each axis gets a protected **left-turn arrow** (only when someone at the
+front of a lane wants to turn left), then green for everyone with left turns
+giving way, then yellow and a 2.5 s **all-red** clearance. Green is actuated: it
+ends early once its own queue is empty and someone waits across, and it never
+runs past 16 s while anyone waits.
+
+### Street lamps
+
+The four Lab 3 lamps of the central crossroads are always lit. The other lamps
+share a budget of 32 lights per frame, chosen by distance among those whose
+reach is on screen. Each light's reach ends in a smooth window at exactly 22 m,
+and the farthest chosen lights fade out over the last fifth of the lighting
+distance, so lights come and go without popping; `--light-test` measures this.
+Lamps too far away to light the ground still glow and bloom.
 
 ---
 
 ## Verification
 
-Four command-line modes run without opening a window:
+These command-line modes run without opening a window:
 
 ```
 OpenGLMiniProject.exe --self-test
 OpenGLMiniProject.exe --plot
-OpenGLMiniProject.exe --soak 30 1 --cars 12 [--mode signals|roundabout|both] [--trace [T]]
+OpenGLMiniProject.exe --soak 30 1 [--cars 36] [--stop-limit 60] [--trace [T]]
 OpenGLMiniProject.exe --motion-test
+OpenGLMiniProject.exe --light-test
 ```
 
-`--motion-test` replays the frame loop at 144, 60 and 75 Hz with realistically
-uneven frame times and measures judder (how much a car's on-screen speed jumps
-from frame to frame); it must stay below 0.01 with interpolation.
+`--self-test` checks the whole network (5721 checks):
 
-`--capture out.png` renders a fixed view and saves it, and reports frame timing:
-average, 99th percentile, worst frame, frames over 25 ms, GPU time, and for each
-slow frame whether the time went into our own work or into the buffer swap.
-Options: `--view 0..3 --time H --shading 0..2 --roundabout --no-hud --frames N
---size 1920x1080 --fullscreen --scale 0.67 --full-rate --graph`.
-
-`--self-test` checks all 24 routes, the conflict table and the signal logic:
-
-* every route starts and ends on a lane centre at the edge of the scene;
+* every junction has as many arms as its type needs, and the whole network is
+  one piece: from any route, in either lane, a car can reach every other route
+  and get back again;
+* every route begins where others end and ends where others begin;
 * walking each route in 5 cm steps never jumps in position or in heading, which
   proves the segments actually join up tangentially;
-* roundabout routes stay clear of the raised island;
+* the car body stays on the road everywhere: clear of every kerb, splitter
+  island and roundabout island, and inside the outer kerb;
 * every stop line lies before all of its route's conflict zones;
 * every conflict is listed once by each of its two routes, and a left turn gives
   way to the opposing straight-on car;
@@ -230,35 +301,57 @@ Options: `--view 0..3 --time H --shading 0..2 --roundabout --no-hud --frames N
   way, and crossing axes are never allowed together at all;
 * `Route::reversed()` and `Route::translated()` behave.
 
-`--plot` prints a top-down ASCII map of both route families with the conflict
-zones marked `*`, followed by each route's stop line, zone count and shared lanes.
+`--plot` prints every junction's routes (stop line, zone count, successors) and
+writes `network.png`: a top-down picture of the kerbs, every route (inner lanes
+cyan, outer orange), the stop lines and the conflict zones.
 
 `--soak <minutes> <seed>` runs the traffic headless at the real 60 Hz step and
 tests every pair of real vehicle outlines (oriented boxes, separating-axis test)
-every step. It reports overlaps (must be 0), the closest gap, the longest time any
-car stood still (must be at most 60 s) and trips per approach (all must flow).
+every step. It passes when there are no overlaps, no car stood still longer than
+the stop limit (60 s), and no junction carries more than 35 % of all traffic.
 `--trace` prints the junction state and why each waiting car is waiting.
 The HUD shows the same overlap count live.
+
+`--motion-test` replays the frame loop at 144, 60 and 75 Hz with realistically
+uneven frame times and measures judder (how much a car's on-screen speed jumps
+from frame to frame); it must stay below 0.01 with interpolation.
+
+`--light-test` drives a camera along every road at night (street level, follow
+height, and a 30 m fly-over) and turns it on the spot in every junction. It
+records how much any light on screen changes strength from one frame to the next;
+a change over 0.1 counts as a pop, and there must be none.
+
+`--capture out.png` renders a fixed view and saves it, and reports frame timing:
+average, 99th percentile, worst frame, frames over 25 ms, GPU time, and for each
+slow frame whether the time went into our own work or into the buffer swap.
+Options: `--view 0..7 --time H --shading 0..2 --no-hud --frames N
+--size 1920x1080 --fullscreen --scale 0.67 --full-rate --graph`. The views are
+0 the central crossroads, 1 street level, 2 roundabout R1 and its fountain, 3 the
+whole city, 4 the T-junctions G and ST, 5 straight down, 6 roundabout R2 and
+7 the ring road.
 
 ---
 
 ## Demonstration order
 
-1. **Cameras** — free, top, follow, driver (`C`, `Tab`, `V`).
-2. **Hierarchical car model** — body, cabin, four wheels; wheel rotation derived
+1. **The city** — top view (`C`), then the maze of junction types, and a car
+   followed (`Tab`) round several of them without ever leaving town.
+2. **Cameras** — free (with `Shift`), top, follow, driver (`C`, `Tab`, `V`).
+3. **Hierarchical car model** — body, cabin, four wheels; wheel rotation derived
    from distance travelled (`angle += distance / wheelRadius`).
-3. **Traffic signals** — the left-turn arrow, green, yellow and all-red phases,
+4. **Traffic signals** — the left-turn arrow, green, yellow and all-red phases,
    stopping at the line, left turns giving way, the sigmoid jerk limit that makes
    braking and acceleration smooth, and `OVERLAPS: 0` on the HUD.
-4. **`M` — roundabout mode** — the island rises, the signals go dark, and cars
-   turn along arcs, steering their front wheels into the corners.
-5. **The Bezier fountain** — show the control-point list in `Scene.cpp`, then the
+5. **Roundabouts and give-way junctions** — cars giving way on entry, turning
+   along arcs and steering their front wheels into the corners; lane changes after
+   a junction.
+6. **The Bezier fountain** — show the control-point list in `Scene.cpp`, then the
    surface of revolution it generates.
-6. **Textures** — the road's `GL_REPEAT` tiling, and the crates' diffuse map next
+7. **Textures** — the road's `GL_REPEAT` tiling, and the crates' diffuse map next
    to their specular map.
-7. **Day–night** (`T`, `Y`, `N`, `L`) — sun, point lights, and the spot-light cone
-   on the road at night.
-8. **Shading comparison** (`1` / `2` / `3`) — flat, Gouraud and Phong, best seen on
+8. **Day–night** (`T`, `Y`, `N`, `L`) — sun, street lamps, and the spot-light cone
+   on the central crossroads at night.
+9. **Shading comparison** (`1` / `2` / `3`) — flat, Gouraud and Phong, best seen on
    the curved fountain and tree canopies.
 
 ---

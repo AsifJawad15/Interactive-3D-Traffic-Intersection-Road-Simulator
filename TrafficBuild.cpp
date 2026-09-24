@@ -193,6 +193,41 @@ namespace
         return route;
     }
 
+    // Where a car going straight on moves into the other lane of the road
+    // ahead: from just past the far zebra to well before the middle of that
+    // road (every road is at least 100 m long, so its middle is 50 m out).
+    constexpr float laneChangeStart = 16.0f;
+    constexpr float laneChangeEnd = 40.0f;
+
+    // Straight on through an intersection, then across into the other lane.
+    // Two opposite arcs of equal radius make the S, so the heading never
+    // jumps; each covers half the length and half the sideways shift, which
+    // fixes the radius: r = (l^2 + d^2) / 2d.
+    Route laneChangeRoute(float laneIn, float laneOut, float lengthIn, float lengthOut)
+    {
+        const float half = 0.5f * (laneChangeEnd - laneChangeStart);
+        const float shift = 0.5f * std::abs(laneOut - laneIn);
+        const float radius = (half * half + shift * shift) / (2.0f * shift);
+        const float angle = glm::degrees(std::asin(half / radius));
+
+        Route route;
+        route.addLine({-laneIn, -lengthIn}, {-laneIn, laneChangeStart});
+        if (laneOut > laneIn)
+        {
+            // Out towards the kerb: right, then left again.
+            route.addArc({-laneIn - radius, laneChangeStart}, radius, 0.0f, angle);
+            route.addArc({-laneOut + radius, laneChangeEnd}, radius, 180.0f + angle, -angle);
+        }
+        else
+        {
+            // In towards the centre line: left, then right again.
+            route.addArc({-laneIn + radius, laneChangeStart}, radius, 180.0f, -angle);
+            route.addArc({-laneOut - radius, laneChangeEnd}, radius, -angle, angle);
+        }
+        route.addLine({-laneOut, laneChangeEnd}, {-laneOut, lengthOut});
+        return route;
+    }
+
     // Roundabout entry for one lane. The entry arc curves right while the
     // ring curves left, so the two circles are EXTERNALLY tangent: the gap
     // between their centres is ringRadius + entryRadius. The entry centre lies
@@ -335,16 +370,23 @@ void TrafficSystem::buildRoutes()
                     const float lineDistance = bend ? route.totalLength()
                                                      : lengthIn - RoadNetwork::stopLine - lineSetBack;
                     addRoute(index, inArm, lane, outArm, lane, turn, route, lineDistance, 0.0f);
+
+                    // Going straight on, a car may also move over into the
+                    // other lane once it is through. This is the only place
+                    // cars change lane, and it is what lets a car caught in the
+                    // "straight on only" lane round the ring road get out again.
+                    // The crossing is measured as a conflict zone like any other.
+                    if (!bend && turn == Turn::Straight)
+                    {
+                        const int other = 1 - lane;
+                        addRoute(index, inArm, lane, outArm, other, turn,
+                                 laneChangeRoute(lanes[static_cast<std::size_t>(lane)], lanes[static_cast<std::size_t>(other)],
+                                                 lengthIn, lengthOut),
+                                 lineDistance, 0.0f);
+                    }
                 }
             }
         }
-    }
-
-    townEntryRoutes_.clear();
-    for (std::size_t index = 0; index < routes_.size(); ++index)
-    {
-        if (routes_[index].entersTown)
-            townEntryRoutes_.push_back(index);
     }
 }
 
@@ -362,8 +404,6 @@ void TrafficSystem::addRoute(std::size_t junction, int inArm, int inLane, int ou
     info.outArm = outArm;
     info.outLane = outLane;
     info.turn = turn;
-    info.entersTown = j.leavesTown[static_cast<std::size_t>(inArm)];
-    info.leavesTown = j.leavesTown[static_cast<std::size_t>(outArm)];
     info.stopDistance = lineDistance;
     info.mergeDistance = mergeDistance;
     info.priorityRank = turnRank(turn) +
@@ -378,8 +418,6 @@ void TrafficSystem::buildSuccessors()
     for (RouteInfo& info : routes_)
     {
         info.successors.clear();
-        if (info.leavesTown)
-            continue;
         const RouteSample end = info.route.sample(info.route.totalLength());
         for (std::size_t other = 0; other < routes_.size(); ++other)
         {
@@ -519,8 +557,10 @@ void TrafficSystem::buildConflicts()
     grids.reserve(routes_.size());
     for (const RouteInfo& info : routes_)
     {
+        // Intersections reach out past the end of the lane changes.
         const Junction& junction = network_.junctions()[info.junction];
-        const float radius = junction.type == JunctionType::Roundabout ? 34.0f : 28.0f;
+        const float radius = junction.type == JunctionType::Roundabout ? 34.0f
+                           : junction.isIntersection() ? laneChangeEnd + 4.0f : 28.0f;
         std::vector<PathSample> nearMiddle;
         for (const PathSample& sample : samplePath(info.route))
         {
@@ -644,6 +684,16 @@ void TrafficSystem::buildConflicts()
                 {
                     conflict.prioritySide = infoA.priorityRank > infoB.priorityRank ? 0
                                           : (infoB.priorityRank > infoA.priorityRank ? 1 : -1);
+
+                    // Otherwise equal: a car keeping its lane goes before one
+                    // moving across into it, and of two cars swapping lanes the
+                    // one moving out towards the kerb goes first.
+                    const bool changesA = infoA.inLane != infoA.outLane;
+                    const bool changesB = infoB.inLane != infoB.outLane;
+                    if (conflict.prioritySide < 0 && changesA != changesB)
+                        conflict.prioritySide = changesA ? 1 : 0;
+                    else if (conflict.prioritySide < 0 && changesA && changesB)
+                        conflict.prioritySide = infoA.outLane > infoB.outLane ? 0 : 1;
                 }
 
                 const std::size_t index = conflicts_.size();
@@ -737,8 +787,8 @@ std::string TrafficSystem::networkReport() const
 {
     std::string output;
     char line[200];
-    std::snprintf(line, sizeof(line), "%zu junctions, %zu routes, %zu conflict zones, %zu town entries\n",
-                  network_.junctionCount(), routes_.size(), conflicts_.size(), townEntryRoutes_.size());
+    std::snprintf(line, sizeof(line), "%zu junctions, %zu routes, %zu conflict zones\n",
+                  network_.junctionCount(), routes_.size(), conflicts_.size());
     output += line;
 
     for (std::size_t junction = 0; junction < network_.junctionCount(); ++junction)
@@ -757,12 +807,11 @@ std::string TrafficSystem::networkReport() const
             if (info.junction != junction)
                 continue;
             std::snprintf(line, sizeof(line),
-                "  %3zu %s%s -> %s%s %-8s length %6.1f  stop %6.1f  zones %2zu  next %zu%s%s\n",
+                "  %3zu %s%s -> %s%s %-8s length %6.1f  stop %6.1f  zones %2zu  next %zu\n",
                 index, armName(info.inArm), info.inLane == 0 ? "i" : "o",
                 armName(info.outArm), info.outLane == 0 ? "i" : "o", turnName(info.turn),
                 info.route.totalLength(), info.needsCommit ? info.stopDistance : -1.0f,
-                info.conflicts.size(), info.successors.size(),
-                info.entersTown ? "  (from out of town)" : "", info.leavesTown ? "  (out of town)" : "");
+                info.conflicts.size(), info.successors.size());
             output += line;
         }
     }
@@ -771,7 +820,8 @@ std::string TrafficSystem::networkReport() const
 
 bool TrafficSystem::writeNetworkImage(const std::string& path) const
 {
-    // Half a metre per pixel over 600 m x 600 m, north up.
+    // Half a metre per pixel over 600 m x 600 m, north up: the whole city
+    // (about 430 m across, kerb to kerb) with a margin.
     constexpr int size = 1200;
     constexpr float metresPerPixel = 0.5f;
     std::vector<unsigned char> pixels(static_cast<std::size_t>(size) * size * 3, 0);
@@ -815,16 +865,20 @@ bool TrafficSystem::writeNetworkImage(const std::string& path) const
         }
     };
 
-    // Kerbs of the city blocks, and the islands.
+    // Kerbs of the city blocks and round the outside, and the islands.
     for (std::size_t block = 0; block < network_.blockCount(); ++block)
         polyline(network_.blockOutline(block, 0.0f), {150, 150, 150}, true);
+    polyline(network_.outsideOutline(0.0f), {150, 150, 150}, true);
     for (std::size_t junction = 0; junction < network_.junctionCount(); ++junction)
     {
         const Junction& j = network_.junctions()[junction];
         if (j.type != JunctionType::Roundabout)
             continue;
         for (int arm = 0; arm < 4; ++arm)
-            polyline(network_.splitterIsland(junction, arm), {150, 150, 150}, true);
+        {
+            if (j.hasArm[static_cast<std::size_t>(arm)])
+                polyline(network_.splitterIsland(junction, arm), {150, 150, 150}, true);
+        }
         std::vector<glm::vec2> island;
         for (int step = 0; step < 64; ++step)
         {
@@ -883,32 +937,39 @@ bool TrafficSystem::selfTest(std::string& report) const
                armName(info.outArm) + (info.outLane == 0 ? "i" : "o");
     };
 
-    // Four roads into town, two lanes each.
-    std::size_t entryLanes = 0;
-    for (std::size_t index = 0; index < townEntryRoutes_.size(); ++index)
-    {
-        bool firstOfLane = true;
-        for (std::size_t earlier = 0; earlier < index; ++earlier)
-            firstOfLane = firstOfLane && !sameStartLane(townEntryRoutes_[earlier], townEntryRoutes_[index]);
-        entryLanes += firstOfLane ? 1 : 0;
-    }
-    if (routes_.size() < 40 || entryLanes != 8)
-        fail("unexpected network size: " + std::to_string(routes_.size()) + " routes, " +
-             std::to_string(entryLanes) + " lanes into town (expected 8)");
+    // The closed city: every junction has as many arms as its type says
+    // (never fewer than two, so no route needs a U-turn).
+    if (routes_.size() < 40)
+        fail("unexpected network size: " + std::to_string(routes_.size()) + " routes");
     ++checks;
+    for (const Junction& junction : network_.junctions())
+    {
+        const auto arms = std::count(junction.hasArm.begin(), junction.hasArm.end(), true);
+        const bool bend = junction.type == JunctionType::Bend;
+        const bool tee = junction.type == JunctionType::SignalT || junction.type == JunctionType::GiveWayT;
+        const bool full = junction.type == JunctionType::SignalCross || junction.type == JunctionType::Roundabout;
+        if ((bend && arms != 2) || (tee && arms != 3) || (full && arms != 4))
+            fail(junction.name + " has " + std::to_string(arms) + " arms, which does not match its type");
+        ++checks;
+    }
 
     // Everything a car's body could hit: raised blocks, splitter islands and
-    // the roundabout islands.
+    // the roundabout islands - and the kerb round the outside of the city.
     std::vector<std::vector<glm::vec2>> obstacles;
     for (std::size_t block = 0; block < network_.blockCount(); ++block)
         obstacles.push_back(network_.blockOutline(block, 0.0f));
     for (std::size_t junction = 0; junction < network_.junctionCount(); ++junction)
     {
-        if (network_.junctions()[junction].type != JunctionType::Roundabout)
+        const Junction& j = network_.junctions()[junction];
+        if (j.type != JunctionType::Roundabout)
             continue;
         for (int arm = 0; arm < 4; ++arm)
-            obstacles.push_back(network_.splitterIsland(junction, arm));
+        {
+            if (j.hasArm[static_cast<std::size_t>(arm)])
+                obstacles.push_back(network_.splitterIsland(junction, arm));
+        }
     }
+    const std::vector<glm::vec2> cityEdge = network_.outsideOutline(0.0f);
 
     std::vector<std::size_t> predecessors(routes_.size(), 0);
     for (const RouteInfo& info : routes_)
@@ -928,11 +989,11 @@ bool TrafficSystem::selfTest(std::string& report) const
             continue;
         }
 
-        // Every route begins where others end (or at the edge of town), and
-        // ends where others begin (or at the edge of town): lanes join up.
-        if (!info.entersTown && predecessors[index] == 0)
+        // Every route begins where others end, and ends where others begin:
+        // lanes join up, and a car can drive on for ever.
+        if (predecessors[index] == 0)
             fail(name + " cannot be reached: no route ends where it starts");
-        if (!info.leavesTown && info.successors.empty())
+        if (info.successors.empty())
             fail(name + " is a dead end: no route starts where it ends");
         checks += 2;
 
@@ -973,6 +1034,12 @@ bool TrafficSystem::selfTest(std::string& report) const
                 for (float across : {-bodyHalfWidth, bodyHalfWidth})
                 {
                     const glm::vec2 point = centre + forward * along + side * across;
+                    if (!pointInPolygon(point, cityEdge))
+                    {
+                        fail(name + " runs over the outer kerb at s = " + std::to_string(distance));
+                        clear = false;
+                        break;
+                    }
                     for (const std::vector<glm::vec2>& obstacle : obstacles)
                     {
                         if (pointInPolygon(point, obstacle))
@@ -1010,8 +1077,9 @@ bool TrafficSystem::selfTest(std::string& report) const
         ++checks;
     }
 
-    // The whole network is one piece: from any lane a car can reach any
-    // other, counting a drive out of town as re-entering on any road in.
+    // The closed city is one piece: from any route, in either lane, a car
+    // can reach every other one and get back again. Without the lane changes
+    // it could not: round the ring road one lane only ever goes straight on.
     {
         const auto reachable = [this](bool forwards)
         {
@@ -1027,8 +1095,7 @@ bool TrafficSystem::selfTest(std::string& report) const
                     const RouteInfo& from = forwards ? routes_[current] : routes_[other];
                     const std::size_t to = forwards ? other : current;
                     const bool linked =
-                        std::find(from.successors.begin(), from.successors.end(), to) != from.successors.end() ||
-                        (from.leavesTown && routes_[to].entersTown);
+                        std::find(from.successors.begin(), from.successors.end(), to) != from.successors.end();
                     if (linked && !seen[other])
                     {
                         seen[other] = true;
@@ -1038,8 +1105,11 @@ bool TrafficSystem::selfTest(std::string& report) const
             }
             return static_cast<std::size_t>(std::count(seen.begin(), seen.end(), true));
         };
-        if (reachable(true) != routes_.size() || reachable(false) != routes_.size())
-            fail("the network is not strongly connected");
+        const std::size_t ahead = reachable(true);
+        const std::size_t behind = reachable(false);
+        if (ahead != routes_.size() || behind != routes_.size())
+            fail("the network is not strongly connected: " + std::to_string(ahead) + " routes reachable ahead, " +
+                 std::to_string(behind) + " behind, of " + std::to_string(routes_.size()));
         ++checks;
     }
 

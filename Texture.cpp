@@ -138,6 +138,11 @@ Texture Texture::makeWhite()
     return Texture(1, 1, {255, 255, 255}, GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE, GL_NEAREST, GL_NEAREST);
 }
 
+Texture Texture::makeGrey(unsigned char level)
+{
+    return Texture(1, 1, {level, level, level}, GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE, GL_NEAREST, GL_NEAREST);
+}
+
 Texture Texture::makeAsphalt(int size)
 {
     std::vector<unsigned char> pixels(static_cast<size_t>(size * size * 3));

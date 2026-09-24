@@ -1,5 +1,7 @@
 #include "LightManager.h"
 
+#include "RoadNetwork.h"
+
 #include <glm/geometric.hpp>
 
 #include <algorithm>
@@ -29,6 +31,84 @@ namespace
     }
 }
 
+PointLight PointLight::fromStreetLamp(const StreetLamp& lamp)
+{
+    PointLight light;
+    light.position = lamp.position + glm::vec3(0.0f, 5.58f, 0.0f);
+    light.color = {1.65f, 0.92f, 0.36f};
+    light.range = 22.0f;
+    light.alwaysOn = lamp.lab;
+    return light;
+}
+
+bool LightBudget::reachInView(const PointLight& light, const glm::mat4& viewProjection)
+{
+    for (const glm::vec4& plane : frustumPlanes(viewProjection))
+    {
+        if (glm::dot(glm::vec3(plane), light.position) + plane.w < -light.range)
+            return false;
+    }
+    return true;
+}
+
+void LightBudget::choose(const std::vector<PointLight>& lights, const glm::vec3& cameraPosition,
+                         const glm::mat4& viewProjection, bool lampsOn, std::vector<Choice>& chosen)
+{
+    chosen.clear();
+    candidates_.clear();
+    if (!lampsOn)
+        return;
+
+    const std::array<glm::vec4, 6> planes = frustumPlanes(viewProjection);
+    for (std::size_t index = 0; index < lights.size(); ++index)
+    {
+        const PointLight& light = lights[index];
+        const float distance = glm::length(light.position - cameraPosition);
+        if (!light.alwaysOn && distance > lightingDistance + light.range)
+            continue;
+
+        // Dropped only when its whole sphere of reach is outside the view.
+        bool visible = true;
+        for (const glm::vec4& plane : planes)
+        {
+            if (glm::dot(glm::vec3(plane), light.position) + plane.w < -light.range)
+            {
+                visible = false;
+                break;
+            }
+        }
+        if (visible || light.alwaysOn)
+            candidates_.push_back({index, light.alwaysOn ? -1.0f : distance});
+    }
+
+    // Nearest first (the always-on lights sort to the front).
+    std::sort(candidates_.begin(), candidates_.end(),
+              [](const Candidate& a, const Candidate& b) { return a.distance < b.distance; });
+
+    // The chosen set ends at `cutoff`: the lighting distance, or closer when
+    // more lights are in range than fit. The last fifth of that distance is
+    // a fade, so a light leaving the set has already faded to nothing.
+    const std::size_t count = std::min<std::size_t>(candidates_.size(), maximumLights);
+    float cutoff = lightingDistance;
+    if (candidates_.size() > static_cast<std::size_t>(maximumLights))
+        cutoff = std::min(cutoff, candidates_[maximumLights].distance);
+    const float fadeStart = cutoff * 0.8f;
+
+    for (std::size_t slot = 0; slot < count; ++slot)
+    {
+        const Candidate& candidate = candidates_[slot];
+        const PointLight& light = lights[candidate.light];
+        float fade = 1.0f;
+        if (!light.alwaysOn)
+        {
+            fade = 1.0f - glm::clamp((candidate.distance - fadeStart) / std::max(cutoff - fadeStart, 0.001f), 0.0f, 1.0f);
+            if (fade <= 0.0f)
+                continue;
+        }
+        chosen.push_back({candidate.light, fade});
+    }
+}
+
 LightManager::LightManager()
 {
     glGenBuffers(1, &buffer_);
@@ -36,7 +116,7 @@ LightManager::LightManager()
     glBufferData(GL_UNIFORM_BUFFER, sizeof(Block), nullptr, GL_DYNAMIC_DRAW);
     glBindBuffer(GL_UNIFORM_BUFFER, 0);
     glBindBufferBase(GL_UNIFORM_BUFFER, bindingPoint, buffer_);
-    candidates_.reserve(256);
+    chosen_.reserve(maximumLights);
 }
 
 LightManager::~LightManager()
@@ -54,67 +134,21 @@ void LightManager::attach(GLuint program)
 
 void LightManager::update(const glm::vec3& cameraPosition, const glm::mat4& viewProjection, bool lampsOn)
 {
+    budget_.choose(lights_, cameraPosition, viewProjection, lampsOn, chosen_);
+
     Block block {};
-    candidates_.clear();
-
-    if (lampsOn)
-    {
-        const std::array<glm::vec4, 6> planes = frustumPlanes(viewProjection);
-        for (std::size_t index = 0; index < lights_.size(); ++index)
-        {
-            const PointLight& light = lights_[index];
-            const float distance = glm::length(light.position - cameraPosition);
-            if (!light.alwaysOn && distance > lightingDistance + light.range)
-                continue;
-
-            // Dropped only when its whole sphere of reach is outside the view.
-            bool visible = true;
-            for (const glm::vec4& plane : planes)
-            {
-                if (glm::dot(glm::vec3(plane), light.position) + plane.w < -light.range)
-                {
-                    visible = false;
-                    break;
-                }
-            }
-            if (visible || light.alwaysOn)
-                candidates_.push_back({index, light.alwaysOn ? -1.0f : distance});
-        }
-    }
-
-    // Nearest first (the always-on lights sort to the front).
-    std::sort(candidates_.begin(), candidates_.end(),
-              [](const Candidate& a, const Candidate& b) { return a.distance < b.distance; });
-
-    // The chosen set ends at `cutoff`: the lighting distance, or closer when
-    // more lights are in range than fit. The last fifth of that distance is
-    // a fade, so a light leaving the set has already faded to nothing.
-    const std::size_t count = std::min<std::size_t>(candidates_.size(), maximumLights);
-    float cutoff = lightingDistance;
-    if (candidates_.size() > static_cast<std::size_t>(maximumLights))
-        cutoff = std::min(cutoff, candidates_[maximumLights].distance);
-    const float fadeStart = cutoff * 0.8f;
-
     int written = 0;
-    for (std::size_t slot = 0; slot < count; ++slot)
+    for (const LightBudget::Choice& choice : chosen_)
     {
-        const Candidate& candidate = candidates_[slot];
-        const PointLight& light = lights_[candidate.light];
-        float fade = 1.0f;
-        if (!light.alwaysOn)
-        {
-            fade = 1.0f - glm::clamp((candidate.distance - fadeStart) / std::max(cutoff - fadeStart, 0.001f), 0.0f, 1.0f);
-            if (fade <= 0.0f)
-                continue;
-        }
+        const PointLight& light = lights_[choice.light];
         block.positionRange[written][0] = light.position.x;
         block.positionRange[written][1] = light.position.y;
         block.positionRange[written][2] = light.position.z;
         block.positionRange[written][3] = light.range;
-        block.colorFade[written][0] = light.color.r * fade;
-        block.colorFade[written][1] = light.color.g * fade;
-        block.colorFade[written][2] = light.color.b * fade;
-        block.colorFade[written][3] = fade;
+        block.colorFade[written][0] = light.color.r * choice.fade;
+        block.colorFade[written][1] = light.color.g * choice.fade;
+        block.colorFade[written][2] = light.color.b * choice.fade;
+        block.colorFade[written][3] = choice.fade;
         ++written;
     }
     block.count[0] = written;

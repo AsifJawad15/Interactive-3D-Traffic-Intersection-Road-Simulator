@@ -83,6 +83,7 @@ Scene::Scene(const TrafficSystem& traffic)
       treeCanopy_(Mesh::makeBezierRevolution(treeCanopyProfile(), 16, 16)),
       lampPost_(Mesh::makeBezierRevolution(lampPostProfile(), 12, 12)),
       white_(Texture::makeWhite()),
+      matte_(Texture::makeGrey(20)),
       // Road surface: GL_REPEAT so one tile covers eighty metres of carriageway,
       // and a mipmapped minification filter so the distant road does not shimmer.
       asphalt_(Texture::fromFileOr(
@@ -137,12 +138,7 @@ void Scene::buildStreetLamps(const RoadNetwork& network)
         heads.append(box, transformed(lamp.position + glm::vec3(0.0f, 5.75f, 0.0f), {0.75f, 0.28f, 0.75f}));
         bulbs.append(box, transformed(lamp.position + glm::vec3(0.0f, 5.58f, 0.0f), {0.46f, 0.16f, 0.46f}));
 
-        LightManager::PointLight light;
-        light.position = lamp.position + glm::vec3(0.0f, 5.58f, 0.0f);
-        light.color = {1.65f, 0.92f, 0.36f};
-        light.range = 22.0f;
-        light.alwaysOn = lamp.lab;
-        lights.push_back(light);
+        lights.push_back(PointLight::fromStreetLamp(lamp));
     }
 
     lampPosts_ = posts.build();
@@ -195,8 +191,11 @@ void Scene::render(
     shader_.setFloat("uSpotOuterCutOff", std::cos(glm::radians(24.0f)));
 
     // The ground runs out to two kilometres so it reaches the fog and the
-    // horizon; the old 82 m square ended in mid-air at the edge of the view.
-    drawCube(transformed({0.0f, -0.30f, 0.0f}, {2000.0f, 0.5f, 2000.0f}), {0.72f, 0.86f, 0.72f}, grass_, {780.0f, 780.0f}, 6.0f);
+    // horizon. The city and the lawn round it out to 900 m lie on top, so the
+    // ground sits well below them: close to the road it could fight the
+    // asphalt for depth when seen from high up.
+    drawMesh(cube_, transformed({0.0f, -1.25f, 0.0f}, {2000.0f, 0.5f, 2000.0f}), {0.72f, 0.86f, 0.72f}, grass_,
+             {780.0f, 780.0f}, 6.0f, glm::vec3{0.0f}, &matte_);
     drawRoads();
 
     const RoadNetwork& network = traffic.network();
@@ -296,7 +295,7 @@ void Scene::drawRoads()
     drawMesh(roads_.asphalt(), identity, {1.28f, 1.28f, 1.30f}, asphalt_, {1.0f, 1.0f}, 8.0f, glm::vec3{0.0f});
     drawMesh(roads_.kerbs(), identity, {0.70f, 0.70f, 0.72f}, sidewalk_, {1.0f, 1.0f}, 12.0f, glm::vec3{0.0f});
     drawMesh(roads_.sidewalks(), identity, {0.92f, 0.92f, 0.92f}, sidewalk_, {1.0f, 1.0f}, 12.0f, glm::vec3{0.0f});
-    drawMesh(roads_.lawns(), identity, {0.60f, 0.80f, 0.55f}, grass_, {1.0f, 1.0f}, 6.0f, glm::vec3{0.0f});
+    drawMesh(roads_.lawns(), identity, {0.60f, 0.80f, 0.55f}, grass_, {1.0f, 1.0f}, 6.0f, glm::vec3{0.0f}, &matte_);
 
     // Paint lies 12 mm above the asphalt; a polygon offset keeps it winning
     // the depth test even hundreds of metres away.
@@ -377,7 +376,7 @@ void Scene::drawIsland(const glm::vec2& centre)
         cylinder_,
         transformed({centre.x, lift + 0.04f, centre.y},
                     {radius * 2.0f, kerbThickness, radius * 2.0f}),
-        {0.60f, 0.80f, 0.55f}, grass_, {4.0f, 4.0f}, 6.0f, glm::vec3{0.0f});
+        {0.60f, 0.80f, 0.55f}, grass_, {4.0f, 4.0f}, 6.0f, glm::vec3{0.0f}, &matte_);
 }
 
 void Scene::drawFountain(const glm::vec2& centre)
@@ -447,13 +446,14 @@ void Scene::drawWaterJets(const glm::vec3& origin)
 
 void Scene::drawTrees()
 {
-    // Trees line the four approaches, clear of the carriageway and of the
-    // pavements the buildings sit on.
+    // Trees line the four approaches to X0, clear of the carriageway, the
+    // signal heads, the street lamps and the buildings. The four on the
+    // drivers' right, where the signal heads stand, are set back on the lawn.
     static const std::array<glm::vec2, 12> positions = {
-        glm::vec2{-9.5f, -16.0f}, glm::vec2{9.5f, -16.0f},
-        glm::vec2{-9.5f, 16.0f},  glm::vec2{9.5f, 16.0f},
-        glm::vec2{-16.0f, -9.5f}, glm::vec2{-16.0f, 9.5f},
-        glm::vec2{16.0f, -9.5f},  glm::vec2{16.0f, 9.5f},
+        glm::vec2{-14.0f, -19.0f}, glm::vec2{9.5f, -16.0f},
+        glm::vec2{-9.5f, 16.0f},  glm::vec2{14.0f, 19.0f},
+        glm::vec2{-16.0f, -9.5f}, glm::vec2{-19.0f, 14.0f},
+        glm::vec2{19.0f, -14.0f},  glm::vec2{16.0f, 9.5f},
         glm::vec2{-9.5f, -27.0f}, glm::vec2{9.5f, 27.0f},
         glm::vec2{-27.0f, 9.5f},  glm::vec2{27.0f, -9.5f}
     };
@@ -475,7 +475,7 @@ void Scene::drawTrees()
         glm::mat4 canopy = glm::translate(glm::mat4(1.0f), root + glm::vec3(0.0f, 2.15f * variation, 0.0f));
         canopy = glm::rotate(canopy, glm::radians(twist * 1.7f), {0.0f, 1.0f, 0.0f});
         canopy = glm::scale(canopy, {variation, variation, variation});
-        drawMesh(treeCanopy_, canopy, {0.20f, 0.44f, 0.20f}, grass_, {2.0f, 2.0f}, 8.0f, glm::vec3{0.0f});
+        drawMesh(treeCanopy_, canopy, {0.20f, 0.44f, 0.20f}, grass_, {2.0f, 2.0f}, 8.0f, glm::vec3{0.0f}, &matte_);
     }
 }
 
