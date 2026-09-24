@@ -1,4 +1,4 @@
-#include "Overlay.h"
+﻿#include "Overlay.h"
 
 #define STB_EASY_FONT_IMPLEMENTATION
 #include <stb_easy_font.h>
@@ -283,6 +283,27 @@ void Overlay::drawMinimap(const HudExtras& extras, int screenWidth, int screenHe
             appendRectangle(p.x - 1.5f, p.y - 1.5f, 3.0f, 3.0f);
         }
         drawVertices({0.92f, 0.94f, 0.98f, 1.0f}, screenWidth, screenHeight);
+    }
+    if (extras.buses != nullptr)
+    {
+        vertices_.clear();
+        for (const glm::vec2& bus : *extras.buses)
+        {
+            const glm::vec2 p = toScreen(bus);
+            appendRectangle(p.x - 3.0f, p.y - 3.0f, 6.0f, 6.0f);
+        }
+        drawVertices({1.0f, 0.55f, 0.10f, 1.0f}, screenWidth, screenHeight);
+    }
+    if (extras.emergency != nullptr)
+    {
+        vertices_.clear();
+        for (const glm::vec2& vehicle : *extras.emergency)
+        {
+            const glm::vec2 p = toScreen(vehicle);
+            appendRectangle(p.x - 2.5f, p.y - 2.5f, 5.0f, 5.0f);
+        }
+        const bool red = std::fmod(extras.seconds, 0.8f) < 0.4f;
+        drawVertices(red ? glm::vec4{1.0f, 0.2f, 0.15f, 1.0f} : glm::vec4{0.25f, 0.45f, 1.0f, 1.0f}, screenWidth, screenHeight);
     }
 
     // Your car: a yellow square with a line of dots pointing where it faces.

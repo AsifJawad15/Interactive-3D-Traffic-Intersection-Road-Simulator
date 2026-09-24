@@ -1,4 +1,4 @@
-# 3D Smart Traffic City
+﻿# 3D Smart Traffic City
 
 An interactive city traffic simulation in modern OpenGL.
 
@@ -337,6 +337,51 @@ traffic, and they are drawn blended between steps just like the AI cars.
 
 ---
 
+## The vehicles
+
+Eleven kinds drive the city (`VehicleTypes.cpp`): sedan, hatchback, SUV, taxi,
+police car, van, pickup, ambulance, box truck, 12 m city bus, and a motorbike
+with its rider. Each has its own size, cruising speed, acceleration, braking,
+time gap to the car in front, paint and driver's seat. The default mix of 36
+is two line buses and a repeating pattern that is mostly cars, with a few vans,
+trucks, motorbikes and emergency vehicles. Your own car is a yellow hatchback.
+
+* **Lofted bodies** (`VehicleRenderer.cpp`): the side profile is straight runs
+  joined by Bezier corners (the Lab 5 curve, `Mesh::bezier`), swept across the
+  width. The glass house leans inward, the corners are rounded seen from above,
+  and arches are cut round the wheels. Each band decides whether it is paint or
+  glass, which gives windscreens, rear windows and A-, B- and C-pillars.
+  Lamps, bumpers, the cargo box, the light bars and the signs are baked into one
+  mesh per material, so a vehicle costs a handful of draw calls.
+* **Lights**: headlights at night; tail lights that brighten when braking or
+  standing; indicators that blink from well before a turn or lane change until
+  it is done; the taxi's roof sign; the bus's "1 CITY LOOP" display. Police
+  cars and ambulances flash red and blue, and at night their light bars light
+  the road round them, joining the same 32-light budget as the lamps.
+* **Long vehicles swing**: the front axle follows the lane and the rear axle is
+  dragged behind it a wheelbase back (a tractrix), so a bus's rear wheels cut
+  inside a corner and its nose swings out. `--plot` writes `turns.png`, bodies
+  drawn every metre through three turns at X0.
+* **Where each size may drive** is worked out from the geometry: cars and vans
+  keep their whole body off the kerbs and may drive everywhere. Trucks and
+  buses keep their wheels on the road and may swing their overhangs up to
+  0.8 m over a kerb (the lamp posts stand further back). Trucks cannot take the
+  tight 6.75 m right turns from the kerb lane, so they have their own wide
+  right turn into the far lane, and at a roundabout they only go straight on
+  from the kerb lane. That leaves them 113 of the 220 ordinary routes, one
+  connected network.
+* **The bus line** runs round the block between X0, G, G2 and X1, turning left
+  from the kerb lane into the kerb lane (a bus-only movement). It has four stops
+  with a shelter, a lit advertising panel, a BUS sign and a yellow box on the
+  road. A bus stands 8 s at each stop with its doors open, and indicates before
+  pulling away.
+* **Junctions stay collision-free with long vehicles**: conflict zones are now
+  measured along the lane, per width tier (ordinary and wide), and each vehicle
+  adds its own length when it asks whether its body is over a zone. Where it
+  waits and when it has cleared the junction depend on its size class.
+
+---
+
 ## Verification
 
 These command-line modes run without opening a window:
@@ -350,7 +395,8 @@ OpenGLMiniProject.exe --light-test
 OpenGLMiniProject.exe --player-test
 ```
 
-`--self-test` checks the whole network (5721 checks):
+`--self-test` checks the whole network (15228 checks), and that every bus
+shelter stands on the sidewalk clear of everything else:
 
 * every junction has as many arms as its type needs, and the whole network is
   one piece: from any route, in either lane, a car can reach every other route
@@ -358,9 +404,15 @@ OpenGLMiniProject.exe --player-test
 * every route begins where others end and ends where others begin;
 * walking each route in 5 cm steps never jumps in position or in heading, which
   proves the segments actually join up tangentially;
-* the car body stays on the road everywhere: clear of every kerb, splitter
-  island and roundabout island, and inside the outer kerb;
-* every stop line lies before all of its route's conflict zones;
+* for every size class, on every route it may drive, the body swings without
+  jumps, lines up with the lane at both ends of the route, and stays on the road
+  (for trucks and buses, their wheels); cars and vans may drive every ordinary
+  route, trucks keep a connected network, and every size class can reach every
+  route it may drive and get back again;
+* every kind of vehicle fits inside its size class's outline;
+* the bus line is a closed loop, and every stop is on a straight, well short of
+  the queue at the line and outside every conflict zone;
+* every size class waits before all of its route's conflict zones;
 * every conflict is listed once by each of its two routes, and a left turn gives
   way to the opposing straight-on car;
 * no two conflicting movements are ever allowed together unless one clearly gives
@@ -369,12 +421,15 @@ OpenGLMiniProject.exe --player-test
 
 `--plot` prints every junction's routes (stop line, zone count, successors) and
 writes `network.png`: a top-down picture of the kerbs, every route (inner lanes
-cyan, outer orange), the stop lines and the conflict zones.
+cyan, outer orange, bus and truck turns magenta), the stop lines, the conflict
+zones and the bus stops. It also writes `turns.png`, a close-up of X0 with bus,
+truck and car bodies drawn every metre through a turn.
 
 `--soak <minutes> <seed>` runs the traffic headless at the real 60 Hz step and
 tests every pair of real vehicle outlines (oriented boxes, separating-axis test)
 every step. It passes when there are no overlaps, no car stood still longer than
-the stop limit (60 s), and no junction carries more than 35 % of all traffic.
+the stop limit (60 s), no junction carries more than 35 % of all traffic, and
+every line bus stopped at a stop at least once a minute.
 `--trace` prints the junction state and why each waiting car is waiting.
 The HUD shows the same overlap count live.
 
@@ -399,12 +454,14 @@ without judder.
 `--capture out.png` renders a fixed view and saves it, and reports frame timing:
 average, 99th percentile, worst frame, frames over 25 ms, GPU time, and for each
 slow frame whether the time went into our own work or into the buffer swap.
-Options: `--view 0..10 --time H --shading 0..2 --no-hud --frames N
+Options: `--view 0..15 --time H --shading 0..2 --no-hud --frames N
 --size 1920x1080 --fullscreen --scale 0.67 --full-rate --graph`. The views are
 0 the central crossroads, 1 street level, 2 roundabout R1 and its fountain, 3 the
 whole city, 4 the T-junctions G and ST, 5 straight down, 6 roundabout R2,
 7 the ring road, 8 your car from the chase view, 9 the driver view over its
-bonnet, and 10 on foot beside it.
+bonnet, 10 on foot beside it, 11 and 13 a line-up of every vehicle kind from
+the front and from behind, 12 a bus at its stop with its doors open, and 14 and
+15 the chase view and the driver's seat of the first line bus.
 
 ---
 

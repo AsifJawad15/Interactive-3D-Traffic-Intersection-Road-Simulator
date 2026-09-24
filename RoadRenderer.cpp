@@ -1,9 +1,10 @@
-#include "RoadRenderer.h"
+﻿#include "RoadRenderer.h"
 
 #include "MeshBuilder.h"
 #include "Simulation.h"
 
 #include <glm/geometric.hpp>
+#include <glm/trigonometric.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -338,6 +339,20 @@ RoadRenderer::RoadRenderer(const TrafficSystem& traffic)
             for (float step : {-1.5f, -0.5f, 0.5f, 1.5f})
                 white.addPaintRectangle(marking.position + side * (step * 0.85f), marking.direction, 0.35f, 0.55f, paintY);
         }
+    }
+
+    // ---- Bus stops: a yellow box in the kerb lane where the bus stands -------
+    for (const BusStopSite& site : traffic.busStopSites())
+    {
+        const float yaw = glm::radians(site.headingDegrees);
+        const glm::vec2 direction {std::sin(yaw), std::cos(yaw)};
+        const glm::vec2 side = rightOf(direction);
+        constexpr float boxLength = 15.0f;
+        constexpr float boxWidth = 3.0f;
+        for (float across : {-0.5f, 0.5f})
+            yellow.addPaintRectangle(site.busCentre + side * (across * boxWidth), direction, boxLength, 0.15f, paintY);
+        for (float along : {-0.5f, 0.5f})
+            yellow.addPaintRectangle(site.busCentre + direction * (along * boxLength), direction, 0.15f, boxWidth, paintY);
     }
 
     asphalt_ = asphaltParts.build();

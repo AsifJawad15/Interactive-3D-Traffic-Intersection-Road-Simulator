@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <glad/glad.h>
 #include <glm/mat4x4.hpp>
@@ -73,16 +73,19 @@ public:
     LightManager(const LightManager&) = delete;
     LightManager& operator=(const LightManager&) = delete;
 
-    void setLights(std::vector<PointLight> lights) { lights_ = std::move(lights); }
+    void setLights(std::vector<PointLight> lights) { fixed_ = std::move(lights); }
 
-    // Chooses this frame's lights and uploads them.
-    void update(const glm::vec3& cameraPosition, const glm::mat4& viewProjection, bool lampsOn);
+    // Chooses this frame's lights and uploads them. `moving` are this frame's
+    // lights that belong to no fixed lamp: the light bars of police cars and
+    // ambulances. They compete for the same budget.
+    void update(const glm::vec3& cameraPosition, const glm::mat4& viewProjection, bool lampsOn,
+                const std::vector<PointLight>& moving = {});
 
     // Connects a shader's "PointLightBlock" to this buffer.
     static void attach(GLuint program);
 
     int activeCount() const { return activeCount_; }
-    std::size_t totalCount() const { return lights_.size(); }
+    std::size_t totalCount() const { return fixed_.size(); }
 
 private:
     // std140 layout, mirrored by lights.glsl.
@@ -94,7 +97,8 @@ private:
     };
 
     GLuint buffer_ = 0;
-    std::vector<PointLight> lights_;
+    std::vector<PointLight> fixed_;
+    std::vector<PointLight> lights_;   // this frame's: the fixed ones, then the moving ones
     LightBudget budget_;
     std::vector<LightBudget::Choice> chosen_;
     int activeCount_ = 0;

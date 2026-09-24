@@ -1,4 +1,4 @@
-#include "Scene.h"
+﻿#include "Scene.h"
 
 #include "MeshBuilder.h"
 #include "Sky.h"
@@ -212,7 +212,6 @@ Scene::Scene(const TrafficSystem& traffic, const World& world)
       cube_(Mesh::makeCube()),
       beveledCube_(Mesh::makeBeveledCube(0.09f)),
       buildingMesh_(Mesh::makeBeveledCube(0.025f)),
-      carCabin_(Mesh::makeCarCabin()),
       cylinder_(Mesh::makeCylinder(32)),
       faceQuad_(makeFaceQuad()),
       fountainBasin_(Mesh::makeBezierRevolution(fountainBasinProfile(), 22, 28)),
@@ -257,6 +256,7 @@ Scene::Scene(const TrafficSystem& traffic, const World& world)
     LightManager::attach(shader_.id());
     buildStreetLamps(traffic.network());
     buildSigns();
+    buildBusShelters();
 }
 
 void Scene::buildSigns()
@@ -364,8 +364,20 @@ void Scene::render(
     // This frame's lights: the 32 that matter most of the street lamps, the
     // neon spill and the billboard glow, with the four Lab 3 lamps of the
     // central crossroads always among them.
+    // At night the light bars of police cars and ambulances flash red and
+    // blue on everything round them; they join the same budget.
     const bool night = dayNight.streetLampsOn();
-    lights_.update(cameraPosition, projection * view, night);
+    movingLights_.clear();
+    if (night)
+    {
+        for (const VehiclePose& pose : vehicles)
+        {
+            PointLight light;
+            if (pose.active && vehicleLooks_.lightBarLight(pose, elapsedSeconds, light) && light.color != glm::vec3(0.0f))
+                movingLights_.push_back(light);
+        }
+    }
+    lights_.update(cameraPosition, projection * view, night, movingLights_);
 
     // The Lab 3 spot light: the small lamp on the arm of the billboard at the
     // central crossroads, aimed at the middle of the picture. Its cut-off
@@ -399,39 +411,78 @@ void Scene::render(
     drawBuildings();
     drawTrees();
     drawStreetFurniture();
+    drawBusShelters(night);
     drawStreetLamps(night);
     drawBillboards(night);
     drawNeonSigns(night);
     drawSignals(traffic);
     drawGiveWaySigns();
 
-    // Vehicles that have left the scene and wait to re-enter are not drawn.
+    // Every vehicle in view. A vehicle whose whole body is outside the view
+    // is skipped; the one you ride in shows only what its driver sees.
+    const VehicleLamps lamps {night, elapsedSeconds};
+    const glm::mat4 viewProjection = projection * view;
+    vehicleParts_.clear();
+
+    // The first frame (the hidden warm-up frame) also draws every part of
+    // every kind once, far below the ground where nothing is seen, so the
+    // driver has uploaded and prepared all of them before the first visible
+    // frame.
+    if (!vehiclesWarmed_)
+    {
+        vehiclesWarmed_ = true;
+        for (std::size_t kind = 0; kind < vehicleKindCount; ++kind)
+        {
+            VehiclePose hidden;
+            hidden.kind = static_cast<VehicleKind>(kind);
+            hidden.position = {0.0f, -500.0f, 0.0f};
+            hidden.doorOpen = 1.0f;
+            vehicleLooks_.collect(hidden, {true, 0.0f}, vehicleParts_);
+            vehicleLooks_.collectDriverView(hidden.kind, hidden.position, 0.0f, glm::vec3(1.0f), true, vehicleParts_);
+        }
+    }
     for (std::size_t index = 0; index < vehicles.size(); ++index)
     {
-        if (vehicles[index].active && (!driverView || index != selectedVehicleIndex))
-            drawVehicle(vehicles[index]);
+        const VehiclePose& pose = vehicles[index];
+        if (!pose.active || (driverView && index == selectedVehicleIndex))
+            continue;
+        PointLight reach;
+        reach.position = pose.position;
+        reach.range = 0.5f * vehicleSpec(pose.kind).length + 1.5f;
+        if (LightBudget::reachInView(reach, viewProjection))
+            vehicleLooks_.collect(pose, lamps, vehicleParts_);
+    }
+    if (driverView && !vehicles.empty())
+    {
+        const VehiclePose& ridden = vehicles[selectedVehicleIndex % vehicles.size()];
+        vehicleLooks_.collectDriverView(ridden.kind, ridden.position, ridden.yawDegrees, ridden.color, true, vehicleParts_);
     }
 
-    if (driverView && !vehicles.empty())
-        drawDriverCockpit(vehicles[selectedVehicleIndex % vehicles.size()]);
-
-    // Your car: from outside, or just its bonnet in the driver view. You on
-    // foot are drawn unless you are looking through your own eyes.
+    // Your car, a yellow hatchback: from outside, or just its bonnet in the
+    // driver view. You on foot are drawn unless you are looking through your
+    // own eyes.
+    const glm::vec3 playerColor {0.98f, 0.80f, 0.06f};
     if (playerDrawMode == PlayerDrawMode::DriverSeat)
     {
-        drawPlayerBonnet(player);
+        vehicleLooks_.collectDriverView(VehicleKind::Hatchback, player.carPosition, player.carYawDegrees, playerColor,
+                                        false, vehicleParts_);
     }
     else
     {
         VehiclePose car;
         car.active = true;
+        car.kind = VehicleKind::Hatchback;
         car.position = player.carPosition;
         car.yawDegrees = player.carYawDegrees;
         car.wheelAngleDegrees = player.carWheelDegrees;
         car.steerAngleDegrees = player.carSteerDegrees;
-        car.color = {0.98f, 0.80f, 0.06f};
-        drawVehicle(car);
+        car.color = playerColor;
+        // Brake lights while you brake, and while you sit in it standing still.
+        car.braking = !player.walking && (std::abs(player.carSpeed) < 0.2f ||
+                                          (player.carSpeed > 0.3f && player.longitudinalAcceleration < -1.0f));
+        vehicleLooks_.collect(car, lamps, vehicleParts_);
     }
+    drawVehicleParts();
     if (player.walking && playerDrawMode != PlayerDrawMode::OwnEyes)
         drawWalker(player);
 }
@@ -878,119 +929,111 @@ void Scene::drawTrafficSignal(
     }
 }
 
-void Scene::drawVehicle(const VehiclePose& vehicle)
+void Scene::drawVehicleParts()
 {
-    glm::mat4 parent(1.0f);
-    parent = glm::translate(parent, vehicle.position);
-    parent = glm::rotate(parent, glm::radians(vehicle.yawDegrees), {0.0f, 1.0f, 0.0f});
+    for (const VehiclePart& part : vehicleParts_)
+        drawMesh(*part.mesh, part.model, part.color, white_, {1.0f, 1.0f}, part.shininess, part.emissive,
+                 part.matte ? &matte_ : nullptr);
+}
 
-    glm::mat4 shadow = glm::translate(parent, {0.0f, 0.035f, 0.0f});
-    shadow = glm::scale(shadow, {1.65f, 0.025f, 3.25f});
-    drawCylinder(shadow, {0.035f, 0.038f, 0.042f}, 2.0f);
+void Scene::buildBusShelters()
+{
+    // Every shelter in the city, baked into one mesh per material: a steel
+    // frame, glass back and end, a roof, a bench, and the stop sign on its
+    // pole at the kerb, lettered BUS on both faces.
+    MeshBuilder frames;
+    MeshBuilder glass;
+    MeshBuilder roofs;
+    MeshBuilder benches;
+    MeshBuilder signs;
+    MeshBuilder letters;
+    const MeshData box = Mesh::beveledCubeData(0.06f);
+    const float halfLength = 0.5f * World::shelterLength;
+    const float halfDepth = 0.5f * World::shelterDepth;
+    const float height = World::shelterHeight;
 
-    glm::mat4 body = glm::translate(parent, {0.0f, 0.55f, 0.0f});
-    body = glm::scale(body, {1.84f, 0.66f, 3.90f});
-    drawBeveledCube(body, vehicle.color, white_, {1, 1}, 68.0f);
-
-    glm::mat4 lowerBody = glm::translate(parent, {0.0f, 0.35f, 0.0f});
-    lowerBody = glm::scale(lowerBody, {1.88f, 0.22f, 3.62f});
-    drawBeveledCube(lowerBody, vehicle.color * 0.52f, white_, {1, 1}, 40.0f);
-
-    glm::mat4 cabin = glm::translate(parent, {0.0f, 1.08f, -0.18f});
-    cabin = glm::scale(cabin, {1.50f, 0.76f, 1.92f});
-    drawMesh(carCabin_, cabin, {0.045f, 0.16f, 0.24f}, white_, {1, 1}, 96.0f, glm::vec3{0.0f});
-
-    glm::mat4 roof = glm::translate(parent, {0.0f, 1.48f, -0.25f});
-    roof = glm::scale(roof, {1.20f, 0.13f, 1.00f});
-    drawBeveledCube(roof, vehicle.color * 0.92f, white_, {1, 1}, 72.0f);
-
-    for (float x : {-1.01f, 1.01f})
+    for (const BusShelter& shelter : world_.busShelters())
     {
-        glm::mat4 mirror = glm::translate(parent, {x, 1.02f, 0.34f});
-        mirror = glm::scale(mirror, {0.24f, 0.16f, 0.34f});
-        drawBeveledCube(mirror, vehicle.color * 0.78f, white_, {1, 1}, 60.0f);
-    }
-
-    for (float x : {-0.95f, 0.95f})
-    {
-        for (float z : {-1.25f, 1.25f})
+        const glm::mat4 frame = facingFrame({shelter.centre.x, RoadNetwork::kerbTopY, shelter.centre.y}, shelter.facingDegrees);
+        const auto part = [&frame, &box](MeshBuilder& builder, glm::vec3 centre, glm::vec3 size)
         {
-            // Hierarchy: body -> wheel hub -> steering -> rolling axle. Only the
-            // front pair (positive z, the end the headlights are on) steers.
-            const bool frontWheel = z > 0.0f;
+            builder.append(box, glm::scale(glm::translate(frame, centre), size));
+        };
+        for (float x : {-halfLength, halfLength})
+        {
+            for (float z : {-halfDepth + 0.05f, halfDepth - 0.05f})
+                part(frames, {x, 0.5f * height, z}, {0.08f, height, 0.08f});
+        }
+        part(roofs, {0.0f, height + 0.05f, 0.0f}, {World::shelterLength + 0.3f, 0.10f, World::shelterDepth + 0.25f});
+        part(glass, {0.0f, 0.2f + 0.5f * (height - 0.4f), -halfDepth + 0.05f}, {World::shelterLength - 0.1f, height - 0.4f, 0.03f});
+        part(glass, {-halfLength, 0.2f + 0.5f * (height - 0.4f), -0.1f}, {0.03f, height - 0.4f, World::shelterDepth - 0.4f});
+        // The advertising panel's case, at the other end (the picture is drawn per frame).
+        part(frames, {halfLength, 1.35f, -0.1f}, {0.14f, 2.0f, World::shelterDepth - 0.3f});
+        part(benches, {0.0f, 0.46f, -halfDepth + 0.35f}, {2.0f, 0.06f, 0.40f});
+        for (float x : {-0.8f, 0.8f})
+            part(frames, {x, 0.23f, -halfDepth + 0.35f}, {0.06f, 0.46f, 0.34f});
 
-            glm::mat4 hub = glm::translate(parent, {x, 0.42f, z});
-            if (frontWheel)
-                hub = glm::rotate(hub, glm::radians(vehicle.steerAngleDegrees), {0.0f, 1.0f, 0.0f});
-            hub = glm::rotate(hub, glm::radians(90.0f), {0.0f, 0.0f, 1.0f});
-            hub = glm::rotate(hub, glm::radians(vehicle.wheelAngleDegrees), {0.0f, 1.0f, 0.0f});
-
-            drawCylinder(glm::scale(hub, {0.68f, 0.28f, 0.68f}), {0.025f, 0.028f, 0.03f}, 18.0f);
-            drawCylinder(glm::scale(hub, {0.39f, 0.31f, 0.39f}), {0.58f, 0.61f, 0.64f}, 72.0f);
+        // The stop sign, facing along the kerb so an arriving bus sees it.
+        const glm::vec2 pole = World::shelterPole(shelter);
+        const glm::mat4 signFrame = facingFrame({pole.x, RoadNetwork::kerbTopY, pole.y}, shelter.facingDegrees + 90.0f);
+        letters.append(box, glm::scale(glm::translate(signFrame, {0.0f, 1.3f, 0.0f}), {0.08f, 2.6f, 0.08f}));
+        signs.append(box, glm::scale(glm::translate(signFrame, {0.0f, 2.45f, 0.0f}), {0.62f, 0.50f, 0.05f}));
+        const std::vector<Stroke> strokes = textStrokes("BUS");
+        float right = 0.0f;
+        for (const Stroke& stroke : strokes)
+            right = std::max(right, stroke.x1);
+        const float scale = 0.22f / 7.0f;
+        for (int face = 0; face < 2; ++face)
+        {
+            const glm::mat4 plate = glm::rotate(glm::translate(signFrame, {0.0f, 2.45f, 0.0f}),
+                                                glm::radians(face == 0 ? 0.0f : 180.0f), {0.0f, 1.0f, 0.0f});
+            for (const Stroke& stroke : strokes)
+            {
+                const float u = (0.5f * (stroke.x0 + stroke.x1) - 0.5f * right) * scale;
+                const float v = (3.5f - 0.5f * (stroke.y0 + stroke.y1)) * scale;
+                letters.append(box, glm::scale(glm::translate(plate, {u, v, 0.03f}),
+                                               {(stroke.x1 - stroke.x0) * scale, (stroke.y1 - stroke.y0) * scale, 0.012f}));
+            }
         }
     }
 
-    for (float x : {-0.58f, 0.58f})
-    {
-        glm::mat4 headlight = glm::translate(parent, {x, 0.67f, 1.93f});
-        headlight = glm::scale(headlight, {0.38f, 0.20f, 0.08f});
-        drawBeveledCube(headlight, {1.0f, 0.88f, 0.50f}, white_, {1, 1}, 70.0f, {0.14f, 0.10f, 0.03f});
-
-        glm::mat4 tailLight = glm::translate(parent, {x, 0.67f, -1.93f});
-        tailLight = glm::scale(tailLight, {0.38f, 0.20f, 0.08f});
-        drawBeveledCube(tailLight, {0.88f, 0.025f, 0.012f}, white_, {1, 1}, 60.0f, {0.10f, 0.005f, 0.002f});
-    }
-
-    glm::mat4 frontBumper = glm::translate(parent, {0.0f, 0.34f, 1.98f});
-    frontBumper = glm::scale(frontBumper, {1.38f, 0.14f, 0.10f});
-    drawBeveledCube(frontBumper, {0.09f, 0.10f, 0.11f}, white_, {1, 1}, 46.0f);
-
-    glm::mat4 rearBumper = glm::translate(parent, {0.0f, 0.34f, -1.98f});
-    rearBumper = glm::scale(rearBumper, {1.38f, 0.14f, 0.10f});
-    drawBeveledCube(rearBumper, {0.09f, 0.10f, 0.11f}, white_, {1, 1}, 46.0f);
+    shelterFrames_ = frames.build();
+    shelterGlass_ = glass.build();
+    shelterRoofs_ = roofs.build();
+    shelterBenches_ = benches.build();
+    shelterSigns_ = signs.build();
+    shelterLetters_ = letters.build();
 }
 
-void Scene::drawDriverCockpit(const VehiclePose& vehicle)
+void Scene::drawBusShelters(bool illuminated)
 {
-    glm::mat4 parent(1.0f);
-    parent = glm::translate(parent, vehicle.position);
-    parent = glm::rotate(parent, glm::radians(vehicle.yawDegrees), {0.0f, 1.0f, 0.0f});
+    if (world_.busShelters().empty())
+        return;
+    const glm::mat4 identity(1.0f);
+    drawMesh(shelterFrames_, identity, {0.30f, 0.32f, 0.35f}, white_, {1.0f, 1.0f}, 48.0f, glm::vec3{0.0f});
+    drawMesh(shelterGlass_, identity, {0.10f, 0.14f, 0.17f}, white_, {1.0f, 1.0f}, 120.0f, glm::vec3{0.0f});
+    drawMesh(shelterRoofs_, identity, {0.74f, 0.76f, 0.79f}, white_, {1.0f, 1.0f}, 40.0f, glm::vec3{0.0f});
+    drawMesh(shelterBenches_, identity, {0.46f, 0.30f, 0.18f}, white_, {1.0f, 1.0f}, 20.0f, glm::vec3{0.0f});
+    drawMesh(shelterSigns_, identity, {0.07f, 0.24f, 0.72f}, white_, {1.0f, 1.0f}, 50.0f, glm::vec3{0.0f});
+    drawMesh(shelterLetters_, identity, {0.94f, 0.95f, 0.96f}, white_, {1.0f, 1.0f}, 50.0f, glm::vec3{0.0f});
 
-    glm::mat4 hood = glm::translate(parent, {0.0f, 0.69f, 1.20f});
-    hood = glm::scale(hood, {1.82f, 0.24f, 1.58f});
-    drawBeveledCube(hood, vehicle.color, white_, {1, 1}, 76.0f);
-
-    glm::mat4 dashboard = glm::translate(parent, {0.0f, 0.96f, 0.70f});
-    dashboard = glm::scale(dashboard, {1.86f, 0.11f, 0.24f});
-    drawBeveledCube(dashboard, {0.035f, 0.040f, 0.048f}, white_, {1, 1}, 30.0f);
-
-    for (float x : {-0.79f, 0.79f})
+    // The advertising pictures on both faces of the end panel, lit from
+    // inside at night like the billboards.
+    const float halfLength = 0.5f * World::shelterLength;
+    for (const BusShelter& shelter : world_.busShelters())
     {
-        const float pillarX = x < 0.0f ? -0.94f : 0.94f;
-        glm::mat4 pillar = glm::translate(parent, {pillarX, 1.31f, 0.88f});
-        pillar = glm::rotate(pillar, glm::radians(x < 0.0f ? -10.0f : 10.0f), {0.0f, 0.0f, 1.0f});
-        pillar = glm::scale(pillar, {0.07f, 0.62f, 0.08f});
-        drawBeveledCube(pillar, vehicle.color * 0.58f, white_, {1, 1}, 48.0f);
+        const glm::mat4 frame = facingFrame({shelter.centre.x, RoadNetwork::kerbTopY, shelter.centre.y}, shelter.facingDegrees);
+        for (float side : {-1.0f, 1.0f})
+        {
+            glm::mat4 face = glm::translate(frame, {halfLength + side * 0.075f, 1.35f, -0.1f});
+            face = glm::rotate(face, glm::radians(side * 90.0f), {0.0f, 1.0f, 0.0f});
+            emissiveTextured_ = 1.0f;
+            drawMesh(faceQuad_, glm::scale(face, {World::shelterDepth - 0.45f, 1.8f, 1.0f}), {0.92f, 0.92f, 0.92f},
+                     billboardFaces_[static_cast<std::size_t>(shelter.design) % billboardFaces_.size()],
+                     {1.0f, 1.0f}, 14.0f, illuminated ? glm::vec3{0.45f} : glm::vec3{0.0f}, &matte_);
+            emissiveTextured_ = 0.0f;
+        }
     }
-
-    glm::mat4 steeringWheel = glm::translate(parent, {0.43f, 0.99f, 0.73f});
-    steeringWheel = glm::rotate(steeringWheel, glm::radians(90.0f), {1.0f, 0.0f, 0.0f});
-    steeringWheel = glm::scale(steeringWheel, {0.28f, 0.05f, 0.28f});
-    drawCylinder(steeringWheel, {0.025f, 0.028f, 0.032f}, 22.0f);
-
-    glm::mat4 instrumentPanel = glm::translate(parent, {0.43f, 1.01f, 0.80f});
-    instrumentPanel = glm::scale(instrumentPanel, {0.30f, 0.08f, 0.05f});
-    drawBeveledCube(instrumentPanel, {0.08f, 0.18f, 0.24f}, white_, {1, 1}, 60.0f, {0.01f, 0.06f, 0.08f});
-}
-
-void Scene::drawPlayerBonnet(const PlayerView& player)
-{
-    // The driver view looks out over the bonnet: that is all of the car
-    // there is to see from there.
-    glm::mat4 parent = glm::translate(glm::mat4(1.0f), player.carPosition);
-    parent = glm::rotate(parent, glm::radians(player.carYawDegrees), {0.0f, 1.0f, 0.0f});
-    drawBeveledCube(glm::scale(glm::translate(parent, {0.0f, 0.69f, 1.30f}), {1.84f, 0.26f, 1.40f}),
-                    {0.98f, 0.80f, 0.06f}, white_, {1, 1}, 76.0f);
 }
 
 void Scene::drawWalker(const PlayerView& player)

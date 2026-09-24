@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <Filter Include="Source Files">
@@ -84,6 +84,12 @@
     <ClCompile Include="Player.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="VehicleTypes.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="VehicleRenderer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Camera.h"><Filter>Header Files</Filter></ClInclude>
@@ -107,6 +113,8 @@
     <ClInclude Include="RoadRenderer.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="World.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Player.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="VehicleTypes.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="VehicleRenderer.h"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="assets\asphalt-photoreal.png"><Filter>Resource Files</Filter></None>

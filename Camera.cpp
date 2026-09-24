@@ -171,19 +171,26 @@ void Camera::update(float dt, const std::vector<VehiclePose>& vehicles, const Pl
     const VehiclePose& vehicle = vehicles[followedVehicleIndex_];
     const glm::vec3 direction = headingVector(vehicle.yawDegrees);
 
+    const VehicleSpec& spec = vehicleSpec(vehicle.kind);
     if (mode_ == CameraMode::Driver)
     {
-        // The driver's eye is rigidly part of the car: no smoothing, or the
-        // view would swim against the dashboard.
-        position_ = vehicle.position + direction * 0.08f + glm::vec3{0.0f, 1.30f, 0.0f};
-        const glm::vec3 target = vehicle.position + direction * 14.0f + glm::vec3{0.0f, 1.12f, 0.0f};
+        // The driver's eye is rigidly part of the vehicle: no smoothing, or
+        // the view would swim against the dashboard. Where it sits depends
+        // on the kind: low in a car, high up at the front of a bus.
+        const glm::vec3 left {direction.z, 0.0f, -direction.x};
+        position_ = vehicle.position + direction * spec.eye.z + left * spec.eye.x + glm::vec3{0.0f, spec.eye.y, 0.0f};
+        const glm::vec3 target = position_ + direction * 14.0f - glm::vec3{0.0f, 0.18f, 0.0f};
         front_ = glm::normalize(target - position_);
         followSettled_ = false;
         return;
     }
 
-    const glm::vec3 desiredPosition = vehicle.position - direction * 8.5f + glm::vec3{0.0f, 4.2f, 0.0f};
-    const glm::vec3 target = vehicle.position + direction * 2.2f + glm::vec3{0.0f, 0.9f, 0.0f};
+    // Further back and higher for a longer vehicle: a car is watched from
+    // 8.5 m behind, a bus from about 15 m.
+    const float back = 4.3f + 0.9f * spec.length;
+    const float up = 2.4f + 0.38f * spec.length;
+    const glm::vec3 desiredPosition = vehicle.position - direction * back + glm::vec3{0.0f, up, 0.0f};
+    const glm::vec3 target = vehicle.position + direction * (0.47f * spec.length) + glm::vec3{0.0f, 0.9f, 0.0f};
 
     // Entering follow mode (or switching car) starts the spring from where
     // the camera already is, at rest.

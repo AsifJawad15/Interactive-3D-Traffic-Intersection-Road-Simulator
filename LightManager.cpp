@@ -1,4 +1,4 @@
-#include "LightManager.h"
+﻿#include "LightManager.h"
 
 #include "RoadNetwork.h"
 
@@ -132,8 +132,12 @@ void LightManager::attach(GLuint program)
         glUniformBlockBinding(program, index, bindingPoint);
 }
 
-void LightManager::update(const glm::vec3& cameraPosition, const glm::mat4& viewProjection, bool lampsOn)
+void LightManager::update(const glm::vec3& cameraPosition, const glm::mat4& viewProjection, bool lampsOn,
+                          const std::vector<PointLight>& moving)
 {
+    // Rebuilt in place every frame; after the first frame it never allocates.
+    lights_.assign(fixed_.begin(), fixed_.end());
+    lights_.insert(lights_.end(), moving.begin(), moving.end());
     budget_.choose(lights_, cameraPosition, viewProjection, lampsOn, chosen_);
 
     Block block {};

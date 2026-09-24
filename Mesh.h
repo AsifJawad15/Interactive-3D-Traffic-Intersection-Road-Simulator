@@ -39,6 +39,11 @@ public:
     void draw() const;
     bool empty() const { return indexCount_ == 0; }
 
+    // A point on a Bezier curve of any degree, in the Bernstein form of the
+    // Lab 5 program. Used for the surfaces of revolution below and for the
+    // side profiles of the vehicle bodies (VehicleRenderer.cpp).
+    static glm::vec2 bezier(float t, const std::vector<glm::vec2>& controlPoints);
+
     static MeshData beveledCubeData(float bevel = 0.08f);
     static MeshData bezierRevolutionData(
         const std::vector<glm::vec2>& controlPoints, unsigned int stacks, unsigned int slices);

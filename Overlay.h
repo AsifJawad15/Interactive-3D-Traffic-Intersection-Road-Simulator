@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "Shader.h"
 
@@ -45,6 +45,9 @@ struct HudExtras
     const std::vector<glm::vec4>* roads = nullptr;
     const std::vector<glm::vec2>* roundabouts = nullptr;
     const std::vector<glm::vec2>* cars = nullptr;
+    const std::vector<glm::vec2>* buses = nullptr;       // the line buses, larger and orange
+    const std::vector<glm::vec2>* emergency = nullptr;   // police cars and ambulances, red and blue
+    float seconds = 0.0f;                                // for their flashing
     const std::vector<glm::vec2>* signals = nullptr;
     const std::vector<glm::vec3>* northSouthColors = nullptr;
     const std::vector<glm::vec3>* eastWestColors = nullptr;

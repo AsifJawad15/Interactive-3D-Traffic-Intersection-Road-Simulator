@@ -1,6 +1,7 @@
-# Enhancement Plan: OpenGLMiniProject → Open-World Smart City Traffic Simulator
+﻿# Enhancement Plan: OpenGLMiniProject → Open-World Smart City Traffic Simulator
 
-> Status: **Phases 0 to 4 complete. Phase 5 (vehicle variety) is next and waits for your go-ahead.** Written 2026-09-23.
+> Status: **Phases 0 to 5 complete. Phase 6 (city dressing) is next and waits for your go-ahead.** Written 2026-09-23.
+> **Revised 2026-09-24 (Phase 5):** 11 vehicle kinds with lofted Bezier bodies. Long vehicles swing through turns (the rear axle trails the front). The bus line is a loop of kerb-lane left turns round the X0–G–G2–X1 block with 4 stops. Trucks make wide right turns into the far lane and use roundabouts straight on only.
 > **Revised 2026-09-24 (Phase 4):** the player car has two views, a chase view above and behind it and a driver view over the bonnet (no cockpit interior); `C` locks the camera onto it and lets go again. The floodlight mast is gone: the city is lit by street lamps, signboards and neon. Pedestrian animation is planned in section 5.1.
 > **Revised 2026-09-24:** every junction keeps its own permanent type (T-junction, signalised intersection or roundabout), and no intersection is ever turned into a roundabout (section 3.2).
 > **Revised 2026-09-24 (later):** the city is closed. No road leads out of town: the 3×3 core sits inside a ring road, like a maze, and the same cars drive round it for ever with no respawning (section 3.2).
@@ -27,7 +28,77 @@
 | 2. Smooth motion and 1080p | ✅ Done and verified | 2026-09-24 | `enhancement/phase-2-smooth` |
 | 3. Road network | ✅ Done and verified | 2026-09-24 | `enhancement/phase-3-network` |
 | 4. Player car, driver view, on foot | ✅ Done and verified | 2026-09-24 | `enhancement/phase-4-player` |
-| 5 to 11 | Not started | | |
+| 5. Vehicle variety | ✅ Done and verified | 2026-09-24 | `enhancement/phase-5-vehicles` |
+| 6 to 11 | Not started | | |
+
+### ✅ Checkpoint 5: vehicle variety (2026-09-24)
+
+**What changed**
+- **11 kinds (`VehicleTypes.h/.cpp`):** sedan, hatchback, SUV, taxi, police car, van, pickup, ambulance, box truck, 12 m bus, and a motorbike with its rider.
+  - Each kind has its own size, cruising speed, IDM acceleration, braking, time gap, paint and driver's seat.
+  - The default 36 are 2 line buses plus a repeating mix: 6 sedans, 6 hatchbacks, 4 SUVs, 4 taxis, 4 motorbikes, 2 vans, 2 pickups, 2 police cars, 2 ambulances and 2 trucks.
+  - Your car is now a yellow hatchback.
+- **Lofted bodies (`VehicleRenderer.h/.cpp`):** a side profile of straight runs with Bezier corners (Lab 5, `Mesh::bezier`) is swept across the width.
+  - The glass house leans inward, the corners are rounded in plan, and arches are cut round the wheels.
+  - Bands become glass or paint, giving windscreens, rear windows and A-, B- and C-pillars.
+  - One mesh per material per kind (paint, second colour, glass, trim, lamps, signs, doors), about 20 draw calls per vehicle. Vehicles outside the view are skipped.
+  - The driver view shows each kind's own bonnet and dashboard; the player's view still shows only the bonnet.
+- **Lights:**
+  - Headlights at night.
+  - Tail lights that brighten when braking or standing.
+  - Indicators that blink from about 30 m before a turn (and during lane changes and roundabout exits) until it is done.
+  - The taxi roof sign and the bus's "1 CITY LOOP" display.
+  - Police and ambulance light bars flash red and blue. At night each throws a real flashing light, and these join the 32-light budget as moving lights (`LightManager::update`).
+- **Long vehicles swing on turns:** the front axle follows the lane and the rear axle trails a wheelbase behind it (a tractrix, tabled per route and size class). A bus's rear wheels cut inside a corner and its nose swings out.
+- **Four size classes (car, van, truck, bus), two width tiers:**
+  - **Where each class may drive** is found from the geometry. Cars and vans keep the whole body off every kerb. Trucks and buses keep their wheels on the road and may overhang a kerb by up to 0.8 m (the posts stand further back).
+  - Then the largest strongly connected set of routes is kept.
+  - **Trucks** cannot take the 6.75 m kerb-lane right turns, so they get their own wide right turn (8 m arc into the far lane), and at a roundabout they only go straight on from the kerb lane. That gives them 113 of 220 routes, all connected.
+  - The car and van classes had to be 1.88 m wide at most: the inner roundabout exit beside the splitter island leaves only a few centimetres.
+- **Collision-free with long vehicles:**
+  - Conflict zones are now intervals of *lane* distance, per width-tier pair.
+  - Each vehicle adds its own reach behind and ahead to know when its body is over a zone.
+  - Stop positions, junction exits, claims and the slip-in timing all use the vehicle's size and its own acceleration.
+  - A long leader is followed until its rear, not its middle, is past a split.
+- **The bus line:**
+  - A loop of four left turns from the kerb lane into the kerb lane (bus-only routes) round the block between X0, G, G2 and X1.
+  - One stop per leg: a shelter (glass, roof, bench, lit advertising panel, BUS sign on a pole), a yellow box on the road, and a warm light at night.
+  - A bus stands 8 s with its doors open, indicates, and pulls away.
+- **Faster start-up:** building the traffic takes about 0.65 s (it was about 2.5 s in Phase 4, and 6.5 s in the first version of this phase). Stations are cached, the grid cells are coarser, and routes and junctions are processed in parallel. The 30-minute soak now takes about 4 s.
+- **Cameras and HUD:** following an AI vehicle (`Tab`) stands further back and higher for longer vehicles, and its driver view sits at that kind's seat (high at the front of a bus). The minimap shows buses as orange squares and emergency vehicles flashing red and blue.
+- **Tools:**
+  - `--plot` also writes `turns.png`: bus, truck and car bodies every metre through a turn at X0.
+  - `--soak` reports bus stops and fails if a line bus stops less than once a minute.
+  - Capture views 11 and 13 (a line-up of every kind, front and rear), 12 (a bus at its stop, doors open), 14 and 15 (chase view and driver's seat of the first bus).
+
+**New files:** `VehicleTypes.h/.cpp`, `VehicleRenderer.h/.cpp`.
+**Edited:** `Simulation.h/.cpp`, `TrafficBuild.cpp`, `Route.h/.cpp` (`sampleExtended`, `project`), `Mesh.h/.cpp`, `Scene.h/.cpp`, `World.h/.cpp` (bus shelters), `RoadRenderer.cpp` (bus-stop boxes), `LightManager.h/.cpp` (moving lights), `Camera.cpp`, `Overlay.h/.cpp`, `main.cpp`, `README.md` and both project files.
+
+**Verification results**
+- **Build:** Release and Debug x64 build with no errors and no warnings.
+- **`--self-test`:** all 15228 checks pass (19 junctions, 252 routes, 1614 conflict zones). This includes body swing and kerb clearance per size class, connectivity per class, the class outlines, the closed bus line and its stops. The 4 bus shelters are on the sidewalk and clear of everything.
+- **30-minute soaks, seeds 1 to 8, with buses, trucks, vans and motorbikes:**
+
+  | Vehicles | Overlaps | Closest gap | Longest stop | Bus stops served | Result |
+  |---|---|---|---|---|---|
+  | 36 (default) | 0 | 0.67–1.04 m | 29–49 s | 90–95 | 8 of 8 pass |
+  | 40 (the cap) | 0 | 0.71–0.99 m | 32–56 s | 91–98 | 8 of 8 pass |
+
+- **`--motion-test`:** judder 0.0007 (144 Hz), 0.0013 (60 Hz) and 0.0011 (75 Hz), all PASS.
+- **`--light-test`:** 197 lights (now including the 4 shelters), 109,008 frames, largest change of one light in one frame 0.011, no pops: PASS.
+- **`--player-test`:** both crashes 0.000 m into the wall (the glancing one slides 6.6 m), walking slides 7.2 m, and 1.5 laps of the ring among the 36 mixed vehicles with 0 AI into the player and judder 0.0003: all PASS.
+- **1080p, 400 frames:** a steady 72 FPS (99th percentile 15–16 ms, 2.2–2.4 ms of GPU time) in the night chase view and the day overview.
+- **Screenshots:** the line-up by day and night from the front and behind, the bus stop by day and night, a bus followed to its stop, the bus driver's seat, the chase and driver views, and `turns.png`. Every kind reads correctly, and the lamps, signs and light bars behave as described.
+
+**Known leftovers**
+- **One-time stall:** each run has one frame of 140–380 ms about 2–4 s after launch. The time is spent waiting inside the driver: at our first GPU-timer call of that frame, not in our own code (simulation 0 ms, draw calls under 1 ms).
+  - In Phases 2 to 4 this was the ~70–108 ms stall inside the buffer swap. It is now longer, and drawing every vehicle mesh once in the hidden warm-up frame did not remove it.
+  - A comparison against the Phase 4 build was started but not finished.
+- **Trucks** keep to half the city: no kerb-lane right turns (they take their wide turn instead), and straight on only at roundabouts.
+- **The bus** stops in its lane (there are no bus bays), so traffic behind waits up to 8 s; nobody overtakes.
+- **The bus's left turn from the kerb lane** is a bus-only movement; the lane arrows still show straight and right.
+- **The body tilt** follows the rear-axle model only: there is no suspension, body roll or lean for the motorbike.
+- **Leftover folder:** a leftover `p4compare` folder next to the project (from the unfinished comparison) could not be fully deleted while files were locked; it is outside the repository and can be removed.
 
 ### ✅ Checkpoint 4: your car, on foot, and the night lights (2026-09-24)
 
@@ -737,7 +808,8 @@ Each new `.cpp`, `.h` and shader file is registered in `OpenGLMiniProject.vcxpro
   - Crash into buildings and cars: you get pushed back, with no tunnelling.
   - Walk into walls: you slide along them.
 
-### Phase 5: Vehicle variety
+### Phase 5: Vehicle variety ✅ DONE (see Checkpoint 5)
+- **As built (2026-09-24):** everything below. The bus loop is kerb-lane left turns round the X0–G–G2–X1 block. Trucks get wide right turns and use roundabouts straight on only. Headlight spot lights stay in Phase 8.
 - The lofted-body generator and the 11 vehicle types. Lights, indicators and brake lights. The bus loop line with bus-stop dwell time. Emergency flashers.
 - **Files:** new `VehicleTypes.*`, `VehicleRenderer.*`. Edits to `Mesh.*` and the simulation spawn mix.
 - **Check:** a mix of types is visible. Buses swing properly on turns and stop at stops. Soak with long vehicles still gives 0 overlaps.

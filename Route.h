@@ -53,6 +53,18 @@ public:
 
     RouteSample sample(float distance) const;
 
+    // Like sample, but before the start and past the end the route carries on
+    // in a straight line. Every route in the city starts and ends halfway
+    // along a straight road, so this is exactly where the previous and the
+    // next route run: a long vehicle's rear axle can be found before the
+    // start of the route its front axle is on.
+    RouteSample sampleExtended(float distance) const;
+
+    // The point of the route (extended as above) nearest to `point`, among
+    // distances from `from` to `to`: how far along it lies, and how far to
+    // the left of the direction of travel `point` is (negative: to the right).
+    void project(glm::vec2 point, float from, float to, float& distance, float& lateral) const;
+
     float totalLength() const { return totalLength_; }
     bool empty() const { return segments_.empty(); }
 

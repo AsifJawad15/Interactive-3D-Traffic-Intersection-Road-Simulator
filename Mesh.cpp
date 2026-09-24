@@ -101,6 +101,11 @@ namespace
     }
 }
 
+glm::vec2 Mesh::bezier(float t, const std::vector<glm::vec2>& controlPoints)
+{
+    return bezierPoint(t, controlPoints);
+}
+
 Mesh::Mesh(const std::vector<Vertex>& vertices, const std::vector<unsigned int>& indices)
     : indexCount_(static_cast<GLsizei>(indices.size()))
 {

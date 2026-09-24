@@ -1,4 +1,4 @@
-#include "World.h"
+﻿#include "World.h"
 
 #include <glm/geometric.hpp>
 #include <glm/trigonometric.hpp>
@@ -41,7 +41,15 @@ const std::vector<std::string>& World::billboardText()
     return text;
 }
 
-World World::make(const RoadNetwork& network)
+glm::vec2 World::shelterPole(const BusShelter& shelter)
+{
+    // Beyond the advertising end of the shelter, a metre towards the road.
+    const glm::vec2 facing = facingVector(shelter.facingDegrees);
+    const glm::vec2 along {facing.y, -facing.x};
+    return shelter.centre + along * (0.5f * shelterLength + 1.2f) + facing * 1.0f;
+}
+
+World World::make(const RoadNetwork& network, const std::vector<BusStopSite>& busStops)
 {
     World world;
 
@@ -157,6 +165,11 @@ World World::make(const RoadNetwork& network)
         }
     }
 
+    // ---- Bus shelters at the stops of the bus line ----------------------------
+    for (std::size_t index = 0; index < busStops.size(); ++index)
+        world.busShelters_.push_back({busStops[index].shelter, busStops[index].facingDegrees,
+                                      static_cast<int>((index + 1) % billboardText().size())});
+
     // ---- Collision shapes -----------------------------------------------------
     for (const Building& building : world.buildings_)
     {
@@ -182,6 +195,22 @@ World World::make(const RoadNetwork& network)
         const glm::vec2 across {facing.y, -facing.x};
         for (float side : {-1.0f, 1.0f})
             world.solidPosts_.push_back({billboard.centre + across * (side * (0.5f * billboardWidth - 0.4f)), 0.2f});
+    }
+
+    // A shelter's back wall and both end panels are solid; its open front is
+    // not, so you can walk in and sit on the bench.
+    for (const BusShelter& shelter : world.busShelters_)
+    {
+        const glm::vec2 facing = facingVector(shelter.facingDegrees);
+        const glm::vec2 along {facing.y, -facing.x};
+        const float half = 0.5f * shelterLength;
+        const float depth = 0.5f * shelterDepth;
+        world.solidBoxes_.push_back(makeOrientedBox(shelter.centre - facing * (depth - 0.05f), shelter.facingDegrees,
+                                                    {half, 0.06f}));
+        for (float side : {-1.0f, 1.0f})
+            world.solidBoxes_.push_back(makeOrientedBox(shelter.centre + along * (side * (half - 0.05f)) - facing * (0.5f * depth),
+                                                        shelter.facingDegrees, {0.06f, 0.5f * depth + 0.05f}));
+        world.solidPosts_.push_back({shelterPole(shelter), 0.08f});
     }
 
     // ---- Ground height ------------------------------------------------------
@@ -225,6 +254,15 @@ std::vector<PointLight> World::signLights() const
         light.position = {front.x, billboardBottom + 0.3f, front.y};
         light.color = {1.25f, 1.15f, 0.95f};
         light.range = 13.0f;
+        lights.push_back(light);
+    }
+    for (const BusShelter& shelter : busShelters_)
+    {
+        // The lamp under the roof, and the lit panel, light the waiting area.
+        PointLight light;
+        light.position = {shelter.centre.x, shelterHeight - 0.3f, shelter.centre.y};
+        light.color = {1.05f, 1.00f, 0.90f};
+        light.range = 8.0f;
         lights.push_back(light);
     }
     return lights;

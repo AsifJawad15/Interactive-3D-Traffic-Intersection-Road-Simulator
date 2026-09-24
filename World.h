@@ -1,8 +1,9 @@
-#pragma once
+﻿#pragma once
 
 #include "Collision.h"
 #include "LightManager.h"
 #include "RoadNetwork.h"
+#include "Simulation.h"
 
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
@@ -83,6 +84,16 @@ struct NeonSign
     bool flickers = false;       // one tired tube, for character
 };
 
+// A shelter at a stop of the bus line, on the sidewalk beside the kerb lane.
+// Its open side faces the road; a lit advertising panel closes one end and
+// a pole with the bus sign stands at the kerb beside it.
+struct BusShelter
+{
+    glm::vec2 centre {0.0f};
+    float facingDegrees = 0.0f;   // the open side looks this way, at the road
+    int design = 0;               // the picture on its advertising panel
+};
+
 // The spot light on the lamp arm of the spot-lit billboard (Lab 3).
 struct SpotLamp
 {
@@ -95,7 +106,13 @@ struct SpotLamp
 class World
 {
 public:
-    static World make(const RoadNetwork& network);
+    // `busStops` are the stops of the traffic's bus line: each gets a shelter.
+    static World make(const RoadNetwork& network, const std::vector<BusStopSite>& busStops = {});
+
+    // Size of a bus shelter: length along the kerb, depth, and height.
+    static constexpr float shelterLength = 3.6f;
+    static constexpr float shelterDepth = 1.5f;
+    static constexpr float shelterHeight = 2.5f;
 
     static constexpr float billboardWidth = 6.0f;
     static constexpr float billboardHeight = 3.0f;
@@ -111,6 +128,10 @@ public:
     const std::vector<Billboard>& billboards() const { return billboards_; }
     const std::vector<NeonSign>& neonSigns() const { return neonSigns_; }
     const SpotLamp& spotLamp() const { return spotLamp_; }
+    const std::vector<BusShelter>& busShelters() const { return busShelters_; }
+
+    // Where a shelter's sign pole stands.
+    static glm::vec2 shelterPole(const BusShelter& shelter);
 
     // Night lights besides the street lamps: the coloured spill of every neon
     // sign and the glow in front of every back-lit billboard. They join the
@@ -144,6 +165,7 @@ private:
     std::vector<Billboard> billboards_;
     std::vector<NeonSign> neonSigns_;
     SpotLamp spotLamp_;
+    std::vector<BusShelter> busShelters_;
 
     std::vector<OrientedBox> solidBoxes_;
     std::vector<Circle> solidPosts_;

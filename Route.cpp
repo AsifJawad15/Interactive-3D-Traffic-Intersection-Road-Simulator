@@ -1,9 +1,12 @@
 #include "Route.h"
 
+#include <glm/common.hpp>
 #include <glm/geometric.hpp>
 #include <glm/trigonometric.hpp>
 
+#include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace
 {
@@ -123,6 +126,94 @@ RouteSample Route::sample(float distance) const
     result.position = glm::vec3(position.x, rideHeight, position.y);
     result.headingDegrees = headingDegreesOf(heading);
     return result;
+}
+
+RouteSample Route::sampleExtended(float distance) const
+{
+    if (distance >= 0.0f && distance <= totalLength_)
+        return sample(distance);
+
+    const bool before = distance < 0.0f;
+    RouteSample result = sample(before ? 0.0f : totalLength_);
+    const float yaw = glm::radians(result.headingDegrees);
+    const float beyond = before ? distance : distance - totalLength_;
+    result.position += glm::vec3(std::sin(yaw), 0.0f, std::cos(yaw)) * beyond;
+    result.turnSign = 0.0f;
+    result.curvature = 0.0f;
+    return result;
+}
+
+void Route::project(glm::vec2 point, float from, float to, float& distance, float& lateral) const
+{
+    float bestSquared = std::numeric_limits<float>::max();
+    distance = from;
+
+    // One candidate per piece: the nearest point of that piece, limited to
+    // [from, to]. The straight run before the start and after the end count
+    // as two more pieces.
+    const auto consider = [&](float along)
+    {
+        along = glm::clamp(along, from, to);
+        const glm::vec3 position = sampleExtended(along).position;
+        const glm::vec2 difference = point - glm::vec2(position.x, position.z);
+        const float squared = glm::dot(difference, difference);
+        if (squared < bestSquared)
+        {
+            bestSquared = squared;
+            distance = along;
+        }
+    };
+
+    {
+        const RouteSample start = sample(0.0f);
+        const float yaw = glm::radians(start.headingDegrees);
+        const glm::vec2 forward {std::sin(yaw), std::cos(yaw)};
+        consider(std::min(0.0f, glm::dot(point - glm::vec2(start.position.x, start.position.z), forward)));
+        const RouteSample end = sample(totalLength_);
+        const float endYaw = glm::radians(end.headingDegrees);
+        const glm::vec2 endForward {std::sin(endYaw), std::cos(endYaw)};
+        consider(totalLength_ + std::max(0.0f, glm::dot(point - glm::vec2(end.position.x, end.position.z), endForward)));
+    }
+
+    float offset = 0.0f;
+    for (const Segment& segment : segments_)
+    {
+        if (!segment.isArc)
+        {
+            consider(offset + glm::clamp(glm::dot(point - segment.start, segment.direction), 0.0f, segment.length));
+        }
+        else
+        {
+            // The angle of the point round the centre, measured from the
+            // start of the arc in the direction of travel.
+            const float sign = segment.sweepAngle >= 0.0f ? 1.0f : -1.0f;
+            const glm::vec2 relative = point - segment.centre;
+            float swept = sign * (std::atan2(relative.y, relative.x) - segment.startAngle);
+            constexpr float twoPi = 6.28318530718f;
+            swept = std::fmod(swept, twoPi);
+            if (swept < 0.0f)
+                swept += twoPi;
+            const float sweep = std::abs(segment.sweepAngle);
+            if (swept <= sweep)
+            {
+                consider(offset + swept * segment.radius);
+            }
+            else
+            {
+                consider(offset);
+                consider(offset + segment.length);
+            }
+        }
+        offset += segment.length;
+    }
+
+    const RouteSample nearest = sampleExtended(distance);
+    const float yaw = glm::radians(nearest.headingDegrees);
+    // Left of the direction of travel: for a heading (x, z) = (sin, cos),
+    // the driver's left is (cos, -sin) (the lanes of right-hand traffic lie
+    // at -x when heading +z).
+    const glm::vec2 left {std::cos(yaw), -std::sin(yaw)};
+    lateral = glm::dot(point - glm::vec2(nearest.position.x, nearest.position.z), left);
 }
 
 Route Route::rotated(float degrees) const

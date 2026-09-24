@@ -1,4 +1,4 @@
-#include <glad/glad.h>
+﻿#include <glad/glad.h>
 #include <GLFW/glfw3.h>
 
 #include "Camera.h"
@@ -18,6 +18,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -57,11 +58,109 @@ namespace
         bool fullRate = false;        // --full-rate draws on every refresh
     };
 
+    // Views 11 to 13 stage vehicles instead of showing the traffic. 11 and 13
+    // are a line-up of every kind side by side on the south ring road, from
+    // the smallest to the largest (some braking, some indicating), seen from
+    // the front and from behind; 12 is a line bus standing at its first stop
+    // with its doors open and a taxi waiting behind it.
+    constexpr glm::vec3 lineUpStart {40.0f, 0.0f, -200.0f};
+    constexpr float lineUpSpacing = 3.6f;
+    constexpr std::array<VehicleKind, vehicleKindCount> lineUpOrder = {
+        VehicleKind::Motorbike, VehicleKind::Hatchback, VehicleKind::Sedan, VehicleKind::Taxi,
+        VehicleKind::Police, VehicleKind::Suv, VehicleKind::Pickup, VehicleKind::Van,
+        VehicleKind::Ambulance, VehicleKind::BoxTruck, VehicleKind::Bus
+    };
+
+    void stageCaptureVehicles(int view, const TrafficSystem& traffic, std::vector<VehiclePose>& poses)
+    {
+        if (view == 11 || view == 13)
+        {
+            poses.clear();
+            for (std::size_t index = 0; index < vehicleKindCount; ++index)
+            {
+                const VehicleKind kind = lineUpOrder[index];
+                const VehicleSpec& spec = vehicleSpec(kind);
+                VehiclePose pose;
+                pose.id = index;
+                pose.kind = kind;
+                pose.active = true;
+                pose.position = lineUpStart + glm::vec3(static_cast<float>(index) * lineUpSpacing, Route::rideHeight, 0.0f);
+                pose.color = spec.palette[(index * 5) % spec.palette.size()];
+                pose.braking = index % 3 == 0;
+                pose.indicator = index % 4 == 1 ? -1 : (index % 4 == 2 ? 1 : 0);
+                pose.doorOpen = kind == VehicleKind::Bus ? 1.0f : 0.0f;
+                poses.push_back(pose);
+            }
+        }
+        else if (view == 12 && !traffic.busStopSites().empty())
+        {
+            const BusStopSite& site = traffic.busStopSites().front();
+            const float yaw = glm::radians(site.headingDegrees);
+            const glm::vec2 forward {std::sin(yaw), std::cos(yaw)};
+            poses.clear();
+            VehiclePose bus;
+            bus.id = 0;
+            bus.kind = VehicleKind::Bus;
+            bus.active = true;
+            bus.position = {site.busCentre.x, Route::rideHeight, site.busCentre.y};
+            bus.yawDegrees = site.headingDegrees;
+            bus.color = vehicleSpec(VehicleKind::Bus).palette.front();
+            bus.doorOpen = 1.0f;
+            bus.braking = true;
+            poses.push_back(bus);
+            VehiclePose car = bus;
+            car.id = 1;
+            car.kind = VehicleKind::Taxi;
+            car.color = vehicleSpec(VehicleKind::Taxi).palette.front();
+            car.doorOpen = 0.0f;
+            const glm::vec2 behind = site.busCentre - forward * (6.0f + 2.5f + 2.35f);
+            car.position = {behind.x, Route::rideHeight, behind.y};
+            poses.push_back(car);
+        }
+    }
+
     // Camera poses for --view. Yaw 90 looks along +z (north), yaw 0 along +x.
     // Views 8 to 10 are the player's: 8 the chase view of your car, 9 the
-    // driver view over its bonnet, 10 on foot beside it.
-    void applyCaptureView(Camera& camera, int view, Player& player)
+    // driver view over its bonnet, 10 on foot beside it. Views 11 and 12 look
+    // at the staged vehicles above.
+    void applyCaptureView(Camera& camera, int view, Player& player, const TrafficSystem& traffic)
     {
+        if (view == 11 || view == 13)
+        {
+            // Three-quarter views: from ahead and to the left (11), and from
+            // behind and to the left (13), the smallest vehicle nearest.
+            if (view == 11)
+                camera.setFreePose({lineUpStart.x - 7.0f, 3.4f, lineUpStart.z + 12.5f}, -33.0f, -8.0f);
+            else
+                camera.setFreePose({lineUpStart.x - 7.0f, 3.4f, lineUpStart.z - 12.5f}, 33.0f, -8.0f);
+            return;
+        }
+        // Views 14 and 15 ride with the first line bus: its chase view, and
+        // its driver's seat.
+        if (view == 14)
+        {
+            camera.nextFollow(traffic.vehicles().size());
+            return;
+        }
+        if (view == 15)
+        {
+            camera.toggleDriverView(traffic.vehicles().size());
+            return;
+        }
+        if (view == 12 && !traffic.busStopSites().empty())
+        {
+            const BusStopSite& site = traffic.busStopSites().front();
+            const float yaw = glm::radians(site.headingDegrees);
+            const glm::vec2 forward {std::sin(yaw), std::cos(yaw)};
+            const glm::vec2 left {std::cos(yaw), -std::sin(yaw)};
+            // Ahead of the bus behind the kerb, looking back at its door side
+            // and the shelter.
+            const glm::vec2 eye = site.busCentre + forward * 15.0f - left * 8.0f;
+            const glm::vec2 look = site.busCentre - forward * 2.0f - left * 2.5f - eye;
+            camera.setFreePose({eye.x, 2.2f, eye.y}, glm::degrees(std::atan2(look.y, look.x)), -6.0f);
+            return;
+        }
+
         if (view >= 8 && view <= 10)
         {
             if (view == 10)
@@ -377,16 +476,23 @@ namespace
         }
         const double share = total > 0.0 ? stats.junctionSeconds[busiest] / total : 0.0;
 
+        // The line buses must keep going round and stopping at their stops:
+        // at least once a minute each.
+        std::size_t buses = 0;
+        for (const Vehicle& vehicle : traffic.vehicles())
+            buses += vehicle.lineBus && vehicle.active ? 1 : 0;
+        const bool busesRan = stats.busStopsServed >= buses * static_cast<std::size_t>(minutes);
+
         const bool passed = stats.overlapSteps == 0 &&
                             stats.longestStop <= longestAllowedStop &&
                             share <= largestAllowedShare &&
-                            stats.trips > 0;
+                            stats.trips > 0 && busesRan;
 
         std::printf(
             "CITY seed %-5u cars %2zu  %5.1f min | overlaps %zu | closest gap %.2f m | longest stop %5.1f s | "
-            "routes driven %5zu | busiest %s %.0f%% | %.1f s wall | %s\n",
+            "routes driven %5zu | bus stops %3zu | busiest %s %.0f%% | %.1f s wall | %s\n",
             seed, cars, stats.simulatedSeconds / 60.0, stats.overlapSteps, stats.closestBodyGap,
-            stats.longestStop, stats.trips,
+            stats.longestStop, stats.trips, stats.busStopsServed,
             traffic.network().junctions()[busiest].name.c_str(), share * 100.0,
             wallSeconds, passed ? "PASS" : "FAIL");
         if (!passed)
@@ -496,8 +602,10 @@ namespace
         constexpr float dt = 1.0f / 60.0f;
         constexpr float allowedStep = 0.1f;
 
-        const RoadNetwork network = RoadNetwork::makeCity();
-        const World world = World::make(network);
+        // The traffic is built only for where its bus stops (and shelters) are.
+        const TrafficSystem traffic(1, 1);
+        const RoadNetwork& network = traffic.network();
+        const World world = World::make(network, traffic.busStopSites());
         std::vector<PointLight> lights;
         for (const StreetLamp& lamp : network.streetLamps())
             lights.push_back(PointLight::fromStreetLamp(lamp));
@@ -605,7 +713,7 @@ namespace
         constexpr float step = 1.0f / 60.0f;
         bool allPassed = true;
         TrafficSystem traffic(36, 1);
-        const World world = World::make(traffic.network());
+        const World world = World::make(traffic.network(), traffic.busStopSites());
         const std::vector<OrientedBox> noTraffic;
         const OrientedBox& hotel = world.solidBoxes().front();   // the building at (-24, -24)
 
@@ -830,8 +938,45 @@ int main(int argc, char** argv)
 
         TrafficSystem traffic;
         std::string report;
-        const bool passed = traffic.selfTest(report);
+        bool passed = traffic.selfTest(report);
         std::cout << report;
+
+        // Every bus shelter (and its sign pole) stands on the sidewalk, clear
+        // of the road and of everything else standing in the city.
+        const World bare = World::make(traffic.network());
+        const World world = World::make(traffic.network(), traffic.busStopSites());
+        std::size_t shelterFailures = 0;
+        for (const BusShelter& shelter : world.busShelters())
+        {
+            const OrientedBox footprint = makeOrientedBox(shelter.centre, shelter.facingDegrees,
+                {0.5f * World::shelterLength + 0.1f, 0.5f * World::shelterDepth + 0.1f});
+            const Circle pole {World::shelterPole(shelter), 0.2f};
+            bool clear = true;
+            for (const OrientedBox& solid : bare.solidBoxes())
+                clear = clear && !boxesOverlap(footprint, solid) && glm::length(pushOut(pole, solid)) == 0.0f;
+            for (const Circle& post : bare.solidPosts())
+                clear = clear && glm::length(pushOut(footprint, post)) == 0.0f && glm::length(pushOut(pole, post)) == 0.0f;
+            const glm::vec2 across {footprint.forward.y, -footprint.forward.x};
+            for (float along : {-1.0f, 1.0f})
+            {
+                for (float side : {-1.0f, 1.0f})
+                {
+                    const glm::vec2 corner = footprint.centre + footprint.forward * (along * footprint.halfExtents.y) +
+                                             across * (side * footprint.halfExtents.x);
+                    clear = clear && world.surfaceHeight(corner) == RoadNetwork::kerbTopY;
+                }
+            }
+            clear = clear && world.surfaceHeight(pole.centre) == RoadNetwork::kerbTopY;
+            if (!clear)
+            {
+                std::printf("FAIL: the bus shelter at (%.1f, %.1f) is off the sidewalk or overlaps something\n",
+                            shelter.centre.x, shelter.centre.y);
+                ++shelterFailures;
+            }
+        }
+        std::printf("%zu bus shelters: %s\n", world.busShelters().size(),
+                    shelterFailures == 0 ? "all on the sidewalk and clear of every other thing" : "FAILED");
+        passed = passed && shelterFailures == 0 && !world.busShelters().empty();
         return passed ? EXIT_SUCCESS : EXIT_FAILURE;
     }
 
@@ -883,8 +1028,8 @@ int main(int argc, char** argv)
 
         TrafficSystem traffic;
         std::cout << traffic.networkReport();
-        const bool written = traffic.writeNetworkImage("network.png");
-        std::cout << (written ? "Wrote network.png" : "Could not write network.png") << '\n';
+        const bool written = traffic.writeNetworkImage("network.png") && traffic.writeTurnImage("turns.png");
+        std::cout << (written ? "Wrote network.png and turns.png" : "Could not write network.png or turns.png") << '\n';
         return written ? EXIT_SUCCESS : EXIT_FAILURE;
     }
 
@@ -1013,7 +1158,7 @@ int main(int argc, char** argv)
     {
         Camera camera;
         TrafficSystem traffic(vehicleCount);
-        const World world = World::make(traffic.network());
+        const World world = World::make(traffic.network(), traffic.busStopSites());
         Player player(world);
         DayNight dayNight;
         RenderScaler scaler;
@@ -1039,7 +1184,7 @@ int main(int argc, char** argv)
 
         if (capture.enabled)
         {
-            applyCaptureView(camera, capture.view, player);
+            applyCaptureView(camera, capture.view, player, traffic);
             state.ignoreMouse = true;
             if (capture.hour >= 0.0f)
                 dayNight.setTime(capture.hour);
@@ -1084,6 +1229,8 @@ int main(int argc, char** argv)
             }
         }
         std::vector<glm::vec2> mapCars;
+        std::vector<glm::vec2> mapBuses;
+        std::vector<glm::vec2> mapEmergency;
         std::vector<glm::vec3> northSouthColors(signalJunctions.size());
         std::vector<glm::vec3> eastWestColors(signalJunctions.size());
         const auto signalColor = [](SignalState state)
@@ -1150,10 +1297,19 @@ int main(int argc, char** argv)
                 performance.historyHead = frameStats.head();
 
                 mapCars.clear();
+                mapBuses.clear();
+                mapEmergency.clear();
                 for (const VehiclePose& pose : poses)
                 {
-                    if (pose.active)
-                        mapCars.push_back({pose.position.x, pose.position.z});
+                    if (!pose.active)
+                        continue;
+                    const glm::vec2 at {pose.position.x, pose.position.z};
+                    if (pose.kind == VehicleKind::Bus)
+                        mapBuses.push_back(at);
+                    else if (vehicleSpec(pose.kind).emergency)
+                        mapEmergency.push_back(at);
+                    else
+                        mapCars.push_back(at);
                 }
                 for (std::size_t index = 0; index < signalJunctions.size(); ++index)
                 {
@@ -1173,6 +1329,9 @@ int main(int argc, char** argv)
                 extras.roads = &mapRoads;
                 extras.roundabouts = &mapRoundabouts;
                 extras.cars = &mapCars;
+                extras.buses = &mapBuses;
+                extras.emergency = &mapEmergency;
+                extras.seconds = static_cast<float>(timeSeconds);
                 extras.signals = &mapSignals;
                 extras.northSouthColors = &northSouthColors;
                 extras.eastWestColors = &eastWestColors;
@@ -1202,6 +1361,8 @@ int main(int argc, char** argv)
 
         // Warm-up: draw one complete frame while the window is still hidden.
         traffic.interpolatePoses(0.0f, poses);
+        if (capture.enabled)
+            stageCaptureVehicles(capture.view, traffic, poses);
         camera.update(0.0f, poses, playerView);
         renderFrame(0.0f, glfwGetTime());
         glFinish();
@@ -1292,6 +1453,8 @@ int main(int argc, char** argv)
             // How far the clock has run into the next step: the blend factor.
             const float alpha = simulationBacklog / simulationStep;
             traffic.interpolatePoses(alpha, poses);
+            if (capture.enabled)
+                stageCaptureVehicles(capture.view, traffic, poses);
             playerView = player.view(alpha);
             camera.update(dt, poses, playerView);
             scaler.update(frameSeconds, frameStats.frameMs(), frameStats.gpuMs());

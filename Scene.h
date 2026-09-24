@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "DayNight.h"
 #include "LightManager.h"
@@ -8,6 +8,7 @@
 #include "Shader.h"
 #include "Simulation.h"
 #include "Texture.h"
+#include "VehicleRenderer.h"
 #include "World.h"
 
 #include <glm/mat4x4.hpp>
@@ -51,7 +52,6 @@ private:
     Mesh cube_;
     Mesh beveledCube_;
     Mesh buildingMesh_;
-    Mesh carCabin_;
     Mesh cylinder_;
     Mesh faceQuad_;   // a unit square facing +z, texture upright
 
@@ -126,8 +126,26 @@ private:
     Mesh lampHeads_;
     Mesh lampBulbs_;
 
+    // Every vehicle's body, lamps and wheels, and the parts of the ones in
+    // view this frame (kept, so a frame never allocates).
+    VehicleRenderer vehicleLooks_;
+    std::vector<VehiclePart> vehicleParts_;
+    std::vector<PointLight> movingLights_;
+    bool vehiclesWarmed_ = false;
+
+    // The bus shelters, baked into one mesh per material.
+    Mesh shelterFrames_;
+    Mesh shelterGlass_;
+    Mesh shelterRoofs_;
+    Mesh shelterBenches_;
+    Mesh shelterSigns_;
+    Mesh shelterLetters_;
+
     void buildStreetLamps(const RoadNetwork& network);
     void buildSigns();
+    void buildBusShelters();
+    void drawBusShelters(bool illuminated);
+    void drawVehicleParts();
     void drawRoads();
     void drawStreetLamps(bool illuminated);
     void drawBuildings();
@@ -142,8 +160,5 @@ private:
     void drawStreetFurniture();
     void drawBillboards(bool illuminated);
     void drawNeonSigns(bool illuminated);
-    void drawVehicle(const VehiclePose& vehicle);
-    void drawDriverCockpit(const VehiclePose& vehicle);
-    void drawPlayerBonnet(const PlayerView& player);
     void drawWalker(const PlayerView& player);
 };

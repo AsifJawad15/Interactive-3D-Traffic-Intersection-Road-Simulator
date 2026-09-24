@@ -3,7 +3,9 @@
 #include "Collision.h"
 #include "RoadNetwork.h"
 #include "Route.h"
+#include "VehicleTypes.h"
 
+#include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 
 #include <array>
@@ -49,17 +51,32 @@ inline constexpr std::size_t noRoute = std::numeric_limits<std::size_t>::max();
 struct Vehicle
 {
     std::size_t id = 0;
-    glm::vec3 position {0.0f};
+    VehicleKind kind = VehicleKind::Sedan;
+    SizeClass sizeClass = SizeClass::Car;
+    int tier = 0;   // width tier of the size class (VehicleTypes.h)
+
+    glm::vec3 position {0.0f};   // body centre
     glm::vec3 color {0.8f};
     float yawDegrees = 0.0f;
     float currentSpeed = 0.0f;
     float acceleration = 0.0f;
-    float maximumSpeed = 6.0f;
     float wheelAngleDegrees = 0.0f;
 
-    // Body size seen from above, used for gaps, conflicts and collision.
+    // Real body size seen from above, used for gaps and collisions.
     float halfLength = 2.03f;
     float halfWidth = 0.94f;
+
+    // How far the size class's body reaches along its lane, behind and
+    // ahead of `distance`. A junction zone is measured along the lane, so a
+    // vehicle is in it while any of that stretch overlaps the zone.
+    float rearReach = 2.5f;
+    float frontReach = 2.5f;
+
+    // Intelligent Driver Model parameters of this vehicle.
+    float maximumSpeed = 8.0f;
+    float maximumAcceleration = 1.6f;
+    float comfortableBraking = 2.2f;
+    float timeHeadway = 1.1f;
 
     // Route following. `distance` is the only value that is integrated; the
     // position and heading above are read back out of the route every step.
@@ -68,7 +85,6 @@ struct Vehicle
     std::size_t routeIndex = 0;
     std::size_t nextRouteIndex = noRoute;
     float distance = 0.0f;
-    float turnSign = 0.0f;
     float steerAngleDegrees = 0.0f;
 
     // False only if the car could not be placed at the start (the city was
@@ -82,6 +98,17 @@ struct Vehicle
 
     float stoppedSeconds = 0.0f;
 
+    // Lights: brake lights, and the indicator (-1 left, +1 right, 0 off).
+    bool braking = false;
+    int indicator = 0;
+
+    // A line bus: whether it has already stopped at the stop on its current
+    // route, how long it still stands there, and how far its doors are open.
+    bool lineBus = false;
+    bool stopServed = false;
+    float dwellSeconds = 0.0f;
+    float doorOpen = 0.0f;
+
     // The pose at the start of the latest simulation step. Rendering blends
     // from this to the current pose, so motion is smooth at any refresh rate
     // even though the simulation itself only moves in 1/60 s steps.
@@ -89,17 +116,23 @@ struct Vehicle
     float previousYawDegrees = 0.0f;
     float previousWheelAngleDegrees = 0.0f;
     float previousSteerAngleDegrees = 0.0f;
+    float previousDoorOpen = 0.0f;
 };
 
 // What the renderer and the cameras need of a vehicle, blended between two
 // simulation steps.
 struct VehiclePose
 {
+    std::size_t id = 0;
+    VehicleKind kind = VehicleKind::Sedan;
     glm::vec3 position {0.0f};
     glm::vec3 color {0.8f};
     float yawDegrees = 0.0f;
     float wheelAngleDegrees = 0.0f;
     float steerAngleDegrees = 0.0f;
+    float doorOpen = 0.0f;
+    bool braking = false;
+    int indicator = 0;
     bool active = false;
 };
 
@@ -113,11 +146,11 @@ struct TrafficStats
     float closestBodyGap = 1.0e9f;      // smallest body separation seen, metres
     float longestStop = 0.0f;           // longest time any vehicle stood still
     std::size_t trips = 0;              // routes completed
+    std::size_t busStopsServed = 0;     // times a line bus opened its doors at a stop
     std::vector<double> junctionSeconds;   // vehicle-seconds spent on each junction's routes
 };
 
-// Where a lane waits at a junction: painted as a stop line (signals) or a
-// dashed give-way line.
+// Where every lane stops, for painting the lines where the cars really stop.
 struct StopMarking
 {
     glm::vec2 position {0.0f};   // centre of the lane, at the line
@@ -125,10 +158,19 @@ struct StopMarking
     bool giveWay = false;
 };
 
+// A stop of the bus line, where the bus stands and where its shelter goes.
+struct BusStopSite
+{
+    glm::vec2 busCentre {0.0f};   // centre of a waiting bus, in the kerb lane
+    glm::vec2 shelter {0.0f};     // middle of the shelter, on the sidewalk
+    float facingDegrees = 0.0f;   // the shelter's open side looks this way (at the road)
+    float headingDegrees = 0.0f;  // the way the buses travel past it
+};
+
 class TrafficSystem
 {
 public:
-    explicit TrafficSystem(std::size_t vehicleCount = 24, unsigned int seed = 12345u);
+    explicit TrafficSystem(std::size_t vehicleCount = 36, unsigned int seed = 12345u);
 
     void update(float dt);
     void reset();
@@ -152,6 +194,9 @@ public:
     // Where every lane stops, for painting the lines where the cars really stop.
     std::vector<StopMarking> stopMarkings() const;
 
+    // The stops of the bus line, for the shelters on the sidewalk.
+    const std::vector<BusStopSite>& busStopSites() const { return busStopSites_; }
+
     // One line per vehicle (route, position, speed, commit and claims), for
     // diagnosing a failed soak run.
     std::string describe() const;
@@ -171,6 +216,12 @@ public:
     // and a top-down picture of the whole network as a PNG.
     std::string networkReport() const;
     bool writeNetworkImage(const std::string& path) const;
+
+    // A close-up of the central crossroads with bodies drawn every metre
+    // through three turns: the bus's left from the kerb lane, a truck's wide
+    // right and a car's right. It shows how the rear axle cuts in and the
+    // nose swings out, the longer the vehicle the more.
+    bool writeTurnImage(const std::string& path) const;
 
 private:
     // Part of another route that runs along exactly the same line as this one:
@@ -193,6 +244,15 @@ private:
         int side = 0;
     };
 
+    // Where a vehicle shows its indicator on a route: from `from` to `to`
+    // (route distance of the body centre), towards `direction`.
+    struct Indication
+    {
+        float from = 0.0f;
+        float to = 0.0f;
+        int direction = 0;
+    };
+
     struct RouteInfo
     {
         Route route;
@@ -204,33 +264,61 @@ private:
         Turn turn = Turn::Straight;
         int priorityRank = 0;
 
-        // Where the vehicle centre waits for the signal or for a gap. It always
-        // lies before every conflict zone, so a waiting car blocks nobody.
-        float stopDistance = 0.0f;
-        bool needsCommit = true;   // false: nothing to cross (a bend)
+        // A turn only one size class may take, or -1 for everyone: the bus
+        // line's left turns from the kerb lane, and the trucks' wide right
+        // turns into the far lane.
+        int onlyClass = -1;
+
+        // Which size classes may drive the route: their bodies stay clear of
+        // every kerb and island all the way through it.
+        std::array<bool, sizeClassCount> allowed {};
+
+        // Where the front of a waiting vehicle stops: just short of the
+        // painted line (or the end of the route, for a bend).
+        float lineFront = 0.0f;
 
         // Distance at which a roundabout route joins the ring.
         float mergeDistance = 0.0f;
 
-        // End of the last conflict zone: from here on the car has left the box.
-        float junctionExit = 0.0f;
+        // Heading of each size class's body along the route, every
+        // `bodyStep` metres: the front axle follows the lane and the rear
+        // axle trails a wheelbase behind it.
+        std::array<std::vector<float>, sizeClassCount> bodyYaw;
+
+        // Per size class: where the vehicle centre waits for the signal or
+        // for a gap (always before every conflict zone, so a waiting vehicle
+        // blocks nobody), and where it has left the last zone behind it.
+        std::array<float, sizeClassCount> stopDistance {};
+        std::array<float, sizeClassCount> junctionExit {};
+
+        // Per width tier: the conflict zones, and whether there is anything
+        // to wait for at all (false for a bend).
+        std::array<std::vector<ConflictRef>, widthTierCount> conflicts;
+        std::array<bool, widthTierCount> needsCommit {};
 
         std::vector<std::size_t> successors;
         std::vector<SharedSpan> shared;
-        std::vector<ConflictRef> conflicts;
+        std::vector<Indication> indications;
 
         // Highest comfortable speed at each metre of the route, from its curvature.
         std::vector<float> curveSpeed;
+
+        // A stop of the bus line on this route: where the bus centre stands
+        // (route distance), or below zero for none.
+        float busStop = -1.0f;
     };
 
     // Two routes whose vehicles would touch somewhere near the middle. The
-    // zone is stored as an interval of vehicle-centre distance on each route:
-    // while a car's centre is outside its interval, no car on the other route
-    // can touch it, wherever that car is. So if the two intervals are never
-    // occupied at the same time, the two routes can never collide.
+    // zone is an interval of LANE distance on each route: while no part of
+    // a vehicle's body lies over its interval, nothing on the other route
+    // can touch it, wherever that is. So if the two intervals are never
+    // occupied at the same time, the two routes can never collide. The zone
+    // holds for one width tier on each side; a vehicle adds its own length
+    // (its reach behind and ahead) to find when its body is over it.
     struct Conflict
     {
         std::array<std::size_t, 2> route {};
+        std::array<int, 2> tier {};
         std::array<float, 2> in {};
         std::array<float, 2> out {};
         int prioritySide = -1;   // 0 or 1; -1 = first come, first served
@@ -242,6 +330,16 @@ private:
         float elapsed = 0.0f;
     };
 
+    // Where a size class's body stands at one route distance.
+    struct BodyFrame
+    {
+        glm::vec3 centre {0.0f};
+        float yawDegrees = 0.0f;
+        float steerDegrees = 0.0f;   // front wheels, relative to the body
+    };
+
+    static constexpr float bodyStep = 0.25f;
+
     RoadNetwork network_;
     std::vector<RouteInfo> routes_;
     std::vector<Conflict> conflicts_;
@@ -249,27 +347,70 @@ private:
     std::vector<SignalController> signals_;   // one per junction (unused when unsignalised)
     std::vector<Vehicle> vehicles_;
     std::vector<Guest> guests_;
-    std::size_t vehicleCount_ = 24;
+    std::size_t vehicleCount_ = 36;
     unsigned int seed_ = 12345u;
     unsigned int randomState_ = 12345u;
+
+    // How far each size class's body reaches along the lane, behind and
+    // ahead of its route distance, over every route it may drive.
+    std::array<float, sizeClassCount> rearReach_ {};
+    std::array<float, sizeClassCount> frontReach_ {};
+
+    // The bus line: its routes in order round the loop, and its stops.
+    std::vector<std::size_t> busLine_;
+    std::vector<BusStopSite> busStopSites_;
 
     TrafficStats stats_;
 
     // --- construction (TrafficBuild.cpp)
     void buildRoutes();
-    void addRoute(std::size_t junction, int inArm, int inLane, int outArm, int outLane,
-                  Turn turn, const Route& canonical, float lineDistance, float mergeDistance);
+    std::size_t addRoute(std::size_t junction, int inArm, int inLane, int outArm, int outLane,
+                         Turn turn, const Route& canonical, float lineFront, float mergeDistance,
+                         const std::vector<Indication>& indications);
+    void buildBusRoutes();
     void buildSuccessors();
+    void buildBodyPaths();
+    void findAllowedRoutes();
     void buildSharedSpans();
     void buildConflicts();
     void finishRoutes();
+    void buildBusLine();
 
     // --- placement and routing
     void placeVehiclesInTown();
-    std::size_t chooseNextRoute(std::size_t routeIndex);
+    std::size_t chooseNextRoute(const Vehicle& vehicle, std::size_t routeIndex);
     void placeOnRoute(Vehicle& vehicle, std::size_t routeIndex, float distance, float speed);
     void enterRoute(Vehicle& vehicle, std::size_t routeIndex);
     void releaseClaims(Vehicle& vehicle);
+    BodyFrame bodyFrame(std::size_t routeIndex, SizeClass sizeClass, float distance) const;
+
+    // --- per-vehicle views of the route tables
+    const RouteInfo& routeFor(const Vehicle& vehicle) const { return routes_[vehicle.routeIndex]; }
+    float stopFor(const Vehicle& vehicle) const
+    {
+        return routeFor(vehicle).stopDistance[static_cast<std::size_t>(vehicle.sizeClass)];
+    }
+    float exitFor(const Vehicle& vehicle) const
+    {
+        return routeFor(vehicle).junctionExit[static_cast<std::size_t>(vehicle.sizeClass)];
+    }
+    bool needsCommitOn(const Vehicle& vehicle, std::size_t routeIndex) const
+    {
+        return routes_[routeIndex].needsCommit[static_cast<std::size_t>(vehicle.tier)];
+    }
+    const std::vector<ConflictRef>& zonesFor(const Vehicle& vehicle) const
+    {
+        return routeFor(vehicle).conflicts[static_cast<std::size_t>(vehicle.tier)];
+    }
+    // The route distances between which the vehicle's body is over a zone.
+    static float zoneIn(const Vehicle& vehicle, const Conflict& conflict, int side)
+    {
+        return conflict.in[static_cast<std::size_t>(side)] - vehicle.frontReach;
+    }
+    static float zoneOut(const Vehicle& vehicle, const Conflict& conflict, int side)
+    {
+        return conflict.out[static_cast<std::size_t>(side)] + vehicle.rearReach;
+    }
 
     // --- decisions
     struct Leader
@@ -311,6 +452,7 @@ private:
     bool movementPermitted(const Vehicle& vehicle) const;
     bool decidesEarly(const RouteInfo& route) const;
     float commandedAcceleration(const Vehicle& vehicle, const Leader& leader) const;
+    void updateLights(Vehicle& vehicle) const;
 
     // --- signals
     bool signalDemand(std::size_t junction, bool northSouth, bool leftTurnsOnly) const;
@@ -321,6 +463,5 @@ private:
     void measureBodies(float dt);
     OrientedBox bodyOf(const Vehicle& vehicle) const;
 
-    const RouteInfo& routeFor(const Vehicle& vehicle) const { return routes_[vehicle.routeIndex]; }
     unsigned int nextRandom();
 };
