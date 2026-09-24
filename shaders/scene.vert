@@ -3,6 +3,9 @@
 layout (location = 0) in vec3 aPosition;
 layout (location = 1) in vec3 aNormal;
 layout (location = 2) in vec2 aTexCoord;
+// Per-vertex paint (a building's colour, an awning's stripe). Its alpha is a
+// per-object number: a building's lit-window seed, or how far a leaf sways.
+layout (location = 3) in vec4 aColor;
 
 uniform mat4 uModel;
 uniform mat4 uView;
@@ -35,11 +38,20 @@ uniform float uShininess;
 uniform float uWaveAmplitude;
 uniform float uTime;
 
+// Wind in the trees: 0 for everything else. Each vertex bends by its sway
+// weight (vertex alpha), trees a little out of step with each other, and the
+// leaves flutter on top of the slow sway.
+uniform float uSway;
+
 out vec3 vWorldPosition;
 out vec3 vNormal;
 out vec2 vTexCoord;
 out vec3 vGouraudDiffuse;
 out vec3 vGouraudSpecular;
+out vec4 vColor;
+// The same alpha, not interpolated: a building's window seed must be exactly
+// the same all over its wall, or the hash that picks lit rooms turns to noise.
+flat out float vSeed;
 
 void main()
 {
@@ -51,6 +63,16 @@ void main()
     }
 
     vec4 worldPosition = uModel * vec4(localPosition, 1.0);
+    if (uSway > 0.0)
+    {
+        float weight = aColor.a;
+        float phase = dot(worldPosition.xz, vec2(0.061, 0.047));
+        vec2 bend = vec2(sin(uTime * 1.13 + phase) + 0.35 * sin(uTime * 2.37 + 1.7 * phase),
+                         0.6 * cos(uTime * 0.91 + 1.3 * phase));
+        float flutter = sin(uTime * 6.3 + dot(worldPosition.xyz, vec3(1.37, 1.71, 1.13)));
+        worldPosition.xz += uSway * weight * (0.13 * bend + 0.025 * vec2(flutter, -flutter));
+        worldPosition.y += uSway * weight * 0.02 * flutter;
+    }
     vec3 normal = normalize(uNormalMatrix * aNormal);
     vec3 lightDirection = normalize(-uLightDirection);
     vec3 viewDirection = normalize(uViewPosition - worldPosition.xyz);
@@ -92,6 +114,8 @@ void main()
         totalSpecular += uSpotColor * spotSpecular * spotAttenuation * 0.5;
     }
 
+    vColor = aColor;
+    vSeed = aColor.a;
     vGouraudDiffuse = totalDiffuse;
     vGouraudSpecular = totalSpecular;
 

@@ -55,6 +55,17 @@ public:
         GLenum minFilter = GL_LINEAR_MIPMAP_LINEAR,
         GLenum magFilter = GL_LINEAR,
         bool srgb = false);
+    // A picture with an alpha channel (leaves, cut-outs), for alpha testing.
+    // Its smaller mip levels are made here rather than by the driver: each
+    // one is scaled so the share of texels that pass `alphaCutoff` stays the
+    // same as in the full picture. Otherwise the averaging thins distant
+    // leaves until trees go bald with distance.
+    static Texture fromRgba(
+        int width,
+        int height,
+        const std::vector<unsigned char>& rgba,
+        float alphaCutoff = 0.5f,
+        bool srgb = true);
     static Texture makeWhite();
     // A one-texel grey: as a specular map it scales the highlight down to
     // `level` / 255, for matte surfaces such as grass.

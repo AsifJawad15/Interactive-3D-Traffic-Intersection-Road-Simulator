@@ -1,6 +1,7 @@
 ﻿# Enhancement Plan: OpenGLMiniProject → Open-World Smart City Traffic Simulator
 
-> Status: **Phases 0 to 5 complete. Phase 6 (city dressing) is next and waits for your go-ahead.** Written 2026-09-23.
+> Status: **Phases 0 to 6 complete. Phase 7 (pedestrians) is next and waits for your go-ahead.** Written 2026-09-23.
+> **Revised 2026-09-24 (Phase 6):** a seeded city generator lines every street with buildings in six styles (164 in all, more than the 30–40 first planned, so no stretch looks empty). Windows are drawn by the fragment shader. Trees and props are baked meshes with vertex colours rather than instanced.
 > **Revised 2026-09-24 (Phase 5):** 11 vehicle kinds with lofted Bezier bodies. Long vehicles swing through turns (the rear axle trails the front). The bus line is a loop of kerb-lane left turns round the X0–G–G2–X1 block with 4 stops. Trucks make wide right turns into the far lane and use roundabouts straight on only.
 > **Revised 2026-09-24 (Phase 4):** the player car has two views, a chase view above and behind it and a driver view over the bonnet (no cockpit interior); `C` locks the camera onto it and lets go again. The floodlight mast is gone: the city is lit by street lamps, signboards and neon. Pedestrian animation is planned in section 5.1.
 > **Revised 2026-09-24:** every junction keeps its own permanent type (T-junction, signalised intersection or roundabout), and no intersection is ever turned into a roundabout (section 3.2).
@@ -29,7 +30,97 @@
 | 3. Road network | ✅ Done and verified | 2026-09-24 | `enhancement/phase-3-network` |
 | 4. Player car, driver view, on foot | ✅ Done and verified | 2026-09-24 | `enhancement/phase-4-player` |
 | 5. Vehicle variety | ✅ Done and verified | 2026-09-24 | `enhancement/phase-5-vehicles` |
-| 6 to 11 | Not started | | |
+| 6. City dressing | ✅ Done and verified | 2026-09-24 | `enhancement/phase-6-city` |
+| 7 to 11 | Not started | | |
+
+### ✅ Checkpoint 6: city dressing (2026-09-24)
+
+**What changed**
+- **The city generator (`WorldCity.cpp`, seeded):** both sides of every road are walked plot by plot.
+  - Each block has a land use (downtown shops, offices, flats, houses, mixed; the park), and the row outside the ring has one per side (flats north, towers east, warehouses south, houses west).
+  - A plot is kept only if it lies on the lawn behind the sidewalk (`World::onLawn`), clear of every other building by 3 m, of the billboards, bus shelters, signals, signs, lamps and the old X0 props, and of the junction corners (18 m at intersections, 28 m at roundabouts, 24–36 m at bends). The corner the player test crashes across is kept clear.
+- **Six building styles:**
+  - **Shop rows:** shops on a 4.2 m ground floor, a paved forecourt, and a bench and bin now and then.
+  - **Blocks of flats:** 3–6 storeys, with a door and canopy.
+  - **Office towers:** a curtain wall, a glazed lobby with the company's name, and planters.
+  - **Hotels:** a lobby canopy, palms, and the name in neon along the top.
+  - **Houses:** a pitched roof and gables, a porch, a drive and often a car on it.
+  - **Warehouses:** roller doors, an apron, sometimes a van or truck.
+  - Roofs have parapets, water tanks (a cylinder with a Bezier cone) and air-conditioning units; two carry billboards.
+  - The eight X0 buildings keep their footprints (the hotel is still the first solid box) and became shop rows under their neon signs.
+- **Windows without geometry (`scene.frag`):**
+  - A wall's texture coordinates count window bays across and storeys up, and the shader draws a framed window in every cell. The glass varies by day.
+  - At night a share of the rooms is lit, warm or cool, picked by a hash of the cell and the building's seed. The seed is a `flat` varying, because an interpolated one made the hash sparkle.
+  - Where a window is smaller than a pixel, the pattern fades to its average.
+  - One draw call per style.
+- **Shops:** 103 shop fronts (glass, mullions, a door, a striped awning, a sign).
+  - 43 shops have neon (every stroke a glowing tube with a spill light), and the others have a painted, lit sign box.
+  - With the hotel names that makes 47 neon signs.
+  - Shop windows glow at night, each shop in its own light.
+- **Special blocks:**
+  - **The park** (north-west block): a stone-edged pond, a paved plaza with a bronze Bezier monument, palms, benches and bollards, paths to all four sides and round the pond, picnic tables, 10 lamps and 34 trees.
+  - **The petrol station** (east of R1): a lit canopy, two pump islands with four pumps, a kiosk with a neon MART sign, and a price sign by the road.
+  - **The car park** (south of X0): 26 painted bays, two lamps and parked cars.
+- **Trees (`TreeGenerator.cpp`):** broadleaf, conifer and palm, three shapes each.
+  - Trunks and branches are tubes swept along 3D Bezier curves (de Casteljau).
+  - The foliage is leaf cards cut from a generated 512² RGBA leaf picture and alpha-tested (`Texture::fromRgba`, whose mipmaps keep each level's leaf coverage).
+  - Card normals lean outward from the middle of the crown.
+  - Vertex alpha is the sway weight, and the vertex shader bends the trees in the wind, with a flutter on the leaves.
+  - 255 trees: street trees 1.7 m inside the sidewalk wherever there is room, plus the park, gardens and courtyards.
+- **Street furniture:** 111 props (benches, bins, planters with Bezier shrubs, bollards, picnic tables, 50 km/h signs on the links to the ring).
+  - 49 parked cars, baked with the vehicles' own bodies into four meshes (`VehicleRenderer::bakeParked`).
+  - All of these are solid for the player.
+- **The skyline:** 90 plain towers 400–700 m out, drawn with extra haze (`uHaze`).
+- **Rendering:**
+  - Every vertex now has a colour (`Vertex::color`, attribute 3). One baked mesh per material holds many differently painted things, so the whole city dressing costs about 40 draw calls.
+  - The HUD shows the scene's draw calls.
+  - Start-up prints how long the traffic, the city and the meshes took.
+- **Faster start-up:** `MeshBuilder::append` reserved the exact new size on every call, which copied the whole buffer each time (quadratic).
+  - Removing that cut building the meshes and textures from 2.7 s to 0.25 s.
+  - The whole program now starts as fast as Phase 5 did.
+- **Capture views:** view 2 moved over the road (a shop row now stands where its camera was). Views 16 (the park), 17 (the petrol station), 18 (a shopping street) and 19 (houses and flats) are new.
+
+**New files:** `WorldCity.cpp`, `TreeGenerator.h/.cpp`, `PropRenderer.h/.cpp`, `NeonText.h/.cpp` (the stroke lettering, moved out of `Scene.cpp`).
+**Edited:** `World.h/.cpp`, `Scene.h/.cpp`, `Mesh.h/.cpp`, `MeshBuilder.h/.cpp`, `Texture.h/.cpp`, `VehicleRenderer.h/.cpp`, `Overlay.h/.cpp`, `shaders/scene.vert`, `shaders/scene.frag`, `main.cpp`, `README.md` and both project files.
+
+**How it differs from the plan**
+- **More buildings:** 164, of which 117 are inside the ring and 47 in the outer row. The plan said 30 to 40, but with 30 to 40 the ten blocks had long empty stretches. 51 of the 164 are small houses, and seen from above the blocks are still mostly lawn. To thin the city out, widen the gaps in `styleSpec` (`WorldCity.cpp`).
+- **Baked meshes instead of instancing:** trees and props are baked into static meshes with vertex colours rather than drawn with instancing. That gives the same draw-call count without per-instance attributes. The wind is done in the vertex shader.
+- **A sixth style:** warehouses, for the industrial row outside the ring.
+
+**Verification results**
+- **Build:** Release and Debug x64 build with no errors and no warnings.
+- **`--self-test`:** all 15228 traffic checks pass, the 4 bus shelters are clear, and the new city check passes. Every building stands on the lawn and is at least 1 m from every other building. Every other solid box, post, trunk and parked car is clear of the buildings and off the road.
+- **30-minute soaks, seeds 1 to 8, 36 vehicles:** 0 overlaps, closest gap 0.67–1.04 m, longest stop 29–49 s, 90–95 bus stops served. These are the Phase 5 numbers: the traffic is unchanged.
+- **`--motion-test`:** judder 0.0007 (144 Hz), 0.0013 (60 Hz) and 0.0011 (75 Hz), all PASS.
+- **`--light-test`:** 236 lights (was 197), 109,008 frames, largest change of one light in one frame 0.011, no pops: PASS.
+- **`--player-test`:** both crashes 0.000 m into the wall (the glancing one slides 6.6 m), walking slides 7.2 m, and 1.5 laps of the ring with 0 AI into the player and judder 0.0003: all PASS, the same as Phase 5.
+- **1080p, 370 measured frames per view:**
+
+  | View | FPS | 99th percentile | Worst | GPU |
+  |---|---|---|---|---|
+  | Whole city, noon | 72 | 14.9 ms | 20.5 ms | 2.6 ms |
+  | Whole city, night | 72 | 15.7 ms | 20.2 ms | 3.4 ms |
+  | Shopping street, night | 72 | 14.9 ms | 20.5 ms | 4.6 ms |
+  | Chase view, night | 72 | 14.9 ms | 20.3 ms | 5.0 ms |
+  | The park, afternoon | 72 | 16.0 ms | 19.5 ms | 3.6 ms |
+  | Street level, noon | 72 | 14.9 ms | 20.8 ms | 3.5 ms |
+
+  No frame took over 25 ms after the one-time stall.
+- **Draw calls:** 709 at street level and about 1100 over the whole city. Nearly all of them are the 36 moving vehicles; the city dressing is about 40.
+- **Start-up:** traffic 0.32 s, city under 0.01 s, meshes and textures 0.25 s. A 30-frame capture run takes 1.9 s, as in Phase 5.
+- **Screenshots checked:**
+  - By day: the whole city, straight down, street level, R1, the park, the petrol station, a shopping street, and houses and flats.
+  - At night: the whole city, the shopping street, the G and ST junctions, and a close look at the windows.
+  - Neon and shop windows bloom at night, rooms light up in a scatter, distant walls do not shimmer, and the skyline melts into the haze.
+
+**Known leftovers**
+- **The one-time stall** of about 100–150 ms, 2–4 s after launch, is still there (inside the driver, as in Phase 5).
+- **Buildings are grid-aligned boxes.** The windows are painted by the shader (no depth, no interiors), and the houses are all one shape.
+- **No dropped kerbs:** the forecourts, drives, car park and petrol station meet the sidewalk without one; drivers (you) ride over the kerb.
+- **No shadows yet:** trees and buildings cast none (Phase 8). Trees have no level of detail; all 255 are drawn every frame, within the budget.
+- **The skyline is scenery only:** nobody can reach it.
+- **Leftover folder:** the `p4compare` folder from Phase 5 is still beside the project, outside the repository.
 
 ### ✅ Checkpoint 5: vehicle variety (2026-09-24)
 
@@ -814,7 +905,8 @@ Each new `.cpp`, `.h` and shader file is registered in `OpenGLMiniProject.vcxpro
 - **Files:** new `VehicleTypes.*`, `VehicleRenderer.*`. Edits to `Mesh.*` and the simulation spawn mix.
 - **Check:** a mix of types is visible. Buses swing properly on turns and stop at stops. Soak with long vehicles still gives 0 overlaps.
 
-### Phase 6: City dressing (minimal: buildings, shops, props, trees)
+### Phase 6: City dressing (minimal: buildings, shops, props, trees) ✅ DONE (see Checkpoint 6)
+- **As built (2026-09-24):** everything below. There are 164 buildings in six styles, with the windows drawn by the shader. Trees and props are baked into static meshes with vertex colours instead of instanced. `NeonText` became a shared helper, and `WorldCity.cpp` holds the generator.
 - **Buildings:** the world generator places the 30 to 40 buildings in 4 to 5 styles, shops with neon text on the main streets, and the lit-window facade. Also the park, plaza and gas station.
 - **Street:** a modest amount of street furniture and parked cars. The instanced trees with leaf cards and wind. The single outer building row and the distant skyline.
 - **Files:** new `World.*`, `TreeGenerator.*`, `NeonText.*`, `PropRenderer.*`. RGBA support in `Texture.*`. Instancing attributes in `Mesh.*` and the shaders.

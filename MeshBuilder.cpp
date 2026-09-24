@@ -22,15 +22,15 @@ void MeshBuilder::addTriangle(const glm::vec3& a, const glm::vec3& b, const glm:
     if (glm::dot(normal, expectedNormal) < 0.0f)
     {
         normal = -normal;
-        data_.vertices.push_back({a, normal, uvA});
-        data_.vertices.push_back({c, normal, uvC});
-        data_.vertices.push_back({b, normal, uvB});
+        data_.vertices.push_back({a, normal, uvA, color_});
+        data_.vertices.push_back({c, normal, uvC, color_});
+        data_.vertices.push_back({b, normal, uvB, color_});
     }
     else
     {
-        data_.vertices.push_back({a, normal, uvA});
-        data_.vertices.push_back({b, normal, uvB});
-        data_.vertices.push_back({c, normal, uvC});
+        data_.vertices.push_back({a, normal, uvA, color_});
+        data_.vertices.push_back({b, normal, uvB, color_});
+        data_.vertices.push_back({c, normal, uvC, color_});
     }
     data_.indices.insert(data_.indices.end(), {base, base + 1, base + 2});
 }
@@ -197,12 +197,32 @@ void MeshBuilder::append(const MeshData& data, const glm::mat4& transform)
 {
     const glm::mat3 normalMatrix = glm::inverseTranspose(glm::mat3(transform));
     const unsigned int base = static_cast<unsigned int>(data_.vertices.size());
-    data_.vertices.reserve(data_.vertices.size() + data.vertices.size());
     for (const Vertex& vertex : data.vertices)
     {
         const glm::vec4 position = transform * glm::vec4(vertex.position, 1.0f);
-        data_.vertices.push_back({glm::vec3(position), glm::normalize(normalMatrix * vertex.normal), vertex.texCoord});
+        data_.vertices.push_back({glm::vec3(position), glm::normalize(normalMatrix * vertex.normal), vertex.texCoord,
+                                  vertex.color * color_});
     }
     for (unsigned int index : data.indices)
+        data_.indices.push_back(base + index);
+}
+
+void MeshBuilder::addQuad(glm::vec3 a, glm::vec3 b, glm::vec3 c, glm::vec3 d,
+                          glm::vec2 uvA, glm::vec2 uvB, glm::vec2 uvC, glm::vec2 uvD)
+{
+    const glm::vec3 normal = glm::cross(b - a, c - a);
+    addTriangle(a, b, c, uvA, uvB, uvC, normal);
+    addTriangle(a, c, d, uvA, uvC, uvD, normal);
+}
+
+void MeshBuilder::addGeometry(const std::vector<Vertex>& vertices, const std::vector<unsigned int>& indices)
+{
+    const unsigned int base = static_cast<unsigned int>(data_.vertices.size());
+    for (Vertex vertex : vertices)
+    {
+        vertex.color *= color_;
+        data_.vertices.push_back(vertex);
+    }
+    for (unsigned int index : indices)
         data_.indices.push_back(base + index);
 }

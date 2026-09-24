@@ -453,7 +453,8 @@ namespace
 // ---------------------------------------------------------------------------
 
 VehicleRenderer::VehicleRenderer()
-    : tyre_(Mesh::makeCylinder(22)), hub_(Mesh::makeCylinder(12))
+    : tyre_(Mesh::makeCylinder(22)), hub_(Mesh::makeCylinder(12)),
+      tyreData_(Mesh::cylinderData(22)), hubData_(Mesh::cylinderData(12))
 {
     for (std::size_t index = 0; index < vehicleKindCount; ++index)
     {
@@ -851,6 +852,21 @@ VehicleRenderer::VehicleRenderer()
         }
         }
 
+        meshes.paintData = parts.paint.data;
+        meshes.secondData = parts.second.data;
+        meshes.glassData = parts.glass.data;
+        meshes.trimData = parts.trim.data;
+        meshes.headData = parts.headLamps.data;
+        meshes.tailData = parts.tailLamps.data;
+        meshes.indicatorData = parts.leftIndicators.data;
+        {
+            const auto base = static_cast<unsigned int>(meshes.indicatorData.vertices.size());
+            meshes.indicatorData.vertices.insert(meshes.indicatorData.vertices.end(), parts.rightIndicators.data.vertices.begin(),
+                                                 parts.rightIndicators.data.vertices.end());
+            for (unsigned int index : parts.rightIndicators.data.indices)
+                meshes.indicatorData.indices.push_back(base + index);
+        }
+        meshes.signData = parts.sign.data;
         meshes.paint = parts.paint.build();
         meshes.second = parts.second.build();
         meshes.glass = parts.glass.build();
@@ -950,6 +966,45 @@ void VehicleRenderer::collect(const VehiclePose& pose, const VehicleLamps& lamps
         parts.push_back({&hub_, glm::scale(hub, {1.15f * wheel.radius, wheel.width + 0.02f, 1.15f * wheel.radius}),
                          hubColor, 70.0f, glm::vec3(0.0f)});
     }
+}
+
+void VehicleRenderer::bakeParked(const VehiclePose& pose, MeshBuilder& body, MeshBuilder& glass, MeshBuilder& dark,
+                                 MeshBuilder& lenses) const
+{
+    const KindMeshes& meshes = kinds_[static_cast<std::size_t>(pose.kind)];
+    glm::mat4 frame = glm::translate(glm::mat4(1.0f), pose.position);
+    frame = glm::rotate(frame, glm::radians(pose.yawDegrees), {0.0f, 1.0f, 0.0f});
+    const auto bake = [&frame](MeshBuilder& builder, const MeshData& data, const glm::vec3& color)
+    {
+        if (data.indices.empty())
+            return;
+        builder.setColor(color);
+        builder.append(data, frame);
+        builder.setColor(glm::vec3{1.0f});
+    };
+    bake(body, meshes.paintData, pose.color);
+    bake(body, meshes.secondData, meshes.secondColor);
+    bake(glass, meshes.glassData, glassColor);
+    bake(dark, meshes.trimData, trimColor);
+    bake(lenses, meshes.headData, lensColor);
+    bake(lenses, meshes.tailData, tailColor);
+    bake(lenses, meshes.indicatorData, amberColor);
+    bake(lenses, meshes.signData, meshes.signColor * 0.6f);
+
+    const VehicleSpec& spec = vehicleSpec(pose.kind);
+    dark.setColor(glm::vec3{0.035f, 0.038f, 0.042f});
+    dark.append(tyreData_, glm::scale(glm::translate(frame, {0.0f, ground + 0.012f, 0.0f}), {spec.width * 0.95f, 0.02f, spec.length * 0.92f}));
+    for (const Wheel& wheel : meshes.wheels)
+    {
+        glm::mat4 hub = glm::translate(frame, wheel.centre);
+        hub = glm::rotate(hub, glm::radians(90.0f), {0.0f, 0.0f, 1.0f});
+        dark.setColor(tyreColor);
+        dark.append(tyreData_, glm::scale(hub, {2.0f * wheel.radius, wheel.width, 2.0f * wheel.radius}));
+        body.setColor(hubColor);
+        body.append(hubData_, glm::scale(hub, {1.15f * wheel.radius, wheel.width + 0.02f, 1.15f * wheel.radius}));
+    }
+    dark.setColor(glm::vec3{1.0f});
+    body.setColor(glm::vec3{1.0f});
 }
 
 void VehicleRenderer::collectDriverView(VehicleKind kind, const glm::vec3& position, float yawDegrees,

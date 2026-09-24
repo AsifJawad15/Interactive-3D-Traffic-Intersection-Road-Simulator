@@ -4,6 +4,7 @@
 #include "LightManager.h"
 #include "Mesh.h"
 #include "Player.h"
+#include "PropRenderer.h"
 #include "RoadRenderer.h"
 #include "Shader.h"
 #include "Simulation.h"
@@ -59,8 +60,6 @@ private:
     // Y axis by Mesh::makeBezierRevolution.
     Mesh fountainBasin_;
     Mesh fountainColumn_;
-    Mesh treeTrunk_;
-    Mesh treeCanopy_;
     Mesh lampPost_;
 
     Texture white_;
@@ -70,7 +69,6 @@ private:
     Texture asphalt_;
     Texture grass_;
     Texture sidewalk_;
-    Texture facade_;
 
     // Lab 4 diffuse + specular pair, applied to the roadside crates so the two
     // maps can be pointed at side by side during the demonstration.
@@ -133,6 +131,9 @@ private:
     std::vector<PointLight> movingLights_;
     bool vehiclesWarmed_ = false;
 
+    // Buildings, shops, trees, paving and street furniture, baked.
+    PropRenderer props_;
+
     // The bus shelters, baked into one mesh per material.
     Mesh shelterFrames_;
     Mesh shelterGlass_;
@@ -148,7 +149,9 @@ private:
     void drawVehicleParts();
     void drawRoads();
     void drawStreetLamps(bool illuminated);
-    void drawBuildings();
+    // The city dressing. `darkness` runs from 0 by day to 1 at night and
+    // lights the windows.
+    void drawCity(bool illuminated, float darkness);
     void drawSignals(const TrafficSystem& traffic);
     void drawGiveWaySigns();
     void drawTrafficSignal(
@@ -156,7 +159,6 @@ private:
     void drawIsland(const glm::vec2& centre);
     void drawFountain(const glm::vec2& centre);
     void drawWaterJets(const glm::vec3& origin);
-    void drawTrees();
     void drawStreetFurniture();
     void drawBillboards(bool illuminated);
     void drawNeonSigns(bool illuminated);

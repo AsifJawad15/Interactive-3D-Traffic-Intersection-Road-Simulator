@@ -122,7 +122,7 @@ namespace
     // Camera poses for --view. Yaw 90 looks along +z (north), yaw 0 along +x.
     // Views 8 to 10 are the player's: 8 the chase view of your car, 9 the
     // driver view over its bonnet, 10 on foot beside it. Views 11 and 12 look
-    // at the staged vehicles above.
+    // at the staged vehicles above. Views 16 to 19 look at the city dressing.
     void applyCaptureView(Camera& camera, int view, Player& player, const TrafficSystem& traffic)
     {
         if (view == 11 || view == 13)
@@ -173,12 +173,16 @@ namespace
         switch (view)
         {
         case 1: camera.setFreePose({3.5f, 1.7f, -44.0f}, 90.0f, -3.0f); break;     // street level, X0 south arm
-        case 2: camera.setFreePose({60.0f, 9.0f, 28.0f}, -25.0f, -14.0f); break;   // roundabout R1 with the fountain
+        case 2: camera.setFreePose({56.0f, 9.0f, -5.0f}, 8.0f, -12.0f); break;     // roundabout R1 with the fountain
         case 3: camera.setFreePose({0.0f, 300.0f, -480.0f}, 90.0f, -33.0f); break; // the whole city
         case 4: camera.setFreePose({-60.0f, 30.0f, -55.0f}, 60.0f, -24.0f); break; // T-junctions G and ST
         case 5: camera.setFreePose({0.0f, 430.0f, 0.01f}, 90.0f, -89.0f); break;   // straight down
         case 6: camera.setFreePose({-38.0f, 13.0f, -128.0f}, 36.0f, -16.0f); break; // roundabout R2
         case 7: camera.setFreePose({-170.0f, 22.0f, 170.0f}, -20.0f, -14.0f); break; // the ring road, NW corner
+        case 16: camera.setFreePose({-14.0f, 6.0f, 118.0f}, 134.0f, -12.0f); break;  // the park: plaza and pond
+        case 17: camera.setFreePose({125.0f, 3.5f, -4.0f}, -44.0f, -6.0f); break;    // the petrol station
+        case 18: camera.setFreePose({-40.0f, 1.8f, -3.5f}, 180.0f, -2.0f); break;    // a shopping street west of X0
+        case 19: camera.setFreePose({-103.5f, 2.0f, 25.0f}, 90.0f, -3.0f); break;    // houses and flats north of G
         default: camera.reset(); break;
         }
     }
@@ -691,6 +695,8 @@ namespace
                 frame({junction.centre.x, 1.7f, junction.centre.y}, yaw, -2.0f);
         }
 
+
+
         const bool passed = pops == 0;
         std::printf("%zu lights, %zu frames (budget full in %.0f%%) | largest change of one light in one frame %.3f "
                     "at (%.0f, %.1f, %.0f) | frames over %.2f: %zu | %s\n",
@@ -698,6 +704,104 @@ namespace
                     worst, worstAt.x, worstAt.y, worstAt.z, allowedStep, pops, passed ? "PASS" : "FAIL");
         return passed ? EXIT_SUCCESS : EXIT_FAILURE;
     }
+    // The city dressing (--self-test): every building stands on the lawn,
+    // clear of the sidewalks, the roads and the other buildings; every
+    // tree, bench, car and post stands clear of the buildings and off the
+    // road. Prints what was placed.
+    bool checkCity(const World& world)
+    {
+        std::size_t failures = 0;
+        const auto fail = [&failures](const char* what, glm::vec2 where)
+        {
+            if (failures < 12)
+                std::printf("FAIL: %s at (%.1f, %.1f)\n", what, where.x, where.y);
+            ++failures;
+        };
+
+        std::vector<OrientedBox> footprints;
+        std::array<int, buildingStyleCount> styles {};
+        for (const Building& building : world.buildings())
+        {
+            const glm::vec2 centre {building.position.x, building.position.z};
+            const glm::vec2 half {0.5f * building.size.x, 0.5f * building.size.z};
+            footprints.push_back(makeOrientedBox(centre, 0.0f, half));
+            ++styles[static_cast<std::size_t>(building.style)];
+            bool onLawn = true;
+            for (float sx : {-1.0f, 0.0f, 1.0f})
+            {
+                for (float sz : {-1.0f, 0.0f, 1.0f})
+                {
+                    const glm::vec2 point = centre + glm::vec2{sx * half.x, sz * half.y};
+                    onLawn = onLawn && world.onLawn(point) && world.surfaceHeight(point) == RoadNetwork::kerbTopY;
+                }
+            }
+            if (!onLawn)
+                fail("a building off the lawn", centre);
+        }
+        for (std::size_t a = 0; a < footprints.size(); ++a)
+        {
+            for (std::size_t b = a + 1; b < footprints.size(); ++b)
+            {
+                if (boxSeparation(footprints[a], footprints[b]) < 1.0f)
+                    fail("two buildings touching", footprints[a].centre);
+            }
+        }
+
+        // Everything else solid: clear of every building and off the road.
+        const std::size_t buildingBoxes = world.buildings().size();
+        for (std::size_t index = buildingBoxes; index < world.solidBoxes().size(); ++index)
+        {
+            const OrientedBox& solid = world.solidBoxes()[index];
+            for (const OrientedBox& footprint : footprints)
+            {
+                if (boxesOverlap(solid, footprint))
+                    fail("something inside a building", solid.centre);
+            }
+            if (world.surfaceHeight(solid.centre) != RoadNetwork::kerbTopY)
+                fail("something standing on the road", solid.centre);
+        }
+        for (const Circle& post : world.solidPosts())
+        {
+            for (const OrientedBox& footprint : footprints)
+            {
+                if (glm::length(pushOut(post, footprint)) > 0.0f)
+                    fail("a post or trunk inside a building", post.centre);
+            }
+            if (world.surfaceHeight(post.centre) != RoadNetwork::kerbTopY)
+                fail("a post or trunk on the road", post.centre);
+        }
+        std::array<int, 3> species {};
+        for (const Tree& tree : world.trees())
+        {
+            ++species[static_cast<std::size_t>(tree.species)];
+            if (world.surfaceHeight(tree.position) != RoadNetwork::kerbTopY)
+                fail("a tree on the road", tree.position);
+        }
+        for (const ParkedCar& car : world.parkedCars())
+        {
+            if (!world.onLawn(car.position))
+                fail("a parked car off the lawn", car.position);
+        }
+
+        std::size_t neon = 0;
+        for (const Shop& shop : world.shops())
+            neon += shop.neon ? 1u : 0u;
+        std::size_t inside = 0;
+        for (const Building& building : world.buildings())
+            inside += std::abs(building.position.x) < 200.0f && std::abs(building.position.z) < 200.0f ? 1u : 0u;
+        std::printf("City: %zu buildings, %zu inside the ring road and %zu in the row outside it (%d shop rows, %d flats, "
+                    "%d offices, %d hotels, %d houses, %d warehouses), and %zu on the skyline\n",
+                    world.buildings().size(), inside, world.buildings().size() - inside, styles[0], styles[1], styles[2],
+                    styles[3], styles[4], styles[5], world.skyline().size());
+        std::printf("      %zu shop fronts (%zu with neon), %zu neon signs, %zu trees (%d broadleaf, %d conifer, %d palm), "
+                    "%zu props, %zu parked cars, %zu extra lamps\n",
+                    world.shops().size(), neon, world.neonSigns().size(), world.trees().size(), species[0], species[1],
+                    species[2], world.props().size(), world.parkedCars().size(), world.extraLamps().size());
+        std::printf("City dressing: %s\n", failures == 0 ? "everything on the lawn and clear of the buildings and the road"
+                                                           : "FAILED");
+        return failures == 0;
+    }
+
     // Headless checks of the player (Phase 4):
     //  1. Crashes: straight into a building at boost speed, and at an angle.
     //     The car must never sink more than 5 cm into it (no tunnelling), and
@@ -977,6 +1081,7 @@ int main(int argc, char** argv)
         std::printf("%zu bus shelters: %s\n", world.busShelters().size(),
                     shelterFailures == 0 ? "all on the sidewalk and clear of every other thing" : "FAILED");
         passed = passed && shelterFailures == 0 && !world.busShelters().empty();
+        passed = checkCity(world) && passed;
         return passed ? EXIT_SUCCESS : EXIT_FAILURE;
     }
 
@@ -1157,8 +1262,16 @@ int main(int argc, char** argv)
     try
     {
         Camera camera;
+        const auto startTime = std::chrono::steady_clock::now();
+        const auto secondsSince = [](std::chrono::steady_clock::time_point from)
+        {
+            return std::chrono::duration<double>(std::chrono::steady_clock::now() - from).count();
+        };
         TrafficSystem traffic(vehicleCount);
+        const double trafficSeconds = secondsSince(startTime);
+        const auto cityStart = std::chrono::steady_clock::now();
         const World world = World::make(traffic.network(), traffic.busStopSites());
+        const double citySeconds = secondsSince(cityStart);
         Player player(world);
         DayNight dayNight;
         RenderScaler scaler;
@@ -1174,7 +1287,10 @@ int main(int argc, char** argv)
         glfwSetKeyCallback(window, keyCallback);
         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
+        const auto sceneStart = std::chrono::steady_clock::now();
         Scene scene(traffic, world);
+        std::printf("Start-up: traffic %.2f s, city %.2f s, meshes and textures %.2f s\n",
+                    trafficSeconds, citySeconds, secondsSince(sceneStart));
         Overlay overlay;
         Sky sky;
         HdrTarget hdr;
@@ -1259,6 +1375,7 @@ int main(int argc, char** argv)
             const float aspect = static_cast<float>(outputWidth) / static_cast<float>(outputHeight);
             const glm::mat4 view = camera.viewMatrix();
             const glm::mat4 projection = camera.projectionMatrix(aspect);
+            Mesh::resetDrawCalls();
             sky.render(view, projection, camera.position(), dayNight, static_cast<float>(timeSeconds));
             const PlayerDrawMode playerDrawMode = camera.mode() == CameraMode::PlayerSeat ? PlayerDrawMode::DriverSeat
                                                 : camera.mode() == CameraMode::OnFoot ? PlayerDrawMode::OwnEyes
@@ -1270,6 +1387,7 @@ int main(int argc, char** argv)
                 camera.mode() == CameraMode::Driver,
                 camera.followedVehicleIndex(),
                 static_cast<float>(timeSeconds));
+            const int sceneDrawCalls = Mesh::drawCalls();
 
             // 2. Resolve the samples, then bloom and tone-map into the window,
             //    scaling up if the scene was rendered smaller.
@@ -1285,6 +1403,7 @@ int main(int argc, char** argv)
                 performance.fps = frameStats.fps();
                 performance.frameMs = frameStats.frameMs();
                 performance.gpuMs = frameStats.gpuMs();
+                performance.drawCalls = sceneDrawCalls;
                 performance.renderWidth = renderWidth;
                 performance.renderHeight = renderHeight;
                 performance.scalePercent = static_cast<int>(std::lround(scaler.scale() * 100.0f));

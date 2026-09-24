@@ -5,6 +5,7 @@
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
+#include <glm/vec4.hpp>
 
 #include <vector>
 
@@ -48,11 +49,26 @@ public:
     // A copy of existing geometry, moved into place.
     void append(const MeshData& data, const glm::mat4& transform);
 
+    // A quadrilateral with its own texture coordinates, corners in order;
+    // it faces the side its corners turn anticlockwise around.
+    void addQuad(glm::vec3 a, glm::vec3 b, glm::vec3 c, glm::vec3 d,
+                 glm::vec2 uvA, glm::vec2 uvB, glm::vec2 uvC, glm::vec2 uvD);
+
+    // Raw vertices and triangles, already in world space.
+    void addGeometry(const std::vector<Vertex>& vertices, const std::vector<unsigned int>& indices);
+
+    // The vertex colour everything added from now on is multiplied by
+    // (see Vertex::color).
+    void setColor(const glm::vec4& color) { color_ = color; }
+    void setColor(const glm::vec3& color, float alpha = 1.0f) { color_ = glm::vec4(color, alpha); }
+    const MeshData& data() const { return data_; }
+
     bool empty() const { return data_.indices.empty(); }
     Mesh build() const { return Mesh(data_); }
 
 private:
     MeshData data_;
+    glm::vec4 color_ {1.0f};
 
     void addTriangle(const glm::vec3& a, const glm::vec3& b, const glm::vec3& c,
                      const glm::vec2& uvA, const glm::vec2& uvB, const glm::vec2& uvC,

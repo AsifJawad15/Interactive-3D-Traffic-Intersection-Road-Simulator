@@ -50,6 +50,106 @@ Texture::Texture(
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, static_cast<GLint>(magFilter));
 }
 
+Texture Texture::fromRgba(int width, int height, const std::vector<unsigned char>& rgba, float alphaCutoff, bool srgb)
+{
+    Texture texture;
+    glGenTextures(1, &texture.id_);
+    glBindTexture(GL_TEXTURE_2D, texture.id_);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+    // Share of texels at or above the cut-off in a level.
+    const auto coverage = [alphaCutoff](const std::vector<float>& alpha, float scale)
+    {
+        std::size_t passing = 0;
+        for (float value : alpha)
+            passing += value * scale >= alphaCutoff ? 1u : 0u;
+        return static_cast<float>(passing) / static_cast<float>(std::max<std::size_t>(alpha.size(), 1));
+    };
+
+    std::vector<float> level(rgba.size());
+    for (std::size_t index = 0; index < rgba.size(); ++index)
+        level[index] = static_cast<float>(rgba[index]) / 255.0f;
+    std::vector<float> alpha0(level.size() / 4);
+    for (std::size_t index = 0; index < alpha0.size(); ++index)
+        alpha0[index] = level[index * 4 + 3];
+    const float target = coverage(alpha0, 1.0f);
+
+    int w = width;
+    int h = height;
+    std::vector<unsigned char> bytes;
+    for (int mip = 0;; ++mip)
+    {
+        // Scale this level's alpha so it covers as much as the full picture.
+        std::vector<float> alpha(static_cast<std::size_t>(w) * h);
+        for (std::size_t index = 0; index < alpha.size(); ++index)
+            alpha[index] = level[index * 4 + 3];
+        float scale = 1.0f;
+        if (mip > 0)
+        {
+            float low = 0.25f;
+            float high = 4.0f;
+            for (int iteration = 0; iteration < 20; ++iteration)
+            {
+                scale = 0.5f * (low + high);
+                (coverage(alpha, scale) < target ? low : high) = scale;
+            }
+        }
+        bytes.resize(level.size());
+        for (std::size_t index = 0; index < level.size(); ++index)
+        {
+            const float value = index % 4 == 3 ? level[index] * scale : level[index];
+            bytes[index] = static_cast<unsigned char>(std::clamp(value, 0.0f, 1.0f) * 255.0f + 0.5f);
+        }
+        glTexImage2D(GL_TEXTURE_2D, mip, srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, bytes.data());
+        if (w == 1 && h == 1)
+            break;
+
+        // Box-filter down to the next level. Colour is averaged weighted by
+        // alpha, so the transparent background does not bleed dark fringes in.
+        const int nextW = std::max(w / 2, 1);
+        const int nextH = std::max(h / 2, 1);
+        std::vector<float> next(static_cast<std::size_t>(nextW) * nextH * 4);
+        for (int y = 0; y < nextH; ++y)
+        {
+            for (int x = 0; x < nextW; ++x)
+            {
+                float sum[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+                float plain[3] = {0.0f, 0.0f, 0.0f};
+                int count = 0;
+                for (int dy = 0; dy < 2; ++dy)
+                {
+                    for (int dx = 0; dx < 2; ++dx)
+                    {
+                        const int sx = std::min(x * 2 + dx, w - 1);
+                        const int sy = std::min(y * 2 + dy, h - 1);
+                        const float* texel = &level[(static_cast<std::size_t>(sy) * w + sx) * 4];
+                        for (int channel = 0; channel < 3; ++channel)
+                        {
+                            sum[channel] += texel[channel] * texel[3];
+                            plain[channel] += texel[channel];
+                        }
+                        sum[3] += texel[3];
+                        ++count;
+                    }
+                }
+                float* out = &next[(static_cast<std::size_t>(y) * nextW + x) * 4];
+                for (int channel = 0; channel < 3; ++channel)
+                    out[channel] = sum[3] > 1.0e-4f ? sum[channel] / sum[3] : plain[channel] / static_cast<float>(count);
+                out[3] = sum[3] / static_cast<float>(count);
+            }
+        }
+        level = std::move(next);
+        w = nextW;
+        h = nextH;
+    }
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    return texture;
+}
+
 Texture::~Texture()
 {
     if (id_ != 0)

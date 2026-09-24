@@ -3,6 +3,7 @@
 #include <glad/glad.h>
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
+#include <glm/vec4.hpp>
 
 #include <cstddef>
 #include <vector>
@@ -12,6 +13,10 @@ struct Vertex
     glm::vec3 position;
     glm::vec3 normal;
     glm::vec2 texCoord;
+    // Multiplies the material colour, so one baked mesh can hold many
+    // differently painted things. Alpha carries a per-object number: the
+    // seed of a building's lit windows, or how far a leaf sways in the wind.
+    glm::vec4 color {1.0f};
 };
 
 // Geometry on the CPU side, before it is uploaded. Kept separately so the
@@ -39,12 +44,17 @@ public:
     void draw() const;
     bool empty() const { return indexCount_ == 0; }
 
+    // Draw calls issued since the last reset, for the HUD.
+    static int drawCalls() { return drawCalls_; }
+    static void resetDrawCalls() { drawCalls_ = 0; }
+
     // A point on a Bezier curve of any degree, in the Bernstein form of the
     // Lab 5 program. Used for the surfaces of revolution below and for the
     // side profiles of the vehicle bodies (VehicleRenderer.cpp).
     static glm::vec2 bezier(float t, const std::vector<glm::vec2>& controlPoints);
 
     static MeshData beveledCubeData(float bevel = 0.08f);
+    static MeshData cylinderData(unsigned int segments = 32);
     static MeshData bezierRevolutionData(
         const std::vector<glm::vec2>& controlPoints, unsigned int stacks, unsigned int slices);
 
@@ -68,6 +78,7 @@ private:
     GLuint vbo_ = 0;
     GLuint ebo_ = 0;
     GLsizei indexCount_ = 0;
+    static inline int drawCalls_ = 0;
 
     void release();
 };

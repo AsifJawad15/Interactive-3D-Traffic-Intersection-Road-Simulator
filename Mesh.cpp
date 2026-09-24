@@ -135,6 +135,8 @@ Mesh::Mesh(const std::vector<Vertex>& vertices, const std::vector<unsigned int>&
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<void*>(offsetof(Vertex, normal)));
     glEnableVertexAttribArray(2);
     glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<void*>(offsetof(Vertex, texCoord)));
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, sizeof(Vertex), reinterpret_cast<void*>(offsetof(Vertex, color)));
 
     glBindVertexArray(0);
 }
@@ -167,6 +169,9 @@ Mesh& Mesh::operator=(Mesh&& other) noexcept
 
 void Mesh::draw() const
 {
+    if (indexCount_ == 0)
+        return;
+    ++drawCalls_;
     glBindVertexArray(vao_);
     glDrawElements(GL_TRIANGLES, indexCount_, GL_UNSIGNED_INT, nullptr);
     glBindVertexArray(0);
@@ -310,6 +315,11 @@ Mesh Mesh::makeCarCabin()
 
 Mesh Mesh::makeCylinder(unsigned int segments)
 {
+    return Mesh(cylinderData(segments));
+}
+
+MeshData Mesh::cylinderData(unsigned int segments)
+{
     segments = segments < 3 ? 3 : segments;
 
     std::vector<Vertex> vertices;
@@ -361,7 +371,7 @@ Mesh Mesh::makeCylinder(unsigned int segments)
         indices.insert(indices.end(), {bottomCenter, bottomRing + i + 1, bottomRing + i});
     }
 
-    return Mesh(vertices, indices);
+    return {vertices, indices};
 }
 
 Mesh Mesh::makeBezierRevolution(

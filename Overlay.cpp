@@ -92,10 +92,10 @@ void Overlay::render(
     drawText(left, y, 1.12f, line.data(), {0.82f, 0.70f, 1.0f, 1.0f}, width, height);
     y += 21.0f;
 
-    std::snprintf(line.data(), line.size(), "RENDER: %dx%d (%d%% %s)   %d HZ %s   GPU %.1f MS",
+    std::snprintf(line.data(), line.size(), "RENDER: %dx%d (%d%% %s)   %d HZ %s   GPU %.1f MS   %d DRAWS",
                   performance.renderWidth, performance.renderHeight, performance.scalePercent,
                   performance.resolutionMode, performance.pacingHz,
-                  performance.fullRatePacing ? "FULL" : "STEADY", performance.gpuMs);
+                  performance.fullRatePacing ? "FULL" : "STEADY", performance.gpuMs, performance.drawCalls);
     drawText(left, y, 1.08f, line.data(), {0.70f, 0.88f, 0.80f, 1.0f}, width, height);
     y += 21.0f;
 

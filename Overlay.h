@@ -18,6 +18,7 @@ struct PerformanceInfo
     float fps = 0.0f;
     float frameMs = 0.0f;
     float gpuMs = 0.0f;
+    int drawCalls = 0;       // the 3D scene's draw calls last frame
     int renderWidth = 0;
     int renderHeight = 0;
     int scalePercent = 100;

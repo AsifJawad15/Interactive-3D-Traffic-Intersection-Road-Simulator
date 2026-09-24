@@ -176,6 +176,10 @@
     <ClCompile Include="World.cpp" />
     <ClCompile Include="Player.cpp" />
     <ClCompile Include="VehicleTypes.cpp" />
+    <ClCompile Include="NeonText.cpp" />
+    <ClCompile Include="PropRenderer.cpp" />
+    <ClCompile Include="TreeGenerator.cpp" />
+    <ClCompile Include="WorldCity.cpp" />
     <ClCompile Include="VehicleRenderer.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -201,6 +205,9 @@
     <ClInclude Include="World.h" />
     <ClInclude Include="Player.h" />
     <ClInclude Include="VehicleTypes.h" />
+    <ClInclude Include="NeonText.h" />
+    <ClInclude Include="PropRenderer.h" />
+    <ClInclude Include="TreeGenerator.h" />
     <ClInclude Include="VehicleRenderer.h" />
   </ItemGroup>
   <ItemGroup>

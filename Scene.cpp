@@ -1,13 +1,12 @@
 ﻿#include "Scene.h"
 
 #include "MeshBuilder.h"
+#include "NeonText.h"
 #include "Sky.h"
 
 #include <glm/geometric.hpp>
 #include <glm/gtc/matrix_inverse.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-
-#include <stb_easy_font.h>
 
 #include <algorithm>
 #include <array>
@@ -49,62 +48,12 @@ namespace
         return profile;
     }
 
-    const std::vector<glm::vec2>& treeTrunkProfile()
-    {
-        static const std::vector<glm::vec2> profile = {
-            {0.30f, 0.00f}, {0.15f, 0.90f}, {0.13f, 1.90f}, {0.20f, 2.60f}
-        };
-        return profile;
-    }
-
-    const std::vector<glm::vec2>& treeCanopyProfile()
-    {
-        static const std::vector<glm::vec2> profile = {
-            {0.00f, 0.00f}, {1.95f, 0.35f}, {2.10f, 1.60f},
-            {1.20f, 2.60f}, {0.00f, 2.95f}
-        };
-        return profile;
-    }
-
     const std::vector<glm::vec2>& lampPostProfile()
     {
         static const std::vector<glm::vec2> profile = {
             {0.17f, 0.00f}, {0.10f, 1.60f}, {0.085f, 4.00f}, {0.075f, 5.60f}
         };
         return profile;
-    }
-
-    struct EasyFontVertex
-    {
-        float x;
-        float y;
-        float z;
-        unsigned char color[4];
-    };
-
-    // The pixel rectangles stb_easy_font draws a line of text with, in its
-    // own units (a capital letter is about 7 units tall).
-    struct Stroke
-    {
-        float x0, y0, x1, y1;
-    };
-
-    std::vector<Stroke> textStrokes(const std::string& text)
-    {
-        std::vector<char> buffer(text.begin(), text.end());
-        buffer.push_back('\0');
-        std::vector<unsigned char> vertices(64 * 1024);
-        const int quads = stb_easy_font_print(0.0f, 0.0f, buffer.data(), nullptr,
-                                              vertices.data(), static_cast<int>(vertices.size()));
-        const auto* raw = reinterpret_cast<const EasyFontVertex*>(vertices.data());
-        std::vector<Stroke> strokes;
-        for (int quad = 0; quad < quads; ++quad)
-        {
-            const EasyFontVertex& a = raw[quad * 4];
-            const EasyFontVertex& c = raw[quad * 4 + 2];
-            strokes.push_back({std::min(a.x, c.x), std::min(a.y, c.y), std::max(a.x, c.x), std::max(a.y, c.y)});
-        }
-        return strokes;
     }
 
     // The printed face of a billboard: a colour gradient, a light frame and
@@ -155,13 +104,13 @@ namespace
         {
             if (lines[line].empty())
                 continue;
-            const std::vector<Stroke> strokes = textStrokes(lines[line]);
+            const std::vector<TextStroke> strokes = textStrokes(lines[line]);
             float right = 0.0f;
-            for (const Stroke& stroke : strokes)
+            for (const TextStroke& stroke : strokes)
                 right = std::max(right, stroke.x1);
             const float scale = std::min(scales[line], (width - 60.0f) / std::max(right, 1.0f));
             const float left = 0.5f * (width - right * scale);
-            for (const Stroke& stroke : strokes)
+            for (const TextStroke& stroke : strokes)
             {
                 for (int y = static_cast<int>(tops[line] + stroke.y0 * scale); y < static_cast<int>(tops[line] + stroke.y1 * scale); ++y)
                 {
@@ -216,8 +165,6 @@ Scene::Scene(const TrafficSystem& traffic, const World& world)
       faceQuad_(makeFaceQuad()),
       fountainBasin_(Mesh::makeBezierRevolution(fountainBasinProfile(), 22, 28)),
       fountainColumn_(Mesh::makeBezierRevolution(fountainColumnProfile(), 22, 24)),
-      treeTrunk_(Mesh::makeBezierRevolution(treeTrunkProfile(), 12, 12)),
-      treeCanopy_(Mesh::makeBezierRevolution(treeCanopyProfile(), 16, 16)),
       lampPost_(Mesh::makeBezierRevolution(lampPostProfile(), 12, 12)),
       white_(Texture::makeWhite()),
       matte_(Texture::makeGrey(20)),
@@ -226,7 +173,7 @@ Scene::Scene(const TrafficSystem& traffic, const World& world)
       asphalt_(Texture::fromFileOr(
           "assets/asphalt-photoreal.png", &Texture::makeAsphalt,
           GL_REPEAT, GL_REPEAT, GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR, true)),
-      // These three use an image file when one is present in assets/ and fall
+      // These two use an image file when one is present in assets/ and fall
       // back to the generated pattern otherwise, so the project runs with no
       // assets at all but can be re-skinned by dropping in a photograph.
       grass_(Texture::fromFileOr(
@@ -234,9 +181,6 @@ Scene::Scene(const TrafficSystem& traffic, const World& world)
           GL_REPEAT, GL_REPEAT, GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR, true)),
       sidewalk_(Texture::fromFileOr(
           "assets/sidewalk.png", &Texture::makeSidewalk,
-          GL_REPEAT, GL_REPEAT, GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR, true)),
-      facade_(Texture::fromFileOr(
-          "assets/facade.png", &Texture::makeFacade,
           GL_REPEAT, GL_REPEAT, GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR, true)),
       // The Lab 4 container pair. The specular map is the metal banding only,
       // so the crate's painted panels stay matte while its edges catch a
@@ -248,7 +192,8 @@ Scene::Scene(const TrafficSystem& traffic, const World& world)
           "assets/container2_specular.png", &Texture::makeFacade,
           GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE, GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR)),
       signFace_(Texture::makeSidewalk()),
-      roads_(traffic)
+      roads_(traffic),
+      props_(world, vehicleLooks_)
 {
     shader_.use();
     shader_.setInt("uDiffuseTexture", 0);
@@ -268,10 +213,10 @@ void Scene::buildSigns()
     const MeshData tube = Mesh::beveledCubeData(0.12f);
     for (const NeonSign& sign : world_.neonSigns())
     {
-        const std::vector<Stroke> strokes = textStrokes(sign.text);
+        const std::vector<TextStroke> strokes = textStrokes(sign.text);
         float right = 0.0f;
         float bottom = 0.0f;
-        for (const Stroke& stroke : strokes)
+        for (const TextStroke& stroke : strokes)
         {
             right = std::max(right, stroke.x1);
             bottom = std::max(bottom, stroke.y1);
@@ -280,7 +225,7 @@ void Scene::buildSigns()
         const glm::mat4 frame = facingFrame(sign.centre, sign.facingDegrees);
 
         MeshBuilder builder;
-        for (const Stroke& stroke : strokes)
+        for (const TextStroke& stroke : strokes)
         {
             // Strokes are one unit thick; tubes a little thinner read better.
             float width = stroke.x1 - stroke.x0;
@@ -313,7 +258,10 @@ void Scene::buildStreetLamps(const RoadNetwork& network)
     const MeshData box = Mesh::beveledCubeData(0.09f);
 
     std::vector<PointLight> lights;
-    for (const StreetLamp& lamp : network.streetLamps())
+    std::vector<StreetLamp> lamps = network.streetLamps();
+    // The lamps of the park paths and the car park are the same fitting.
+    lamps.insert(lamps.end(), world_.extraLamps().begin(), world_.extraLamps().end());
+    for (const StreetLamp& lamp : lamps)
     {
         posts.append(post, glm::translate(glm::mat4(1.0f), lamp.position));
         heads.append(box, transformed(lamp.position + glm::vec3(0.0f, 5.75f, 0.0f), {0.75f, 0.28f, 0.75f}));
@@ -360,6 +308,10 @@ void Scene::render(
     shader_.setVec3("uLightDirection", dayNight.sunDirection());
     shader_.setVec3("uLightColor", dayNight.sunColor());
     shader_.setInt("uShadingMode", shadingMode);
+    shader_.setVec4("uFacade", glm::vec4{0.0f});
+    shader_.setFloat("uAlphaCutoff", 0.0f);
+    shader_.setFloat("uSway", 0.0f);
+    shader_.setFloat("uHaze", 0.0f);
 
     // This frame's lights: the 32 that matter most of the street lamps, the
     // neon spill and the billboard glow, with the four Lab 3 lamps of the
@@ -408,8 +360,7 @@ void Scene::render(
             drawFountain(junction.centre);
     }
 
-    drawBuildings();
-    drawTrees();
+    drawCity(night, glm::clamp(1.4f * (1.0f - dayNight.daylightAmount()) - 0.2f, 0.0f, 1.0f));
     drawStreetFurniture();
     drawBusShelters(night);
     drawStreetLamps(night);
@@ -567,34 +518,79 @@ void Scene::drawRoads()
     glDisable(GL_POLYGON_OFFSET_FILL);
 }
 
-void Scene::drawBuildings()
+void Scene::drawCity(bool illuminated, float darkness)
 {
-    for (const Building& building : world_.buildings())
+    const glm::mat4 identity(1.0f);
+
+    // Walls with windows: one draw call per building style, since the
+    // window pattern of a style is a uniform. The vertex colour carries each
+    // building's paint and its seed for which rooms are lit at night.
+    for (int index = 0; index < buildingStyleCount; ++index)
     {
-        drawMesh(buildingMesh_, transformed(building.position, building.size), building.tint, facade_, {3.0f, 4.0f}, 28.0f, glm::vec3{0.0f});
-
-        drawMesh(
-            buildingMesh_,
-            transformed({building.position.x, 0.42f, building.position.z},
-                        {building.size.x + 0.35f, 0.48f, building.size.z + 0.35f}),
-            {0.20f, 0.22f, 0.24f}, white_, {1, 1}, 24.0f, glm::vec3{0.0f});
-
-        const glm::vec3 roofPosition = building.position + glm::vec3(0.0f, building.size.y * 0.5f + 0.18f, 0.0f);
-        drawBeveledCube(transformed(roofPosition, {building.size.x + 0.5f, 0.35f, building.size.z + 0.5f}), {0.22f, 0.24f, 0.27f}, white_, {1, 1}, 16.0f);
-
-        const float entranceZ = building.position.z -
-            std::copysign(building.size.z * 0.5f + 0.035f, building.position.z);
-        drawBeveledCube(
-            transformed({building.position.x, 1.55f, entranceZ}, {2.25f, 2.55f, 0.10f}),
-            {0.035f, 0.12f, 0.18f}, white_, {1, 1}, 72.0f);
-        drawBeveledCube(
-            transformed({building.position.x, 2.95f, entranceZ}, {2.75f, 0.16f, 1.05f}),
-            {0.15f, 0.17f, 0.20f}, white_, {1, 1}, 42.0f);
-
-        glm::mat4 roofUnit = glm::translate(glm::mat4(1.0f), roofPosition + glm::vec3{1.6f, 0.55f, -1.4f});
-        roofUnit = glm::scale(roofUnit, {1.35f, 0.75f, 1.1f});
-        drawBeveledCube(roofUnit, {0.42f, 0.45f, 0.47f}, white_, {1, 1}, 18.0f);
+        const auto style = static_cast<BuildingStyle>(index);
+        const Mesh& walls = props_.facade(style);
+        if (walls.empty())
+            continue;
+        const FacadeLook& look = PropRenderer::facadeLook(style);
+        shader_.setVec4("uFacade", look.window);
+        shader_.setVec3("uFacadeGlass", look.glass);
+        shader_.setFloat("uWindowLight", look.litShare * darkness);
+        // The far skyline melts into the haze.
+        shader_.setFloat("uHaze", style == BuildingStyle::Skyline ? 1.0f : 0.0f);
+        drawMesh(walls, identity, glm::vec3{1.0f}, white_, {1.0f, 1.0f}, look.shininess, glm::vec3{0.0f});
     }
+    shader_.setVec4("uFacade", glm::vec4{0.0f});
+    shader_.setFloat("uHaze", 1.0f);
+    drawMesh(props_.skylineRoofs(), identity, glm::vec3{1.0f}, white_, {1.0f, 1.0f}, 10.0f, glm::vec3{0.0f});
+    shader_.setFloat("uHaze", 0.0f);
+
+    drawMesh(props_.plainWalls(), identity, glm::vec3{1.0f}, white_, {1.0f, 1.0f}, 16.0f, glm::vec3{0.0f});
+    drawMesh(props_.roofs(), identity, {0.40f, 0.41f, 0.43f}, sidewalk_, {1.0f, 1.0f}, 8.0f, glm::vec3{0.0f}, &matte_);
+    drawMesh(props_.tiledRoofs(), identity, glm::vec3{1.0f}, sidewalk_, {1.0f, 1.0f}, 12.0f, glm::vec3{0.0f}, &matte_);
+
+    // Shop windows: dark glass by day; at night the rooms behind glow, each
+    // in its own light (the vertex colour), as do the sign boxes.
+    emissiveTextured_ = 1.0f;
+    drawMesh(props_.shopGlass(), identity, {0.15f, 0.18f, 0.21f}, white_, {1.0f, 1.0f}, 110.0f,
+             illuminated ? glm::vec3{0.30f} : glm::vec3{0.0f});
+    drawMesh(props_.signBoards(), identity, glm::vec3{1.0f}, white_, {1.0f, 1.0f}, 40.0f,
+             illuminated ? glm::vec3{0.22f} : glm::vec3{0.0f});
+    emissiveTextured_ = 0.0f;
+    drawMesh(props_.letters(), identity, {0.97f, 0.97f, 0.97f}, white_, {1.0f, 1.0f}, 40.0f,
+             illuminated ? glm::vec3{0.40f} : glm::vec3{0.0f});
+    drawMesh(props_.canopyLights(), identity, {0.95f, 0.96f, 0.92f}, white_, {1.0f, 1.0f}, 40.0f,
+             illuminated ? glm::vec3{0.95f} : glm::vec3{0.10f});
+
+    drawMesh(props_.darkMetal(), identity, {0.12f, 0.13f, 0.15f}, white_, {1.0f, 1.0f}, 44.0f, glm::vec3{0.0f});
+    drawMesh(props_.painted(), identity, glm::vec3{1.0f}, white_, {1.0f, 1.0f}, 30.0f, glm::vec3{0.0f});
+    drawMesh(props_.concrete(), identity, {0.74f, 0.73f, 0.70f}, sidewalk_, {1.0f, 1.0f}, 10.0f, glm::vec3{0.0f});
+    drawMesh(props_.shrubs(), identity, {0.26f, 0.46f, 0.22f}, grass_, {2.0f, 2.0f}, 6.0f, glm::vec3{0.0f}, &matte_);
+    drawMesh(props_.bronze(), identity, {0.58f, 0.40f, 0.22f}, white_, {1.0f, 1.0f}, 70.0f, glm::vec3{0.0f});
+    drawMesh(props_.water(), identity, {0.16f, 0.30f, 0.38f}, white_, {1.0f, 1.0f}, 140.0f, glm::vec3{0.0f});
+
+    // Paving and asphalt lie 1 cm above the lawn, the car park's paint 1.5 cm
+    // above that; polygon offset keeps each on top from far away.
+    glEnable(GL_POLYGON_OFFSET_FILL);
+    glPolygonOffset(-1.0f, -2.0f);
+    drawMesh(props_.paving(), identity, {0.88f, 0.87f, 0.84f}, sidewalk_, {1.0f, 1.0f}, 12.0f, glm::vec3{0.0f});
+    drawMesh(props_.asphalt(), identity, {1.2f, 1.2f, 1.22f}, asphalt_, {1.0f, 1.0f}, 8.0f, glm::vec3{0.0f});
+    glPolygonOffset(-2.0f, -4.0f);
+    drawMesh(props_.bayPaint(), identity, {0.96f, 0.96f, 0.90f}, white_, {1.0f, 1.0f}, 4.0f, glm::vec3{0.0f});
+    glDisable(GL_POLYGON_OFFSET_FILL);
+
+    // The parked cars, baked: their colours are in the vertex colour.
+    drawMesh(props_.parkedBodies(), identity, glm::vec3{1.0f}, white_, {1.0f, 1.0f}, 70.0f, glm::vec3{0.0f});
+    drawMesh(props_.parkedGlass(), identity, glm::vec3{1.0f}, white_, {1.0f, 1.0f}, 120.0f, glm::vec3{0.0f});
+    drawMesh(props_.parkedDark(), identity, glm::vec3{1.0f}, white_, {1.0f, 1.0f}, 20.0f, glm::vec3{0.0f});
+    drawMesh(props_.parkedLenses(), identity, glm::vec3{1.0f}, white_, {1.0f, 1.0f}, 80.0f, glm::vec3{0.0f}, &matte_);
+
+    // Trees, swaying in the wind: bark, then the alpha-tested leaf cards.
+    shader_.setFloat("uSway", 1.0f);
+    drawMesh(props_.bark(), identity, glm::vec3{1.0f}, white_, {1.0f, 1.0f}, 10.0f, glm::vec3{0.0f}, &matte_);
+    shader_.setFloat("uAlphaCutoff", 0.5f);
+    drawMesh(props_.leaves(), identity, glm::vec3{1.0f}, props_.leafAtlas(), {1.0f, 1.0f}, 10.0f, glm::vec3{0.0f}, &matte_);
+    shader_.setFloat("uAlphaCutoff", 0.0f);
+    shader_.setFloat("uSway", 0.0f);
 }
 
 void Scene::drawIsland(const glm::vec2& centre)
@@ -687,27 +683,6 @@ void Scene::drawWaterJets(const glm::vec3& origin)
     }
 }
 
-void Scene::drawTrees()
-{
-    const std::vector<Tree>& trees = world_.trees();
-    for (const Tree& tree : trees)
-    {
-        const glm::vec3 root {tree.position.x, 0.22f, tree.position.y};
-        const float variation = tree.scale;
-        const float twist = tree.twistDegrees;
-
-        glm::mat4 trunk = glm::translate(glm::mat4(1.0f), root);
-        trunk = glm::rotate(trunk, glm::radians(twist), {0.0f, 1.0f, 0.0f});
-        trunk = glm::scale(trunk, {variation, variation, variation});
-        drawMesh(treeTrunk_, trunk, {0.34f, 0.24f, 0.16f}, white_, {1.0f, 1.0f}, 12.0f, glm::vec3{0.0f});
-
-        glm::mat4 canopy = glm::translate(glm::mat4(1.0f), root + glm::vec3(0.0f, 2.15f * variation, 0.0f));
-        canopy = glm::rotate(canopy, glm::radians(twist * 1.7f), {0.0f, 1.0f, 0.0f});
-        canopy = glm::scale(canopy, {variation, variation, variation});
-        drawMesh(treeCanopy_, canopy, {0.20f, 0.44f, 0.20f}, grass_, {2.0f, 2.0f}, 8.0f, glm::vec3{0.0f}, &matte_);
-    }
-}
-
 void Scene::drawStreetFurniture()
 {
     // Roadside crates carrying the Lab 4 diffuse + specular pair. The specular
@@ -745,7 +720,9 @@ void Scene::drawBillboards(bool illuminated)
 {
     for (const Billboard& billboard : world_.billboards())
     {
-        const glm::vec3 ground {billboard.centre.x, RoadNetwork::kerbTopY, billboard.centre.y};
+        // On the lawn, or up on a roof.
+        const float base = billboard.baseY > 0.0f ? billboard.baseY : RoadNetwork::kerbTopY;
+        const glm::vec3 ground {billboard.centre.x, base, billboard.centre.y};
         const glm::mat4 frame = facingFrame(ground, billboard.facingDegrees);
         const float middle = World::billboardBottom + 0.5f * World::billboardHeight;
         const float top = World::billboardBottom + World::billboardHeight;
@@ -978,16 +955,16 @@ void Scene::buildBusShelters()
         const glm::mat4 signFrame = facingFrame({pole.x, RoadNetwork::kerbTopY, pole.y}, shelter.facingDegrees + 90.0f);
         letters.append(box, glm::scale(glm::translate(signFrame, {0.0f, 1.3f, 0.0f}), {0.08f, 2.6f, 0.08f}));
         signs.append(box, glm::scale(glm::translate(signFrame, {0.0f, 2.45f, 0.0f}), {0.62f, 0.50f, 0.05f}));
-        const std::vector<Stroke> strokes = textStrokes("BUS");
+        const std::vector<TextStroke> strokes = textStrokes("BUS");
         float right = 0.0f;
-        for (const Stroke& stroke : strokes)
+        for (const TextStroke& stroke : strokes)
             right = std::max(right, stroke.x1);
         const float scale = 0.22f / 7.0f;
         for (int face = 0; face < 2; ++face)
         {
             const glm::mat4 plate = glm::rotate(glm::translate(signFrame, {0.0f, 2.45f, 0.0f}),
                                                 glm::radians(face == 0 ? 0.0f : 180.0f), {0.0f, 1.0f, 0.0f});
-            for (const Stroke& stroke : strokes)
+            for (const TextStroke& stroke : strokes)
             {
                 const float u = (0.5f * (stroke.x0 + stroke.x1) - 0.5f * right) * scale;
                 const float v = (3.5f - 0.5f * (stroke.y0 + stroke.y1)) * scale;

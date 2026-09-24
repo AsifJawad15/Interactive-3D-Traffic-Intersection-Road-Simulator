@@ -2,6 +2,7 @@
 
 #include "LightManager.h"
 #include "Mesh.h"
+#include "MeshBuilder.h"
 #include "Simulation.h"
 #include "VehicleTypes.h"
 
@@ -50,6 +51,13 @@ public:
     void collectDriverView(VehicleKind kind, const glm::vec3& position, float yawDegrees, const glm::vec3& color,
                            bool dashboard, std::vector<VehiclePart>& parts) const;
 
+    // A vehicle standing with its lamps off, baked into static meshes by
+    // material, its colours in the vertex colour: body paint and hubs,
+    // glass, dark trim and tyres, and the lamp lenses. The parked cars of
+    // the city cost four draw calls between them this way.
+    void bakeParked(const VehiclePose& pose, MeshBuilder& body, MeshBuilder& glass, MeshBuilder& dark,
+                    MeshBuilder& lenses) const;
+
     // The light a police car's or an ambulance's light bar throws on its
     // surroundings at night, red and blue in turn. False for other kinds.
     bool lightBarLight(const VehiclePose& pose, float seconds, PointLight& light) const;
@@ -84,9 +92,13 @@ private:
         bool signAlwaysLit = false;
         glm::vec3 lightBar {0.0f};   // where the light bar's light shines from
         std::vector<Wheel> wheels;
+        // Copies of the geometry, for baking parked vehicles.
+        MeshData paintData, secondData, glassData, trimData, headData, tailData, indicatorData, signData;
     };
 
     std::array<KindMeshes, vehicleKindCount> kinds_;
     Mesh tyre_;
     Mesh hub_;
+    MeshData tyreData_;
+    MeshData hubData_;
 };

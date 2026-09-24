@@ -19,9 +19,15 @@ it or from the driver's view over the bonnet, get out (`F`) and walk. The AI
 traffic yields to you, and you bump into buildings, trees, posts and cars
 instead of passing through them.
 
-A day–night cycle drives the sun, 182 street lamps, six neon signs and six lit
-billboards, and the shading model can be switched between flat, Gouraud and
-Phong while the simulation runs.
+The blocks are lived in: 164 buildings in six styles (shop rows, blocks of
+flats, office towers, hotels, houses and warehouses), 103 shop fronts with
+awnings and signs, a park with a pond and a plaza, a petrol station, a car park,
+255 trees that sway in the wind, benches, bins and planters, and a hazy skyline
+beyond the fields. At night thousands of rooms light up behind the windows.
+
+A day–night cycle drives the sun, 194 street and park lamps, 47 neon signs,
+lit shop windows and eight billboards, and the shading model can be switched
+between flat, Gouraud and Phong while the simulation runs.
 
 The traffic is **collision-free by construction**: every place where two routes
 could touch is measured once at start-up, and a vehicle only enters a junction
@@ -93,11 +99,11 @@ The window opens at 1920×1080, or maximised when the screen is only 1080p tall
 | Lab | Topic | Where it lives |
 | --- | --- | --- |
 | **1** | 2D primitives, 2D transformations | `Route::rotated` and `Route::translated` (`Route.cpp`) apply the 2D rotation and translation that place one authored northbound route onto every arm of every junction. Lane markings, zebras, arrows and stop lines in `RoadRenderer.cpp` are rectangles rotated onto the direction of their road. |
-| **2** | 3D drawing, camera, model / view / projection | `Mesh.cpp` builds indexed VAO/VBO/EBO geometry and `MeshBuilder` bakes the whole road network into six meshes; `Camera.cpp` provides seven camera modes (free, top, AI follow and driver, your chase view, driver view and your own eyes) using `glm::lookAt` and `glm::perspective`; `Scene::render` uploads `uModel`, `uView` and `uProjection` every frame. |
+| **2** | 3D drawing, camera, model / view / projection | `Mesh.cpp` builds indexed VAO/VBO/EBO geometry (with a colour per vertex) and `MeshBuilder` bakes the whole road network into six meshes and the whole city dressing into a few dozen; `Camera.cpp` provides seven camera modes (free, top, AI follow and driver, your chase view, driver view and your own eyes) using `glm::lookAt` and `glm::perspective`; `Scene::render` uploads `uModel`, `uView` and `uProjection` every frame. |
 | **3** | Illumination model and shading | `shaders/scene.frag` implements ambient + one directional sun + attenuated point lights (`k_c = 1`, `k_l = 0.09`, `k_q = 0.032`, the lab's constants) + **one spot light** with cosine cut-off angles: the lamp on an arm under the billboard at the central crossroads, which lights its picture at night. The four Lab 3 lamps at the central crossroads are always lit; the other street lamps, the neon spill and the billboard glow share a budget of 32 lights per frame (`LightManager.cpp`, `shaders/lights.glsl`). `uShadingMode` selects flat, Gouraud or Phong from one shader pair. |
-| **4** | Texture mapping | `Texture::fromFile(path, wrapS, wrapT, minFilter, magFilter)` mirrors the lab's `loadTexture` signature, so wrapping and filtering are explicit at every call site. The roadside crates carry the lab's own **diffuse + specular map pair** (`container2.png`, `container2_specular.png`), sampled as `uDiffuseTexture` and `uSpecularTexture`; grass and leaves use a dim one-texel specular map so they stay matte. |
-| **4b** | Texture sources | `assets/asphalt-photoreal.png` and the container pair are real image files. `assets/grass.png`, `assets/sidewalk.png` and `assets/facade.png` are optional: if present they are loaded, and if absent the matching procedural generator in `Texture.cpp` is used instead, so the project runs with no assets at all. |
-| **5** | Bezier curves and surfaces | `Mesh::makeBezierRevolution` (`Mesh.cpp`) ports `nCr` and the Bernstein evaluation from the Lab 5 curve program and sweeps the resulting profile about the Y axis. Control points are written in source (top of `Scene.cpp`) instead of picked with the mouse. It generates the **fountain basin and column, the tree trunks and canopies, the street lamp posts and the sign posts**. |
+| **4** | Texture mapping | `Texture::fromFile(path, wrapS, wrapT, minFilter, magFilter)` mirrors the lab's `loadTexture` signature, so wrapping and filtering are explicit at every call site. The roadside crates carry the lab's own **diffuse + specular map pair** (`container2.png`, `container2_specular.png`), sampled as `uDiffuseTexture` and `uSpecularTexture`; grass and leaves use a dim one-texel specular map so they stay matte. The trees' leaf cards sample an **RGBA** leaf picture and are **alpha-tested** (`Texture::fromRgba` builds its mipmaps so the leaves keep their coverage with distance). |
+| **4b** | Texture sources | `assets/asphalt-photoreal.png` and the container pair are real image files. `assets/grass.png` and `assets/sidewalk.png` are optional: if present they are loaded, and if absent the matching procedural generator in `Texture.cpp` is used instead, so the project runs with no assets at all. The billboard pictures and the leaf picture are drawn at start-up; building windows are drawn by the fragment shader. |
+| **5** | Bezier curves and surfaces | `Mesh::makeBezierRevolution` (`Mesh.cpp`) ports `nCr` and the Bernstein evaluation from the Lab 5 curve program and sweeps the resulting profile about the Y axis. Control points are written in source (top of `Scene.cpp`) instead of picked with the mouse. It generates the **fountain basin and column, the street lamp posts and sign posts, the bins, bollards, planter shrubs and water-tank roofs, and the plaza's monument**. The tree trunks and branches are tubes swept along 3D Bezier curves (`TreeGenerator.cpp`, the same curve by de Casteljau's construction), and the vehicle bodies are lofted from Bezier profiles. |
 
 ---
 
@@ -133,6 +139,55 @@ at an intersection, the inside or the outside of a bend, or the circle of a
 roundabout. The same tracing, run the other way round the whole city, gives the
 kerb and sidewalk outside the ring road. Lawns are triangulated by ear clipping,
 since an L-shaped block is not convex.
+
+---
+
+## The city dressing
+
+Everything in the blocks is placed by a seeded generator (`WorldCity.cpp`), so
+the same city comes out every run, and baked at start-up into one mesh per
+material (`PropRenderer.cpp`), so the whole city costs a few dozen draw calls.
+
+* **Streets of buildings.** Both sides of every road are walked plot by plot.
+  Each block has a land use (downtown shops, offices, flats, houses, mixed) and
+  the row outside the ring has one per side (flats, towers, warehouses,
+  houses). A plot is kept only if it lies on the lawn behind the sidewalk,
+  clear of every other building, of the billboards, bus shelters, signals and
+  signs, and of the corners of the junctions.
+* **Six styles:** shop rows (shops on a 4.2 m ground floor, one or two storeys
+  above), blocks of flats (3–6 storeys, a door and canopy), office towers
+  (6–12 storeys of curtain wall, a glazed lobby, planters), hotels (a lobby, a
+  canopy, palms, and the name in neon along the top), houses (a pitched roof,
+  a porch, a drive, often a car on it) and warehouses (roller doors and an
+  apron). Roofs carry parapets, water tanks and air-conditioning units; two
+  carry billboards.
+* **Windows without geometry.** A wall's texture coordinates count window bays
+  across and storeys up; the fragment shader draws a framed window in every
+  cell, varies the glass by day, and at night lights a share of the rooms, warm
+  or cool, chosen by a hash of the cell and the building's own seed. Far away,
+  where a window is smaller than a pixel, the pattern fades to its average
+  instead of shimmering.
+* **Shops:** a glass front with mullions and a door, a striped awning, and a
+  sign: 43 in neon (every stroke of the text a glowing tube, which blooms and
+  lights the pavement), the others painted on a lit box. The windows glow at
+  night, each shop in its own light.
+* **The park** (the north-west block): a stone-edged pond, a paved plaza with a
+  bronze monument, palms and benches, paths out to all four sides, lamps,
+  picnic tables and 34 trees. **The petrol station** (east of R1): a lit
+  canopy over two pump islands, a kiosk and a price sign. **The car park**
+  (south of X0): painted bays and parked cars.
+* **Trees** (`TreeGenerator.cpp`): broadleaf, conifer and palm, three shapes of
+  each. Trunks and branches are Bezier tubes; the foliage is leaf cards, whose
+  normals lean outward from the middle of the crown so it is lit as one
+  shape. Every vertex carries how far it sways, and the vertex shader moves it
+  in the wind. Street trees line the roads wherever there is room.
+* **Street furniture:** benches, bins, planters, bollards, picnic tables and
+  50 km/h signs on the links out to the ring; 49 parked cars, baked with the
+  vehicles' own bodies into four meshes.
+* **The skyline:** 90 plain towers 400–700 m out, drawn with extra haze.
+* Everything solid is solid: you bump into buildings, benches, pumps and
+  parked cars. `--self-test` checks that everything stands on the lawn, clear
+  of the buildings and off the road.
 
 ---
 
@@ -282,10 +337,14 @@ The city is lit by street lamps, signboards and neon; there is no floodlight.
 * **Street lamps** every 15 m along every road. The four Lab 3 lamps of the
   central crossroads are always lit.
 * **Neon signs** above the doors round the central crossroads (HOTEL, CAFE,
-  PIZZA, CINEMA, BAR, 24H). The lettering is geometry: every stroke of the
-  `stb_easy_font` text becomes a thin glass tube, which glows and blooms at
-  night (the BAR sign's tired tube stutters). Each sign throws a coloured light
-  onto the pavement below it.
+  PIZZA, CINEMA, BAR, 24H) and over the shops along the streets, and hotel
+  names along the tops of the hotels: 47 in all. The lettering is geometry:
+  every stroke of the `stb_easy_font` text becomes a thin glass tube, which
+  glows and blooms at night (a few tired tubes stutter). Each sign by a door
+  throws a coloured light onto the pavement below it.
+* **Lit rooms and shop windows**: at night a share of the windows light up,
+  shop windows glow with the light inside, and sign boxes shine.
+* **The petrol station's canopy** and the lamps of the park and the car park.
 * **Billboards** on the lawns beside the roads, their pictures generated at
   start-up (a gradient, a frame and two lines of text). At night five of them
   glow from behind in their own colours and light the ground in front; the one
@@ -395,8 +454,12 @@ OpenGLMiniProject.exe --light-test
 OpenGLMiniProject.exe --player-test
 ```
 
-`--self-test` checks the whole network (15228 checks), and that every bus
-shelter stands on the sidewalk clear of everything else:
+`--self-test` checks the whole network (15228 checks), that every bus shelter
+stands on the sidewalk clear of everything else, and the city dressing: every
+building stands on the lawn, clear of the sidewalks and of every other
+building, and every tree, bench, parked car and post stands clear of the
+buildings and off the road (it also prints how many of each were placed). The
+network checks are:
 
 * every junction has as many arms as its type needs, and the whole network is
   one piece: from any route, in either lane, a car can reach every other route
@@ -454,14 +517,17 @@ without judder.
 `--capture out.png` renders a fixed view and saves it, and reports frame timing:
 average, 99th percentile, worst frame, frames over 25 ms, GPU time, and for each
 slow frame whether the time went into our own work or into the buffer swap.
-Options: `--view 0..15 --time H --shading 0..2 --no-hud --frames N
+Options: `--view 0..19 --time H --shading 0..2 --no-hud --frames N
 --size 1920x1080 --fullscreen --scale 0.67 --full-rate --graph`. The views are
 0 the central crossroads, 1 street level, 2 roundabout R1 and its fountain, 3 the
 whole city, 4 the T-junctions G and ST, 5 straight down, 6 roundabout R2,
 7 the ring road, 8 your car from the chase view, 9 the driver view over its
 bonnet, 10 on foot beside it, 11 and 13 a line-up of every vehicle kind from
-the front and from behind, 12 a bus at its stop with its doors open, and 14 and
-15 the chase view and the driver's seat of the first line bus.
+the front and from behind, 12 a bus at its stop with its doors open, 14 and
+15 the chase view and the driver's seat of the first line bus, 16 the park's
+plaza and pond, 17 the petrol station, 18 a shopping street and 19 houses and
+flats. At start-up the program prints how long the traffic, the city and the
+meshes took to build.
 
 ---
 
@@ -473,22 +539,25 @@ the front and from behind, 12 a bus at its stop with its doors open, and 14 and
    driver view over the bonnet, stop in a lane and watch the traffic wait, bump
    a building, then `F` to get out and walk.
 3. **Cameras** — free (with `Shift`), top, follow, driver (`M`, `Tab`, `V`).
-4. **Hierarchical car model** — body, cabin, four wheels; wheel rotation derived
+4. **The city dressing** — a shopping street, the park and its pond, the petrol
+   station; trees swaying; then night falls and the windows, shops and neon
+   light up.
+5. **Hierarchical car model** — body, cabin, four wheels; wheel rotation derived
    from distance travelled (`angle += distance / wheelRadius`).
-5. **Traffic signals** — the left-turn arrow, green, yellow and all-red phases,
+6. **Traffic signals** — the left-turn arrow, green, yellow and all-red phases,
    stopping at the line, left turns giving way, the sigmoid jerk limit that makes
    braking and acceleration smooth, and `OVERLAPS: 0` on the HUD.
-6. **Roundabouts and give-way junctions** — cars giving way on entry, turning
+7. **Roundabouts and give-way junctions** — cars giving way on entry, turning
    along arcs and steering their front wheels into the corners; lane changes after
    a junction.
-7. **The Bezier fountain** — show the control-point list in `Scene.cpp`, then the
+8. **The Bezier fountain** — show the control-point list in `Scene.cpp`, then the
    surface of revolution it generates.
-8. **Textures** — the road's `GL_REPEAT` tiling, and the crates' diffuse map next
-   to their specular map.
-9. **Day–night** (`T`, `Y`, `N`, `L`) — sun, street lamps, neon and billboards, and the
+9. **Textures** — the road's `GL_REPEAT` tiling, the crates' diffuse map next
+   to their specular map, and the alpha-tested leaf cards.
+10. **Day–night** (`T`, `Y`, `N`, `L`) — sun, street lamps, neon and billboards, and the
    spot-light cone on the billboard at the central crossroads at night.
-10. **Shading comparison** (`1` / `2` / `3`) — flat, Gouraud and Phong, best seen on
-   the curved fountain and tree canopies.
+11. **Shading comparison** (`1` / `2` / `3`) — flat, Gouraud and Phong, best seen on
+   the curved fountain, the lamp posts and the tree trunks.
 
 ---
 

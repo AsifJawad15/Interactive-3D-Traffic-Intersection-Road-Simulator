@@ -87,6 +87,18 @@
     <ClCompile Include="VehicleTypes.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="NeonText.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PropRenderer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="TreeGenerator.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="WorldCity.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="VehicleRenderer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -114,6 +126,9 @@
     <ClInclude Include="World.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Player.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="VehicleTypes.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="NeonText.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="PropRenderer.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="TreeGenerator.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="VehicleRenderer.h"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
