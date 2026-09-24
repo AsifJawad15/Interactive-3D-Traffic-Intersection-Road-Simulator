@@ -4,6 +4,7 @@
 
 #include <glad/glad.h>
 #include <glm/vec2.hpp>
+#include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 
 #include <cstddef>
@@ -29,6 +30,29 @@ struct PerformanceInfo
     std::size_t historyHead = 0;           // index of the oldest entry
 };
 
+// The player's corner of the HUD: speed, messages and the minimap. Positions
+// are world metres (x, z).
+struct HudExtras
+{
+    bool onPlayer = false;     // the camera is locked onto the player
+    bool walking = false;
+    float speedKmh = 0.0f;
+    const char* message = nullptr;
+    float messageAlpha = 0.0f;
+
+    // Minimap. Roads are straight pieces (x0, z0, x1, z1) between junction
+    // centres; every signalised junction shows a bar per axis in its colour.
+    const std::vector<glm::vec4>* roads = nullptr;
+    const std::vector<glm::vec2>* roundabouts = nullptr;
+    const std::vector<glm::vec2>* cars = nullptr;
+    const std::vector<glm::vec2>* signals = nullptr;
+    const std::vector<glm::vec3>* northSouthColors = nullptr;
+    const std::vector<glm::vec3>* eastWestColors = nullptr;
+    glm::vec2 playerCar {0.0f};
+    float playerCarYawDegrees = 0.0f;
+    glm::vec2 walker {0.0f};
+};
+
 class Overlay
 {
 public:
@@ -51,7 +75,8 @@ public:
         std::size_t vehicleCount,
         std::size_t overlappingPairs,
         const PerformanceInfo& performance,
-        bool showHelp);
+        bool showHelp,
+        const HudExtras& extras);
 
 private:
     Shader shader_;
@@ -65,6 +90,8 @@ private:
     void drawRectangle(float x, float y, float width, float height, const glm::vec4& color, int screenWidth, int screenHeight);
     void drawText(float x, float y, float scale, const char* text, const glm::vec4& color, int screenWidth, int screenHeight);
     void drawFrameGraph(const PerformanceInfo& performance, int screenWidth, int screenHeight);
+    void drawMinimap(const HudExtras& extras, int screenWidth, int screenHeight);
+    void drawPlayerPanel(const HudExtras& extras, int screenWidth, int screenHeight);
     void appendRectangle(float x, float y, float width, float height);
     void drawVertices(const glm::vec4& color, int screenWidth, int screenHeight);
 };

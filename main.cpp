@@ -7,11 +7,13 @@
 #include "Framebuffer.h"
 #include "LightManager.h"
 #include "Overlay.h"
+#include "Player.h"
 #include "PostProcess.h"
 #include "Scene.h"
 #include "Sky.h"
 #include "Screenshot.h"
 #include "Simulation.h"
+#include "World.h"
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -56,8 +58,19 @@ namespace
     };
 
     // Camera poses for --view. Yaw 90 looks along +z (north), yaw 0 along +x.
-    void applyCaptureView(Camera& camera, int view)
+    // Views 8 to 10 are the player's: 8 the chase view of your car, 9 the
+    // driver view over its bonnet, 10 on foot beside it.
+    void applyCaptureView(Camera& camera, int view, Player& player)
     {
+        if (view >= 8 && view <= 10)
+        {
+            if (view == 10)
+                player.toggleOnFoot();
+            camera.togglePlayer(player.view(1.0f));
+            if (view == 9)
+                camera.togglePlayerView();
+            return;
+        }
         switch (view)
         {
         case 1: camera.setFreePose({3.5f, 1.7f, -44.0f}, 90.0f, -3.0f); break;     // street level, X0 south arm
@@ -75,6 +88,7 @@ namespace
     {
         Camera* camera = nullptr;
         TrafficSystem* traffic = nullptr;
+        Player* player = nullptr;
         DayNight* dayNight = nullptr;
         int framebufferWidth = 1280;
         int framebufferHeight = 720;
@@ -82,6 +96,7 @@ namespace
         bool showHelp = true;
         int shadingMode = 2;
         bool firstMouseEvent = true;
+        bool ignoreMouse = false;
         double lastMouseX = 0.0;
         double lastMouseY = 0.0;
         bool showFrameGraph = false;
@@ -176,6 +191,13 @@ namespace
         const float yOffset = static_cast<float>(state->lastMouseY - yPosition);
         state->lastMouseX = xPosition;
         state->lastMouseY = yPosition;
+
+        // A capture renders a fixed view, whatever the mouse does. And a jump
+        // of hundreds of pixels in one event is the window taking the cursor
+        // back (on showing it or regaining focus), not a hand moving: turning
+        // the view by it would snap the camera sideways.
+        if (state->ignoreMouse || std::abs(xOffset) > 300.0f || std::abs(yOffset) > 300.0f)
+            return;
         state->camera->processMouse(xOffset, yOffset);
     }
 
@@ -189,10 +211,24 @@ namespace
             glfwSetWindowShouldClose(window, GLFW_TRUE);
         else if (state == nullptr)
             return;
-        else if (key == GLFW_KEY_C && state->camera != nullptr)
-            state->camera->cycleMode();
+        else if (key == GLFW_KEY_C && state->camera != nullptr && state->player != nullptr)
+            state->camera->togglePlayer(state->player->view(1.0f));
         else if (key == GLFW_KEY_V && state->camera != nullptr && state->traffic != nullptr)
-            state->camera->toggleDriverView(state->traffic->vehicles().size());
+        {
+            // On your car: chase view <-> driver view. Otherwise the driver
+            // view of the AI car being followed, as before.
+            if (state->camera->onPlayer())
+                state->camera->togglePlayerView();
+            else
+                state->camera->toggleDriverView(state->traffic->vehicles().size());
+        }
+        else if (key == GLFW_KEY_F && state->camera != nullptr && state->player != nullptr && state->camera->onPlayer())
+        {
+            if (state->player->toggleOnFoot())
+                state->camera->playerChangedFoot(state->player->view(1.0f));
+        }
+        else if (key == GLFW_KEY_M && state->camera != nullptr)
+            state->camera->toggleTop();
         else if (key == GLFW_KEY_TAB && state->camera != nullptr && state->traffic != nullptr)
             state->camera->nextFollow(state->traffic->vehicles().size());
         else if (key == GLFW_KEY_G && state->traffic != nullptr)
@@ -230,11 +266,43 @@ namespace
         {
             state->camera->reset();
             state->traffic->reset();
+            if (state->player != nullptr)
+                state->player->reset();
             state->dayNight->reset();
             state->paused = false;
             state->shadingMode = 2;
             state->firstMouseEvent = true;
         }
+    }
+
+    // The player's controls, read from the keyboard every frame: arrows (or
+    // W A S D) drive or walk, Space is the handbrake, Shift boosts or runs.
+    // Nothing is read unless the camera is on the player.
+    PlayerInput readPlayerInput(GLFWwindow* window, const Camera& camera)
+    {
+        PlayerInput input;
+        if (!camera.onPlayer())
+            return input;
+        const auto down = [window](int a, int b)
+        {
+            return glfwGetKey(window, a) == GLFW_PRESS || glfwGetKey(window, b) == GLFW_PRESS;
+        };
+        const float forward = down(GLFW_KEY_UP, GLFW_KEY_W) ? 1.0f : 0.0f;
+        const float back = down(GLFW_KEY_DOWN, GLFW_KEY_S) ? 1.0f : 0.0f;
+        const float left = down(GLFW_KEY_LEFT, GLFW_KEY_A) ? 1.0f : 0.0f;
+        const float right = down(GLFW_KEY_RIGHT, GLFW_KEY_D) ? 1.0f : 0.0f;
+        const bool shift = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+                           glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
+
+        input.throttle = forward;
+        input.brake = back;
+        input.steer = left - right;
+        input.handbrake = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
+        input.boost = shift;
+        input.walk = {right - left, forward - back};
+        input.run = shift;
+        input.lookForward = camera.groundForward();
+        return input;
     }
 
     bool hasCore33Context()
@@ -413,7 +481,8 @@ namespace
         return allPassed ? EXIT_SUCCESS : EXIT_FAILURE;
     }
 
-    // Headless check that street lamps never pop in or out. At night a camera
+    // Headless check that the night lights (street lamps, neon spill and the
+    // billboard glow) never pop in or out. At night a camera
     // drives every road of the city at street level and at follow-camera
     // height, and turns on the spot in the middle of every junction. Each
     // frame the light budget chooses its lights, exactly as the renderer
@@ -428,9 +497,12 @@ namespace
         constexpr float allowedStep = 0.1f;
 
         const RoadNetwork network = RoadNetwork::makeCity();
+        const World world = World::make(network);
         std::vector<PointLight> lights;
         for (const StreetLamp& lamp : network.streetLamps())
             lights.push_back(PointLight::fromStreetLamp(lamp));
+        for (const PointLight& light : world.signLights())
+            lights.push_back(light);
 
         LightBudget budget;
         std::vector<LightBudget::Choice> chosen;
@@ -512,11 +584,238 @@ namespace
         }
 
         const bool passed = pops == 0;
-        std::printf("%zu lamps, %zu frames (budget full in %.0f%%) | largest change of one light in one frame %.3f "
+        std::printf("%zu lights, %zu frames (budget full in %.0f%%) | largest change of one light in one frame %.3f "
                     "at (%.0f, %.1f, %.0f) | frames over %.2f: %zu | %s\n",
                     lights.size(), frames, 100.0 * static_cast<double>(budgetFull) / static_cast<double>(frames),
                     worst, worstAt.x, worstAt.y, worstAt.z, allowedStep, pops, passed ? "PASS" : "FAIL");
         return passed ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+    // Headless checks of the player (Phase 4):
+    //  1. Crashes: straight into a building at boost speed, and at an angle.
+    //     The car must never sink more than 5 cm into it (no tunnelling), and
+    //     at an angle it must slide along the wall.
+    //  2. Walking into a wall at an angle: never inside it, and sliding along.
+    //  3. A drive with the AI traffic: an autopilot drives laps of the ring
+    //     road. No AI car may ever move into the player (the AI yields), and
+    //     the chase and driver-seat cameras, replayed at 144 Hz with uneven
+    //     frame times, must move without judder.
+    //     OpenGLMiniProject.exe --player-test
+    int runPlayerTest()
+    {
+        constexpr float step = 1.0f / 60.0f;
+        bool allPassed = true;
+        TrafficSystem traffic(36, 1);
+        const World world = World::make(traffic.network());
+        const std::vector<OrientedBox> noTraffic;
+        const OrientedBox& hotel = world.solidBoxes().front();   // the building at (-24, -24)
+
+        // ---- 1. Crashes ---------------------------------------------------------
+        struct Crash
+        {
+            const char* name;
+            glm::vec2 start;
+            float yaw;
+            bool mustSlide;
+        };
+        for (const Crash& crash : {Crash{"head-on crash at boost speed", {-24.0f, 5.0f}, 180.0f, false},
+                                   Crash{"35 degree crash, slides along", {-10.0f, 2.0f}, 215.0f, true}})
+        {
+            Player player(world);
+            player.placeCar(crash.start, crash.yaw);
+            PlayerInput input;
+            input.throttle = 1.0f;
+            input.boost = true;
+            float deepest = 0.0f;
+            float impactSpeed = 0.0f;
+            glm::vec2 contactAt {0.0f};
+            bool touched = false;
+            for (int index = 0; index < 5 * 60; ++index)
+            {
+                const float before = player.speed();
+                const int contactsBefore = player.worldContacts();
+                player.step(step, input, noTraffic);
+                const float separation = boxSeparation(player.carBody(), hotel);
+                deepest = std::min(deepest, separation);
+                // The first contact of all is the impact (the car may bounce
+                // back off the wall before it settles against it).
+                if (!touched && player.worldContacts() > contactsBefore)
+                {
+                    touched = true;
+                    impactSpeed = before;
+                    contactAt = player.carBody().centre;
+                }
+            }
+            const float slid = touched ? glm::length(player.carBody().centre - contactAt) : 0.0f;
+            const bool passed = touched && deepest > -0.05f && (!crash.mustSlide || slid > 1.0f);
+            allPassed = allPassed && passed;
+            std::printf("%-32s | hit at %4.1f km/h | deepest %.3f m | slid %5.1f m after contact | %s\n",
+                        crash.name, impactSpeed * 3.6f, -deepest, slid, passed ? "PASS" : "FAIL");
+        }
+
+        // ---- 2. Walking into a wall -----------------------------------------------
+        {
+            Player player(world);
+            player.placeWalker({-20.0f, -14.0f}, 225.0f);
+            PlayerInput input;
+            input.walk = {0.0f, 1.0f};
+            input.run = true;
+            input.lookForward = glm::normalize(glm::vec2 {-1.0f, -1.0f});
+            float deepest = 1.0e9f;
+            glm::vec2 contactAt {0.0f};
+            bool touched = false;
+            for (int index = 0; index < 4 * 60; ++index)
+            {
+                player.step(step, input, noTraffic);
+                const Circle body = player.walkerBody();
+                const float gap = glm::length(body.centre - closestPointOnBox(hotel, body.centre)) - body.radius;
+                deepest = std::min(deepest, gap);
+                if (!touched && gap < 0.02f)
+                {
+                    touched = true;
+                    contactAt = body.centre;
+                }
+            }
+            const float slid = touched ? glm::length(player.walkerBody().centre - contactAt) : 0.0f;
+            const bool passed = touched && deepest > -0.02f && slid > 1.0f;
+            allPassed = allPassed && passed;
+            std::printf("%-32s | deepest %.3f m | slid %5.1f m along the wall | %s\n",
+                        "walking into a wall at 45 deg", std::max(0.0f, -deepest), slid, passed ? "PASS" : "FAIL");
+        }
+
+        // ---- 3. Laps of the ring road with the traffic ---------------------------
+        {
+            Player player(world);
+            // The outer lane of the ring, driven with the city on the left.
+            const std::array<glm::vec2, 4> corners = {
+                glm::vec2{205.25f, -205.25f}, glm::vec2{-205.25f, -205.25f},
+                glm::vec2{-205.25f, 205.25f}, glm::vec2{205.25f, 205.25f}};
+            player.placeCar({120.0f, -205.25f}, -90.0f);
+
+            Camera seat;
+            Camera chase;
+            seat.togglePlayer(player.view(1.0f));
+            seat.togglePlayerView();
+            chase.togglePlayer(player.view(1.0f));
+
+            std::vector<Guest> guests;
+            std::vector<OrientedBox> bodies;
+            int target = 1;
+            int cornersPassed = 0;
+            std::size_t aiIntoPlayer = 0;
+            std::size_t overlapAfterStep = 0;
+            float slowestSeconds = 0.0f;
+            float stoppedFor = 0.0f;
+
+            const auto autopilot = [&](const Player& me, const std::vector<OrientedBox>& others)
+            {
+                PlayerInput input;
+                const OrientedBox body = me.carBody();
+                glm::vec2 toTarget = corners[static_cast<std::size_t>(target)] - body.centre;
+                if (glm::length(toTarget) < 16.0f)
+                {
+                    target = (target + 1) % 4;
+                    ++cornersPassed;
+                    toTarget = corners[static_cast<std::size_t>(target)] - body.centre;
+                }
+                // Steer at a point 12 m ahead on the lane towards the next corner.
+                const glm::vec2 previous = corners[static_cast<std::size_t>((target + 3) % 4)];
+                const glm::vec2 laneDirection = glm::normalize(corners[static_cast<std::size_t>(target)] - previous);
+                const float along = glm::dot(body.centre - previous, laneDirection);
+                const glm::vec2 aim = previous + laneDirection * (along + 12.0f);
+                const glm::vec2 wanted = glm::normalize(aim - body.centre);
+                const float angle = std::atan2(body.forward.x * wanted.y - body.forward.y * wanted.x,
+                                               glm::dot(body.forward, wanted));
+                // Positive cross: the aim lies to the right (heading convention).
+                input.steer = glm::clamp(-angle * 2.5f, -1.0f, 1.0f);
+
+                // 40 km/h, slower into the corners, and never into the car ahead.
+                float wantedSpeed = glm::length(toTarget) < 45.0f ? 7.0f : 11.0f;
+                for (const OrientedBox& other : others)
+                {
+                    const glm::vec2 offset = other.centre - body.centre;
+                    const float ahead = glm::dot(offset, body.forward);
+                    const float side = std::abs(offset.x * body.forward.y - offset.y * body.forward.x);
+                    if (ahead > 0.0f && ahead < 22.0f && side < 2.6f)
+                        wantedSpeed = std::min(wantedSpeed, std::max(0.0f, (ahead - 7.0f) * 0.7f));
+                }
+                const float speed = me.speed();
+                input.throttle = glm::clamp((wantedSpeed - speed) * 0.6f, 0.0f, 1.0f);
+                input.brake = glm::clamp((speed - wantedSpeed) * 0.5f, 0.0f, 1.0f);
+                return input;
+            };
+
+            // The real frame loop at 144 Hz with slightly uneven frame times,
+            // the simulation in fixed steps, and both cameras blended.
+            constexpr float refreshRate = 144.0f;
+            constexpr float testSeconds = 240.0f;
+            float backlog = 0.0f;
+            PlayerInput input;
+            std::vector<VehiclePose> poses;
+            glm::vec3 lastSeat {0.0f};
+            glm::vec3 lastChase {0.0f};
+            float lastSeatSpeed = -1.0f;
+            float lastChaseSpeed = -1.0f;
+            double judderSeat = 0.0;
+            double judderChase = 0.0;
+            double travelledSeat = 0.0;
+            double travelledChase = 0.0;
+            const int frames = static_cast<int>(testSeconds * refreshRate);
+            for (int frame = 0; frame < frames; ++frame)
+            {
+                const float frameSeconds = (1.0f / refreshRate) * (1.0f + 0.03f * std::sin(static_cast<float>(frame) * 1.7f));
+                backlog += frameSeconds;
+                while (backlog >= step)
+                {
+                    traffic.bodies(bodies);
+                    input = autopilot(player, bodies);
+                    player.guests(guests);
+                    traffic.setGuests(guests);
+                    traffic.update(step);
+                    traffic.bodies(bodies);
+                    for (const OrientedBox& other : bodies)
+                        aiIntoPlayer += boxSeparation(other, player.carBody()) < -0.01f ? 1 : 0;
+                    player.step(step, input, bodies);
+                    for (const OrientedBox& other : bodies)
+                        overlapAfterStep += boxSeparation(other, player.carBody()) < -0.02f ? 1 : 0;
+                    stoppedFor = std::abs(player.speed()) < 0.1f ? stoppedFor + step : 0.0f;
+                    slowestSeconds = std::max(slowestSeconds, stoppedFor);
+                    backlog -= step;
+                }
+                const float alpha = backlog / step;
+                traffic.interpolatePoses(alpha, poses);
+                const PlayerView view = player.view(alpha);
+                seat.update(frameSeconds, poses, view);
+                chase.update(frameSeconds, poses, view);
+
+                // Judder: how much the camera's speed changes from frame to
+                // frame, relative to how fast it moves (as --motion-test).
+                const float seatSpeed = glm::length(seat.position() - lastSeat) / frameSeconds;
+                const float chaseSpeed = glm::length(chase.position() - lastChase) / frameSeconds;
+                if (frame > 2 && lastSeatSpeed >= 0.0f)
+                {
+                    judderSeat += std::abs(seatSpeed - lastSeatSpeed);
+                    judderChase += std::abs(chaseSpeed - lastChaseSpeed);
+                    travelledSeat += seatSpeed;
+                    travelledChase += chaseSpeed;
+                }
+                lastSeat = seat.position();
+                lastChase = chase.position();
+                lastSeatSpeed = seatSpeed;
+                lastChaseSpeed = chaseSpeed;
+            }
+
+            const float seatScore = travelledSeat > 0.0 ? static_cast<float>(judderSeat / travelledSeat) : 0.0f;
+            const float chaseScore = travelledChase > 0.0 ? static_cast<float>(judderChase / travelledChase) : 0.0f;
+            const float laps = static_cast<float>(cornersPassed) / 4.0f;
+            const bool passed = aiIntoPlayer == 0 && overlapAfterStep == 0 && laps >= 1.0f &&
+                                seatScore <= 0.02f && chaseScore <= 0.02f;
+            allPassed = allPassed && passed;
+            std::printf("%-32s | %.2f laps in %.0f s | AI into player %zu | overlaps left %zu | bumped the world %d | "
+                        "longest stop %.0f s | judder seat %.4f chase %.4f | %s\n",
+                        "ring road with 36 AI cars", laps, testSeconds, aiIntoPlayer, overlapAfterStep,
+                        player.worldContacts(), slowestSeconds, seatScore, chaseScore, passed ? "PASS" : "FAIL");
+        }
+        return allPassed ? EXIT_SUCCESS : EXIT_FAILURE;
     }
 }
 
@@ -573,6 +872,8 @@ int main(int argc, char** argv)
             return runMotionTest();
         if (std::strcmp(argv[index], "--light-test") == 0)
             return runLightTest();
+        if (std::strcmp(argv[index], "--player-test") == 0)
+            return runPlayerTest();
     }
 
     for (int index = 1; index < argc; ++index)
@@ -712,11 +1013,14 @@ int main(int argc, char** argv)
     {
         Camera camera;
         TrafficSystem traffic(vehicleCount);
+        const World world = World::make(traffic.network());
+        Player player(world);
         DayNight dayNight;
         RenderScaler scaler;
         ApplicationState state;
         state.camera = &camera;
         state.traffic = &traffic;
+        state.player = &player;
         state.dayNight = &dayNight;
         state.scaler = &scaler;
         glfwSetWindowUserPointer(window, &state);
@@ -725,7 +1029,7 @@ int main(int argc, char** argv)
         glfwSetKeyCallback(window, keyCallback);
         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
-        Scene scene(traffic);
+        Scene scene(traffic, world);
         Overlay overlay;
         Sky sky;
         HdrTarget hdr;
@@ -735,7 +1039,8 @@ int main(int argc, char** argv)
 
         if (capture.enabled)
         {
-            applyCaptureView(camera, capture.view);
+            applyCaptureView(camera, capture.view, player);
+            state.ignoreMouse = true;
             if (capture.hour >= 0.0f)
                 dayNight.setTime(capture.hour);
             state.showHelp = !capture.hideHud;
@@ -754,6 +1059,38 @@ int main(int argc, char** argv)
         float simulationBacklog = 0.0f;
         std::vector<VehiclePose> poses;
         poses.reserve(64);
+        std::vector<Guest> guests;
+        std::vector<OrientedBox> trafficBodies;
+        PlayerView playerView = player.view(0.0f);
+
+        // The minimap's fixed parts: every road piece, the roundabouts, and
+        // where the signals stand.
+        const RoadNetwork& network = traffic.network();
+        std::vector<glm::vec4> mapRoads;
+        for (const RoadNetwork::Road& road : network.roads())
+            mapRoads.push_back({road.start.x, road.start.y, road.end.x, road.end.y});
+        std::vector<glm::vec2> mapRoundabouts;
+        std::vector<glm::vec2> mapSignals;
+        std::vector<std::size_t> signalJunctions;
+        for (std::size_t index = 0; index < network.junctionCount(); ++index)
+        {
+            const Junction& junction = network.junctions()[index];
+            if (junction.type == JunctionType::Roundabout)
+                mapRoundabouts.push_back(junction.centre);
+            if (junction.isSignalised())
+            {
+                mapSignals.push_back(junction.centre);
+                signalJunctions.push_back(index);
+            }
+        }
+        std::vector<glm::vec2> mapCars;
+        std::vector<glm::vec3> northSouthColors(signalJunctions.size());
+        std::vector<glm::vec3> eastWestColors(signalJunctions.size());
+        const auto signalColor = [](SignalState state)
+        {
+            return state == SignalState::Green ? glm::vec3{0.25f, 0.95f, 0.35f}
+                 : state == SignalState::Yellow ? glm::vec3{1.0f, 0.80f, 0.12f} : glm::vec3{1.0f, 0.22f, 0.16f};
+        };
 
         // Everything one frame draws, from the current camera and poses.
         const auto renderFrame = [&](float alpha, double timeSeconds)
@@ -776,9 +1113,12 @@ int main(int argc, char** argv)
             const glm::mat4 view = camera.viewMatrix();
             const glm::mat4 projection = camera.projectionMatrix(aspect);
             sky.render(view, projection, camera.position(), dayNight, static_cast<float>(timeSeconds));
+            const PlayerDrawMode playerDrawMode = camera.mode() == CameraMode::PlayerSeat ? PlayerDrawMode::DriverSeat
+                                                : camera.mode() == CameraMode::OnFoot ? PlayerDrawMode::OwnEyes
+                                                                                      : PlayerDrawMode::Outside;
             scene.render(
                 view, projection, camera.position(),
-                traffic, poses,
+                traffic, poses, playerView, playerDrawMode,
                 dayNight, state.shadingMode,
                 camera.mode() == CameraMode::Driver,
                 camera.followedVehicleIndex(),
@@ -809,6 +1149,37 @@ int main(int argc, char** argv)
                 performance.historySize = frameStats.frameHistory().size();
                 performance.historyHead = frameStats.head();
 
+                mapCars.clear();
+                for (const VehiclePose& pose : poses)
+                {
+                    if (pose.active)
+                        mapCars.push_back({pose.position.x, pose.position.z});
+                }
+                for (std::size_t index = 0; index < signalJunctions.size(); ++index)
+                {
+                    northSouthColors[index] = signalColor(traffic.signalFor(signalJunctions[index], ArmNorth));
+                    eastWestColors[index] = signalColor(traffic.signalFor(signalJunctions[index], ArmEast));
+                }
+                HudExtras extras;
+                extras.onPlayer = camera.onPlayer();
+                extras.walking = playerView.walking;
+                extras.speedKmh = playerView.carSpeed * 3.6f;
+                constexpr float messageSeconds = 3.0f;
+                if (player.messageAge() < messageSeconds && !player.message().empty())
+                {
+                    extras.message = player.message().c_str();
+                    extras.messageAlpha = std::min(1.0f, (messageSeconds - player.messageAge()) / 0.5f);
+                }
+                extras.roads = &mapRoads;
+                extras.roundabouts = &mapRoundabouts;
+                extras.cars = &mapCars;
+                extras.signals = &mapSignals;
+                extras.northSouthColors = &northSouthColors;
+                extras.eastWestColors = &eastWestColors;
+                extras.playerCar = {playerView.carPosition.x, playerView.carPosition.z};
+                extras.playerCarYawDegrees = playerView.carYawDegrees;
+                extras.walker = {playerView.walkerPosition.x, playerView.walkerPosition.z};
+
                 overlay.render(
                     outputWidth,
                     outputHeight,
@@ -822,7 +1193,8 @@ int main(int argc, char** argv)
                     traffic.vehicles().size(),
                     traffic.stats().overlapPairsNow,
                     performance,
-                    state.showHelp);
+                    state.showHelp,
+                    extras);
             }
 
             frameStats.endGpu();
@@ -830,7 +1202,7 @@ int main(int argc, char** argv)
 
         // Warm-up: draw one complete frame while the window is still hidden.
         traffic.interpolatePoses(0.0f, poses);
-        camera.update(0.0f, poses);
+        camera.update(0.0f, poses, playerView);
         renderFrame(0.0f, glfwGetTime());
         glFinish();
 
@@ -894,13 +1266,21 @@ int main(int argc, char** argv)
             // dragged window, a breakpoint) is cut short so nothing jumps.
             const float dt = std::min(frameSeconds, 0.25f);
             camera.processKeyboard(window, dt);
+            const PlayerInput playerInput = readPlayerInput(window, camera);
             if (!state.paused)
             {
                 simulationBacklog += dt;
                 int steps = 0;
                 while (simulationBacklog >= simulationStep && steps < maximumStepsPerFrame)
                 {
+                    // The traffic sees you where you stand at the start of the
+                    // step and never drives into you; then you move, and are
+                    // pushed out of anything (or anyone) you run into.
+                    player.guests(guests);
+                    traffic.setGuests(guests);
                     traffic.update(simulationStep);
+                    traffic.bodies(trafficBodies);
+                    player.step(simulationStep, playerInput, trafficBodies);
                     dayNight.update(simulationStep);
                     simulationBacklog -= simulationStep;
                     ++steps;
@@ -912,7 +1292,8 @@ int main(int argc, char** argv)
             // How far the clock has run into the next step: the blend factor.
             const float alpha = simulationBacklog / simulationStep;
             traffic.interpolatePoses(alpha, poses);
-            camera.update(dt, poses);
+            playerView = player.view(alpha);
+            camera.update(dt, poses, playerView);
             scaler.update(frameSeconds, frameStats.frameMs(), frameStats.gpuMs());
 
             renderFrame(alpha, currentTime);

@@ -11,9 +11,17 @@ permanent type: two **signalised crossroads**, two **roundabouts** (one with an
 animated Bezier fountain), a **signalised T-junction**, seven **give-way
 T-junctions**, two more signalised T-junctions on the ring, and five bends. No
 road leaves town: the same cars drive round the city for ever, choosing a new
-turn at every junction, with nobody appearing or disappearing. A day–night cycle
-drives the sun, 182 street lamps and a floodlight, and the shading model can be
-switched between flat, Gouraud and Phong while the simulation runs.
+turn at every junction, with nobody appearing or disappearing.
+
+You have a car of your own, a yellow one parked beside the central crossroads.
+Press `C` and the camera follows it; drive it from a chase view above and behind
+it or from the driver's view over the bonnet, get out (`F`) and walk. The AI
+traffic yields to you, and you bump into buildings, trees, posts and cars
+instead of passing through them.
+
+A day–night cycle drives the sun, 182 street lamps, six neon signs and six lit
+billboards, and the shading model can be switched between flat, Gouraud and
+Phong while the simulation runs.
 
 The traffic is **collision-free by construction**: every place where two routes
 could touch is measured once at start-up, and a vehicle only enters a junction
@@ -46,19 +54,25 @@ that `shaders/` and `assets/` resolve. `--cars N` sets the number of cars
 
 | Key | Action |
 | --- | --- |
-| `W` `A` `S` `D` | Move the free camera |
+| `W` `A` `S` `D` | Move the free camera (or drive / walk, see below) |
 | `Q` / `E` | Move down / up |
 | `Shift` | Move the free camera four times faster |
 | Mouse | Look around |
-| `C` | Cycle camera: Free → Top → Follow → Driver |
-| `V` | Driver view / free view |
-| `Tab` | Select the next vehicle to follow |
+| **`C`** | **Lock the camera onto your car (or you on foot); press again to leave it** |
+| Arrows (or `W` `A` `S` `D`) | Drive your car, or walk |
+| `Space` | Handbrake |
+| `Shift` (driving / on foot) | Boost to 80 km/h / run |
+| `V` | On your car: chase view ↔ driver view over the bonnet. Otherwise: the driver view of the AI car being followed |
+| `B` (hold) | Look back, in the driver view |
+| `F` | Get out of the car / get back in (stand next to it) |
+| `M` | Top view of the whole city, and back |
+| `Tab` | Follow the next AI car |
 | `G` | Advance every traffic signal by one phase |
 | `P` | Pause / resume |
 | `1` `2` `3` | Flat / Gouraud / Phong shading |
 | `T` | Toggle the automatic day–night cycle |
 | `Y` / `N` | Force noon / midnight |
-| `L` | Toggle the street lamps and floodlight |
+| `L` | Toggle the night lights (lamps, neon, billboards) |
 | `R` | Reset camera, traffic and time |
 | `H` | Show / hide the control panel |
 | `F5` | Frame-time graph (last 240 frames) |
@@ -69,8 +83,8 @@ that `shaders/` and `assets/` resolve. `--cars N` sets the number of cars
 
 The window opens at 1920×1080, or maximised when the screen is only 1080p tall
 (`F11` then gives true fullscreen 1080p; `--fullscreen` starts that way). The old
-`M` key (switching one junction between signals and a roundabout) is gone: every
-junction now keeps its own type.
+`M` key that switched one junction between signals and a roundabout is gone
+(every junction now keeps its own type); `M` is now the top view.
 
 ---
 
@@ -79,8 +93,8 @@ junction now keeps its own type.
 | Lab | Topic | Where it lives |
 | --- | --- | --- |
 | **1** | 2D primitives, 2D transformations | `Route::rotated` and `Route::translated` (`Route.cpp`) apply the 2D rotation and translation that place one authored northbound route onto every arm of every junction. Lane markings, zebras, arrows and stop lines in `RoadRenderer.cpp` are rectangles rotated onto the direction of their road. |
-| **2** | 3D drawing, camera, model / view / projection | `Mesh.cpp` builds indexed VAO/VBO/EBO geometry and `MeshBuilder` bakes the whole road network into six meshes; `Camera.cpp` provides four camera modes using `glm::lookAt` and `glm::perspective`; `Scene::render` uploads `uModel`, `uView` and `uProjection` every frame. |
-| **3** | Illumination model and shading | `shaders/scene.frag` implements ambient + one directional sun + attenuated point lights (`k_c = 1`, `k_l = 0.09`, `k_q = 0.032`, the lab's constants) + **one spot light** with cosine cut-off angles. The four Lab 3 lamps at the central crossroads are always lit; the other street lamps share a budget of 32 lights per frame (`LightManager.cpp`, `shaders/lights.glsl`). `uShadingMode` selects flat, Gouraud or Phong from one shader pair. |
+| **2** | 3D drawing, camera, model / view / projection | `Mesh.cpp` builds indexed VAO/VBO/EBO geometry and `MeshBuilder` bakes the whole road network into six meshes; `Camera.cpp` provides seven camera modes (free, top, AI follow and driver, your chase view, driver view and your own eyes) using `glm::lookAt` and `glm::perspective`; `Scene::render` uploads `uModel`, `uView` and `uProjection` every frame. |
+| **3** | Illumination model and shading | `shaders/scene.frag` implements ambient + one directional sun + attenuated point lights (`k_c = 1`, `k_l = 0.09`, `k_q = 0.032`, the lab's constants) + **one spot light** with cosine cut-off angles: the lamp on an arm under the billboard at the central crossroads, which lights its picture at night. The four Lab 3 lamps at the central crossroads are always lit; the other street lamps, the neon spill and the billboard glow share a budget of 32 lights per frame (`LightManager.cpp`, `shaders/lights.glsl`). `uShadingMode` selects flat, Gouraud or Phong from one shader pair. |
 | **4** | Texture mapping | `Texture::fromFile(path, wrapS, wrapT, minFilter, magFilter)` mirrors the lab's `loadTexture` signature, so wrapping and filtering are explicit at every call site. The roadside crates carry the lab's own **diffuse + specular map pair** (`container2.png`, `container2_specular.png`), sampled as `uDiffuseTexture` and `uSpecularTexture`; grass and leaves use a dim one-texel specular map so they stay matte. |
 | **4b** | Texture sources | `assets/asphalt-photoreal.png` and the container pair are real image files. `assets/grass.png`, `assets/sidewalk.png` and `assets/facade.png` are optional: if present they are loaded, and if absent the matching procedural generator in `Texture.cpp` is used instead, so the project runs with no assets at all. |
 | **5** | Bezier curves and surfaces | `Mesh::makeBezierRevolution` (`Mesh.cpp`) ports `nCr` and the Bernstein evaluation from the Lab 5 curve program and sweeps the resulting profile about the Y axis. Control points are written in source (top of `Scene.cpp`) instead of picked with the mouse. It generates the **fountain basin and column, the tree trunks and canopies, the street lamp posts and the sign posts**. |
@@ -261,14 +275,65 @@ giving way, then yellow and a 2.5 s **all-red** clearance. Green is actuated: it
 ends early once its own queue is empty and someone waits across, and it never
 runs past 16 s while anyone waits.
 
-### Street lamps
+### Night lights
 
-The four Lab 3 lamps of the central crossroads are always lit. The other lamps
-share a budget of 32 lights per frame, chosen by distance among those whose
-reach is on screen. Each light's reach ends in a smooth window at exactly 22 m,
-and the farthest chosen lights fade out over the last fifth of the lighting
-distance, so lights come and go without popping; `--light-test` measures this.
-Lamps too far away to light the ground still glow and bloom.
+The city is lit by street lamps, signboards and neon; there is no floodlight.
+
+* **Street lamps** every 15 m along every road. The four Lab 3 lamps of the
+  central crossroads are always lit.
+* **Neon signs** above the doors round the central crossroads (HOTEL, CAFE,
+  PIZZA, CINEMA, BAR, 24H). The lettering is geometry: every stroke of the
+  `stb_easy_font` text becomes a thin glass tube, which glows and blooms at
+  night (the BAR sign's tired tube stutters). Each sign throws a coloured light
+  onto the pavement below it.
+* **Billboards** on the lawns beside the roads, their pictures generated at
+  start-up (a gradient, a frame and two lines of text). At night five of them
+  glow from behind in their own colours and light the ground in front; the one
+  at the central crossroads is lit from the front by the Lab 3 spot light on
+  an arm below it.
+
+All of these share a budget of 32 lights per frame, chosen by distance among
+those whose reach is on screen. Each light's reach ends in a smooth window at
+exactly 22 m (11–13 m for the signs), and the farthest chosen lights fade out
+over the last fifth of the lighting distance, so lights come and go without
+popping; `--light-test` measures this. Lamps too far away to light the ground
+still glow and bloom.
+
+---
+
+## Your car, and you on foot
+
+`Player.cpp` moves your car and you in the same fixed 1/60 s steps as the
+traffic, and they are drawn blended between steps just like the AI cars.
+
+* **Driving** is a kinematic bicycle model: the car turns about its rear axle
+  at `yaw rate = v / wheelbase · tan(steer)`. The steering lock shrinks from 34°
+  when slow to 7° at 80 km/h and the wheel turns at a limited rate, so the car
+  never twitches. Up to 50 km/h normally and 80 km/h with boost; brakes, then
+  reverse; a handbrake that lets the rear step out a little.
+* **Kerbs are bumps, not walls**: the car rides up onto sidewalks and lawns
+  smoothly, and can park off the road.
+* **Collisions**: buildings, crates, tree trunks, lamp posts, signal poles,
+  sign and billboard posts, the roundabout islands and the AI cars are solid.
+  The car moves in sub-steps of at most 20 cm, so it cannot tunnel through
+  anything, and is pushed out of anything it touches along the shortest way.
+  The part of its speed going into the obstacle is taken away (with a little
+  bounce); a glancing blow on a wall swings the nose round so the car scrapes
+  along it, while a head-on hit just stops it.
+* **The AI yields to you**: every AI car slides its own body along its path
+  ahead, into its next route, and brakes for you as for a car in front if it
+  would touch you there. It also never enters a junction you are standing in.
+  If you stop in a lane, the cars behind wait for you (they cannot overtake).
+* **On foot**, `F` gets you out beside the driver's door (only when the car has
+  nearly stopped) and back in when you stand next to it. You walk (or run with
+  `Shift`) where you look, step up onto the kerbs, and slide along walls, cars
+  and posts.
+* **Cameras**: `C` locks onto you. The chase view rides a stiff spring above and
+  behind the car; the driver view looks over the bonnet, turns your head with
+  the mouse (up to 70° either way), looks back while `B` is held, and leans a
+  little under braking and cornering. On foot you see through your own eyes.
+* **HUD**: a speedometer, short messages, and a minimap of the city with the
+  signals' colours, every car, and you.
 
 ---
 
@@ -282,6 +347,7 @@ OpenGLMiniProject.exe --plot
 OpenGLMiniProject.exe --soak 30 1 [--cars 36] [--stop-limit 60] [--trace [T]]
 OpenGLMiniProject.exe --motion-test
 OpenGLMiniProject.exe --light-test
+OpenGLMiniProject.exe --player-test
 ```
 
 `--self-test` checks the whole network (5721 checks):
@@ -318,47 +384,61 @@ from frame to frame); it must stay below 0.01 with interpolation.
 
 `--light-test` drives a camera along every road at night (street level, follow
 height, and a 30 m fly-over) and turns it on the spot in every junction. It
-records how much any light on screen changes strength from one frame to the next;
-a change over 0.1 counts as a pop, and there must be none.
+records how much any light on screen (lamp, neon or billboard) changes strength
+from one frame to the next; a change over 0.1 counts as a pop, and there must be
+none.
+
+`--player-test` checks your car and you on foot: a head-on crash into a building
+at boost speed and a glancing one (the car must never sink more than 5 cm into
+the wall, and the glancing one must slide along it), walking into a wall at 45°
+(never inside it, sliding along), and laps of the ring road among 36 AI cars
+driven by an autopilot. No AI car may ever move into your car, and the chase
+and driver-view cameras, replayed at 144 Hz with uneven frame times, must move
+without judder.
 
 `--capture out.png` renders a fixed view and saves it, and reports frame timing:
 average, 99th percentile, worst frame, frames over 25 ms, GPU time, and for each
 slow frame whether the time went into our own work or into the buffer swap.
-Options: `--view 0..7 --time H --shading 0..2 --no-hud --frames N
+Options: `--view 0..10 --time H --shading 0..2 --no-hud --frames N
 --size 1920x1080 --fullscreen --scale 0.67 --full-rate --graph`. The views are
 0 the central crossroads, 1 street level, 2 roundabout R1 and its fountain, 3 the
-whole city, 4 the T-junctions G and ST, 5 straight down, 6 roundabout R2 and
-7 the ring road.
+whole city, 4 the T-junctions G and ST, 5 straight down, 6 roundabout R2,
+7 the ring road, 8 your car from the chase view, 9 the driver view over its
+bonnet, and 10 on foot beside it.
 
 ---
 
 ## Demonstration order
 
-1. **The city** — top view (`C`), then the maze of junction types, and a car
+1. **The city** — top view (`M`), then the maze of junction types, and a car
    followed (`Tab`) round several of them without ever leaving town.
-2. **Cameras** — free (with `Shift`), top, follow, driver (`C`, `Tab`, `V`).
-3. **Hierarchical car model** — body, cabin, four wheels; wheel rotation derived
+2. **Your car** — `C`, drive round the block in the chase view, `V` for the
+   driver view over the bonnet, stop in a lane and watch the traffic wait, bump
+   a building, then `F` to get out and walk.
+3. **Cameras** — free (with `Shift`), top, follow, driver (`M`, `Tab`, `V`).
+4. **Hierarchical car model** — body, cabin, four wheels; wheel rotation derived
    from distance travelled (`angle += distance / wheelRadius`).
-4. **Traffic signals** — the left-turn arrow, green, yellow and all-red phases,
+5. **Traffic signals** — the left-turn arrow, green, yellow and all-red phases,
    stopping at the line, left turns giving way, the sigmoid jerk limit that makes
    braking and acceleration smooth, and `OVERLAPS: 0` on the HUD.
-5. **Roundabouts and give-way junctions** — cars giving way on entry, turning
+6. **Roundabouts and give-way junctions** — cars giving way on entry, turning
    along arcs and steering their front wheels into the corners; lane changes after
    a junction.
-6. **The Bezier fountain** — show the control-point list in `Scene.cpp`, then the
+7. **The Bezier fountain** — show the control-point list in `Scene.cpp`, then the
    surface of revolution it generates.
-7. **Textures** — the road's `GL_REPEAT` tiling, and the crates' diffuse map next
+8. **Textures** — the road's `GL_REPEAT` tiling, and the crates' diffuse map next
    to their specular map.
-8. **Day–night** (`T`, `Y`, `N`, `L`) — sun, street lamps, and the spot-light cone
-   on the central crossroads at night.
-9. **Shading comparison** (`1` / `2` / `3`) — flat, Gouraud and Phong, best seen on
+9. **Day–night** (`T`, `Y`, `N`, `L`) — sun, street lamps, neon and billboards, and the
+   spot-light cone on the billboard at the central crossroads at night.
+10. **Shading comparison** (`1` / `2` / `3`) — flat, Gouraud and Phong, best seen on
    the curved fountain and tree canopies.
 
 ---
 
 ## Deliberately not included
 
-Pedestrians, weather and rain, shadow mapping, imported models and physics are
-not part of this version; `ENHANCEMENT_PLAN.md` lists the phases that add them.
+AI pedestrians, weather and rain, shadow mapping, imported models and physics
+are not part of this version; `ENHANCEMENT_PLAN.md` lists the phases that add
+them (section 5.1 sets out how the pedestrians will be animated).
 The scene is authored geometry throughout: there is no model file anywhere in
 this project.

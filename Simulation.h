@@ -156,6 +156,14 @@ public:
     // diagnosing a failed soak run.
     std::string describe() const;
 
+    // The player's car and the player on foot. The traffic never drives into
+    // them: every car looks along its own path and brakes for them as for a
+    // car in front, and does not enter a junction they are standing in.
+    void setGuests(const std::vector<Guest>& guests) { guests_ = guests; }
+
+    // Every active AI body as it stands now, for the player's collisions.
+    void bodies(std::vector<OrientedBox>& out) const;
+
     // Geometry and rule checks that need no OpenGL context. Used by --self-test.
     bool selfTest(std::string& report) const;
 
@@ -240,6 +248,7 @@ private:
     std::vector<int> claimCounts_;   // two slots per conflict, one per side
     std::vector<SignalController> signals_;   // one per junction (unused when unsignalised)
     std::vector<Vehicle> vehicles_;
+    std::vector<Guest> guests_;
     std::size_t vehicleCount_ = 24;
     unsigned int seed_ = 12345u;
     unsigned int randomState_ = 12345u;
@@ -270,8 +279,19 @@ private:
         float speed = 0.0f;
     };
 
+    // The nearest guest on a car's path: how far along the path the car's
+    // body would first touch it, and how fast it moves along the path.
+    struct GuestLimit
+    {
+        bool present = false;
+        float gap = 1.0e9f;
+        float speed = 0.0f;
+    };
+    GuestLimit guestAhead(std::size_t vehicleIndex) const;
+
     // Scratch space for one simulation step, kept so a step never allocates.
     std::vector<Leader> leaders_;
+    std::vector<GuestLimit> guestLimits_;
     std::vector<std::size_t> order_;
 
     Leader findLeader(std::size_t vehicleIndex) const;

@@ -7,9 +7,14 @@
 #include <glm/gtc/matrix_inverse.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <stb_easy_font.h>
+
+#include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <numbers>
+#include <string>
 #include <tuple>
 #include <vector>
 
@@ -68,15 +73,148 @@ namespace
         };
         return profile;
     }
+
+    struct EasyFontVertex
+    {
+        float x;
+        float y;
+        float z;
+        unsigned char color[4];
+    };
+
+    // The pixel rectangles stb_easy_font draws a line of text with, in its
+    // own units (a capital letter is about 7 units tall).
+    struct Stroke
+    {
+        float x0, y0, x1, y1;
+    };
+
+    std::vector<Stroke> textStrokes(const std::string& text)
+    {
+        std::vector<char> buffer(text.begin(), text.end());
+        buffer.push_back('\0');
+        std::vector<unsigned char> vertices(64 * 1024);
+        const int quads = stb_easy_font_print(0.0f, 0.0f, buffer.data(), nullptr,
+                                              vertices.data(), static_cast<int>(vertices.size()));
+        const auto* raw = reinterpret_cast<const EasyFontVertex*>(vertices.data());
+        std::vector<Stroke> strokes;
+        for (int quad = 0; quad < quads; ++quad)
+        {
+            const EasyFontVertex& a = raw[quad * 4];
+            const EasyFontVertex& c = raw[quad * 4 + 2];
+            strokes.push_back({std::min(a.x, c.x), std::min(a.y, c.y), std::max(a.x, c.x), std::max(a.y, c.y)});
+        }
+        return strokes;
+    }
+
+    // The printed face of a billboard: a colour gradient, a light frame and
+    // two lines of text ("TOP|BOTTOM"), row 0 at the top of the picture.
+    Texture makeBillboardFace(const std::string& text, int design)
+    {
+        constexpr int width = 512;
+        constexpr int height = 256;
+        struct Palette
+        {
+            glm::vec3 top, bottom, frame, big, small;
+        };
+        static const std::array<Palette, 6> palettes = {{
+            {{0.05f, 0.16f, 0.36f}, {0.02f, 0.06f, 0.16f}, {0.95f, 0.78f, 0.12f}, {1.0f, 0.86f, 0.20f}, {0.90f, 0.94f, 1.0f}},
+            {{0.70f, 0.10f, 0.08f}, {0.36f, 0.03f, 0.03f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f, 1.0f}, {1.0f, 0.86f, 0.30f}},
+            {{0.42f, 0.10f, 0.55f}, {0.12f, 0.03f, 0.22f}, {0.30f, 0.95f, 1.0f}, {0.30f, 0.95f, 1.0f}, {1.0f, 1.0f, 1.0f}},
+            {{0.10f, 0.45f, 0.30f}, {0.03f, 0.18f, 0.12f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f, 1.0f}, {0.75f, 1.0f, 0.80f}},
+            {{0.95f, 0.55f, 0.08f}, {0.60f, 0.20f, 0.03f}, {0.20f, 0.10f, 0.05f}, {0.18f, 0.08f, 0.03f}, {1.0f, 1.0f, 1.0f}},
+            {{0.95f, 0.95f, 0.92f}, {0.78f, 0.80f, 0.82f}, {0.80f, 0.10f, 0.08f}, {0.80f, 0.10f, 0.08f}, {0.10f, 0.12f, 0.16f}}
+        }};
+        const Palette& palette = palettes[static_cast<std::size_t>(design) % palettes.size()];
+
+        std::vector<unsigned char> rgb(static_cast<std::size_t>(width) * height * 3);
+        const auto put = [&rgb](int x, int y, glm::vec3 color)
+        {
+            if (x < 0 || y < 0 || x >= width || y >= height)
+                return;
+            unsigned char* pixel = &rgb[(static_cast<std::size_t>(y) * width + static_cast<std::size_t>(x)) * 3];
+            for (int channel = 0; channel < 3; ++channel)
+                pixel[channel] = static_cast<unsigned char>(glm::clamp(color[channel], 0.0f, 1.0f) * 255.0f + 0.5f);
+        };
+        for (int y = 0; y < height; ++y)
+        {
+            const glm::vec3 row = glm::mix(palette.top, palette.bottom, static_cast<float>(y) / (height - 1));
+            for (int x = 0; x < width; ++x)
+            {
+                const bool frame = x < 10 || y < 10 || x >= width - 10 || y >= height - 10;
+                put(x, y, frame ? palette.frame : row);
+            }
+        }
+
+        const std::size_t split = text.find('|');
+        const std::string lines[2] = {text.substr(0, split), split == std::string::npos ? "" : text.substr(split + 1)};
+        const float scales[2] = {7.5f, 4.6f};
+        const float tops[2] = {46.0f, 158.0f};
+        const glm::vec3 colors[2] = {palette.big, palette.small};
+        for (int line = 0; line < 2; ++line)
+        {
+            if (lines[line].empty())
+                continue;
+            const std::vector<Stroke> strokes = textStrokes(lines[line]);
+            float right = 0.0f;
+            for (const Stroke& stroke : strokes)
+                right = std::max(right, stroke.x1);
+            const float scale = std::min(scales[line], (width - 60.0f) / std::max(right, 1.0f));
+            const float left = 0.5f * (width - right * scale);
+            for (const Stroke& stroke : strokes)
+            {
+                for (int y = static_cast<int>(tops[line] + stroke.y0 * scale); y < static_cast<int>(tops[line] + stroke.y1 * scale); ++y)
+                {
+                    for (int x = static_cast<int>(left + stroke.x0 * scale); x < static_cast<int>(left + stroke.x1 * scale); ++x)
+                        put(x, y, colors[line]);
+                }
+            }
+        }
+        return Texture(width, height, rgb, GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE, GL_LINEAR_MIPMAP_LINEAR, GL_LINEAR, true);
+    }
+
+    // A unit square in the x-y plane facing +z, with the picture upright:
+    // the top edge (y = +0.5) takes the first row of the image.
+    Mesh makeFaceQuad()
+    {
+        const glm::vec3 normal {0.0f, 0.0f, 1.0f};
+        const std::vector<Vertex> vertices = {
+            {{-0.5f, -0.5f, 0.0f}, normal, {0.0f, 1.0f}},
+            {{0.5f, -0.5f, 0.0f}, normal, {1.0f, 1.0f}},
+            {{0.5f, 0.5f, 0.0f}, normal, {1.0f, 0.0f}},
+            {{-0.5f, 0.5f, 0.0f}, normal, {0.0f, 0.0f}}
+        };
+        return Mesh(vertices, {0, 1, 2, 0, 2, 3});
+    }
+
+    // Model matrix of something standing at `ground`, turned to face along
+    // the facing angle (heading convention: local +z points that way).
+    glm::mat4 facingFrame(const glm::vec3& ground, float facingDegrees)
+    {
+        return glm::rotate(glm::translate(glm::mat4(1.0f), ground), glm::radians(facingDegrees), {0.0f, 1.0f, 0.0f});
+    }
+
+    // A small repeatable pseudo-random number in 0..1.
+    float hash01(std::uint32_t value)
+    {
+        value ^= value >> 16;
+        value *= 0x7feb352dU;
+        value ^= value >> 15;
+        value *= 0x846ca68bU;
+        value ^= value >> 16;
+        return static_cast<float>(value & 0xffffU) / 65535.0f;
+    }
 }
 
-Scene::Scene(const TrafficSystem& traffic)
-    : shader_("shaders/scene.vert", "shaders/scene.frag"),
+Scene::Scene(const TrafficSystem& traffic, const World& world)
+    : world_(world),
+      shader_("shaders/scene.vert", "shaders/scene.frag"),
       cube_(Mesh::makeCube()),
       beveledCube_(Mesh::makeBeveledCube(0.09f)),
       buildingMesh_(Mesh::makeBeveledCube(0.025f)),
       carCabin_(Mesh::makeCarCabin()),
       cylinder_(Mesh::makeCylinder(32)),
+      faceQuad_(makeFaceQuad()),
       fountainBasin_(Mesh::makeBezierRevolution(fountainBasinProfile(), 22, 28)),
       fountainColumn_(Mesh::makeBezierRevolution(fountainColumnProfile(), 22, 24)),
       treeTrunk_(Mesh::makeBezierRevolution(treeTrunkProfile(), 12, 12)),
@@ -118,6 +256,49 @@ Scene::Scene(const TrafficSystem& traffic)
     shader_.setInt("uSpecularTexture", 1);
     LightManager::attach(shader_.id());
     buildStreetLamps(traffic.network());
+    buildSigns();
+}
+
+void Scene::buildSigns()
+{
+    for (std::size_t design = 0; design < World::billboardText().size(); ++design)
+        billboardFaces_.push_back(makeBillboardFace(World::billboardText()[design], static_cast<int>(design)));
+
+    // Neon lettering: every stroke of the text becomes a thin glass tube.
+    const MeshData tube = Mesh::beveledCubeData(0.12f);
+    for (const NeonSign& sign : world_.neonSigns())
+    {
+        const std::vector<Stroke> strokes = textStrokes(sign.text);
+        float right = 0.0f;
+        float bottom = 0.0f;
+        for (const Stroke& stroke : strokes)
+        {
+            right = std::max(right, stroke.x1);
+            bottom = std::max(bottom, stroke.y1);
+        }
+        const float scale = sign.letterHeight / std::max(bottom, 1.0f);
+        const glm::mat4 frame = facingFrame(sign.centre, sign.facingDegrees);
+
+        MeshBuilder builder;
+        for (const Stroke& stroke : strokes)
+        {
+            // Strokes are one unit thick; tubes a little thinner read better.
+            float width = stroke.x1 - stroke.x0;
+            float height = stroke.y1 - stroke.y0;
+            if (width <= 1.01f)
+                width *= 0.62f;
+            if (height <= 1.01f)
+                height *= 0.62f;
+            // The sign faces local +z, so someone reading it from the street
+            // has local +x on their right: the text runs that way.
+            const float u = 0.5f * (stroke.x0 + stroke.x1) - 0.5f * right;
+            const float v = 0.5f * bottom - 0.5f * (stroke.y0 + stroke.y1);
+            glm::mat4 model = glm::translate(frame, {u * scale, v * scale, 0.0f});
+            model = glm::scale(model, {width * scale, height * scale, 0.07f});
+            builder.append(tube, model);
+        }
+        neonLetters_.push_back(builder.build());
+    }
 }
 
 void Scene::buildStreetLamps(const RoadNetwork& network)
@@ -131,7 +312,7 @@ void Scene::buildStreetLamps(const RoadNetwork& network)
     const MeshData post = Mesh::bezierRevolutionData(lampPostProfile(), 12, 12);
     const MeshData box = Mesh::beveledCubeData(0.09f);
 
-    std::vector<LightManager::PointLight> lights;
+    std::vector<PointLight> lights;
     for (const StreetLamp& lamp : network.streetLamps())
     {
         posts.append(post, glm::translate(glm::mat4(1.0f), lamp.position));
@@ -140,6 +321,10 @@ void Scene::buildStreetLamps(const RoadNetwork& network)
 
         lights.push_back(PointLight::fromStreetLamp(lamp));
     }
+    // The neon spill and the glow in front of the back-lit billboards share
+    // the same budget.
+    for (const PointLight& light : world_.signLights())
+        lights.push_back(light);
 
     lampPosts_ = posts.build();
     lampHeads_ = heads.build();
@@ -153,6 +338,8 @@ void Scene::render(
     const glm::vec3& cameraPosition,
     const TrafficSystem& traffic,
     const std::vector<VehiclePose>& vehicles,
+    const PlayerView& player,
+    PlayerDrawMode playerDrawMode,
     const DayNight& dayNight,
     int shadingMode,
     bool driverView,
@@ -174,21 +361,22 @@ void Scene::render(
     shader_.setVec3("uLightColor", dayNight.sunColor());
     shader_.setInt("uShadingMode", shadingMode);
 
-    // This frame's street lamps: the 32 that matter most, with the four
-    // Lab 3 lamps of the central crossroads always among them.
-    lights_.update(cameraPosition, projection * view, dayNight.streetLampsOn());
+    // This frame's lights: the 32 that matter most of the street lamps, the
+    // neon spill and the billboard glow, with the four Lab 3 lamps of the
+    // central crossroads always among them.
+    const bool night = dayNight.streetLampsOn();
+    lights_.update(cameraPosition, projection * view, night);
 
-    // A single spot light on a floodlight mast, aimed at the middle of the
-    // intersection. Its cut-off angles are uploaded as cosines so the shader
-    // can test the cone with a dot product.
-    const glm::vec3 spotPosition {14.0f, 12.0f, 14.0f};
-    const glm::vec3 spotTarget {0.0f, 0.0f, 0.0f};
-    shader_.setVec3("uSpotPosition", spotPosition);
-    shader_.setVec3("uSpotDirection", glm::normalize(spotTarget - spotPosition));
-    shader_.setVec3("uSpotColor",
-        dayNight.streetLampsOn() ? glm::vec3{2.60f, 2.42f, 1.95f} : glm::vec3{0.0f});
-    shader_.setFloat("uSpotCutOff", std::cos(glm::radians(16.0f)));
-    shader_.setFloat("uSpotOuterCutOff", std::cos(glm::radians(24.0f)));
+    // The Lab 3 spot light: the small lamp on the arm of the billboard at the
+    // central crossroads, aimed at the middle of the picture. Its cut-off
+    // angles are uploaded as cosines so the shader can test the cone with a
+    // dot product.
+    const SpotLamp& spot = world_.spotLamp();
+    shader_.setVec3("uSpotPosition", spot.position);
+    shader_.setVec3("uSpotDirection", glm::normalize(spot.target - spot.position));
+    shader_.setVec3("uSpotColor", night ? glm::vec3{2.4f, 2.2f, 1.8f} : glm::vec3{0.0f});
+    shader_.setFloat("uSpotCutOff", std::cos(glm::radians(spot.innerDegrees)));
+    shader_.setFloat("uSpotOuterCutOff", std::cos(glm::radians(spot.outerDegrees)));
 
     // The ground runs out to two kilometres so it reaches the fog and the
     // horizon. The city and the lawn round it out to 900 m lie on top, so the
@@ -211,10 +399,11 @@ void Scene::render(
     drawBuildings();
     drawTrees();
     drawStreetFurniture();
-    drawFloodlightMast(dayNight.streetLampsOn());
-    drawStreetLamps(dayNight.streetLampsOn());
+    drawStreetLamps(night);
+    drawBillboards(night);
+    drawNeonSigns(night);
     drawSignals(traffic);
-    drawGiveWaySigns(network);
+    drawGiveWaySigns();
 
     // Vehicles that have left the scene and wait to re-enter are not drawn.
     for (std::size_t index = 0; index < vehicles.size(); ++index)
@@ -225,6 +414,26 @@ void Scene::render(
 
     if (driverView && !vehicles.empty())
         drawDriverCockpit(vehicles[selectedVehicleIndex % vehicles.size()]);
+
+    // Your car: from outside, or just its bonnet in the driver view. You on
+    // foot are drawn unless you are looking through your own eyes.
+    if (playerDrawMode == PlayerDrawMode::DriverSeat)
+    {
+        drawPlayerBonnet(player);
+    }
+    else
+    {
+        VehiclePose car;
+        car.active = true;
+        car.position = player.carPosition;
+        car.yawDegrees = player.carYawDegrees;
+        car.wheelAngleDegrees = player.carWheelDegrees;
+        car.steerAngleDegrees = player.carSteerDegrees;
+        car.color = {0.98f, 0.80f, 0.06f};
+        drawVehicle(car);
+    }
+    if (player.walking && playerDrawMode != PlayerDrawMode::OwnEyes)
+        drawWalker(player);
 }
 
 void Scene::drawMesh(
@@ -244,6 +453,7 @@ void Scene::drawMesh(
     shader_.setVec2("uUvScale", uvScale);
     shader_.setFloat("uShininess", shininess);
     shader_.setFloat("uWaveAmplitude", waveAmplitude_);
+    shader_.setFloat("uEmissiveTextured", emissiveTextured_);
 
     // Texture unit 0 is the diffuse map and unit 1 the specular map, matching
     // the Lab 4 material. Objects with no specular map bind a white texture,
@@ -308,25 +518,7 @@ void Scene::drawRoads()
 
 void Scene::drawBuildings()
 {
-    struct Building
-    {
-        glm::vec3 position;
-        glm::vec3 size;
-        glm::vec3 tint;
-    };
-
-    const std::array<Building, 8> buildings = {{
-        {{-24.0f, 5.7f, -24.0f}, {12.0f, 11.0f, 11.0f}, {0.92f, 0.78f, 0.68f}},
-        {{-35.0f, 4.2f, -18.0f}, {7.0f, 8.0f, 9.0f}, {0.76f, 0.82f, 0.88f}},
-        {{24.0f, 7.2f, -24.0f}, {12.0f, 14.0f, 11.0f}, {0.78f, 0.86f, 0.92f}},
-        {{35.0f, 4.7f, -18.0f}, {7.0f, 9.0f, 9.0f}, {0.92f, 0.76f, 0.64f}},
-        {{-24.0f, 6.2f, 24.0f}, {12.0f, 12.0f, 11.0f}, {0.84f, 0.88f, 0.78f}},
-        {{-35.0f, 5.2f, 18.0f}, {7.0f, 10.0f, 9.0f}, {0.90f, 0.70f, 0.62f}},
-        {{24.0f, 5.2f, 24.0f}, {12.0f, 10.0f, 11.0f}, {0.90f, 0.82f, 0.72f}},
-        {{35.0f, 6.7f, 18.0f}, {7.0f, 13.0f, 9.0f}, {0.72f, 0.82f, 0.90f}}
-    }};
-
-    for (const Building& building : buildings)
+    for (const Building& building : world_.buildings())
     {
         drawMesh(buildingMesh_, transformed(building.position, building.size), building.tint, facade_, {3.0f, 4.0f}, 28.0f, glm::vec3{0.0f});
 
@@ -446,26 +638,12 @@ void Scene::drawWaterJets(const glm::vec3& origin)
 
 void Scene::drawTrees()
 {
-    // Trees line the four approaches to X0, clear of the carriageway, the
-    // signal heads, the street lamps and the buildings. The four on the
-    // drivers' right, where the signal heads stand, are set back on the lawn.
-    static const std::array<glm::vec2, 12> positions = {
-        glm::vec2{-14.0f, -19.0f}, glm::vec2{9.5f, -16.0f},
-        glm::vec2{-9.5f, 16.0f},  glm::vec2{14.0f, 19.0f},
-        glm::vec2{-16.0f, -9.5f}, glm::vec2{-19.0f, 14.0f},
-        glm::vec2{19.0f, -14.0f},  glm::vec2{16.0f, 9.5f},
-        glm::vec2{-9.5f, -27.0f}, glm::vec2{9.5f, 27.0f},
-        glm::vec2{-27.0f, 9.5f},  glm::vec2{27.0f, -9.5f}
-    };
-
-    for (std::size_t index = 0; index < positions.size(); ++index)
+    const std::vector<Tree>& trees = world_.trees();
+    for (const Tree& tree : trees)
     {
-        const glm::vec3 root {positions[index].x, 0.22f, positions[index].y};
-
-        // A small per-tree scale and twist stops twelve identical copies from
-        // reading as wallpaper.
-        const float variation = 0.86f + 0.06f * static_cast<float>(index % 4);
-        const float twist = static_cast<float>(index) * 37.0f;
+        const glm::vec3 root {tree.position.x, 0.22f, tree.position.y};
+        const float variation = tree.scale;
+        const float twist = tree.twistDegrees;
 
         glm::mat4 trunk = glm::translate(glm::mat4(1.0f), root);
         trunk = glm::rotate(trunk, glm::radians(twist), {0.0f, 1.0f, 0.0f});
@@ -484,37 +662,17 @@ void Scene::drawStreetFurniture()
     // Roadside crates carrying the Lab 4 diffuse + specular pair. The specular
     // map is the metal frame of the container, so the painted panels stay flat
     // while the banding picks up the sun and the street lamps.
-    static const std::array<glm::vec3, 6> cratePositions = {
-        glm::vec3{-13.5f, 0.72f, -13.5f}, glm::vec3{-12.0f, 0.72f, -15.6f},
-        glm::vec3{13.5f, 0.72f, 13.5f},   glm::vec3{15.6f, 0.72f, 12.0f},
-        glm::vec3{-14.6f, 0.72f, 14.6f},  glm::vec3{14.6f, 0.72f, -14.6f}
-    };
-
-    for (std::size_t index = 0; index < cratePositions.size(); ++index)
+    for (const Crate& placed : world_.crates())
     {
-        glm::mat4 crate = glm::translate(glm::mat4(1.0f), cratePositions[index]);
-        crate = glm::rotate(crate, glm::radians(17.0f * static_cast<float>(index)), {0.0f, 1.0f, 0.0f});
+        glm::mat4 crate = glm::translate(glm::mat4(1.0f), placed.position);
+        crate = glm::rotate(crate, glm::radians(placed.yawDegrees), {0.0f, 1.0f, 0.0f});
         crate = glm::scale(crate, {1.05f, 1.05f, 1.05f});
         drawMesh(cube_, crate, {1.0f, 1.0f, 1.0f}, crateDiffuse_, {1.0f, 1.0f}, 64.0f,
                  glm::vec3{0.0f}, &crateSpecular_);
     }
 
     // Road signs: a Bezier post carrying a plate that faces oncoming traffic.
-    struct Sign
-    {
-        glm::vec3 position;
-        float yawDegrees;
-        glm::vec3 color;
-    };
-
-    static const std::array<Sign, 4> signs = {
-        Sign{{-9.2f, 0.22f, -13.0f}, 0.0f, {0.86f, 0.16f, 0.12f}},
-        Sign{{9.2f, 0.22f, 13.0f}, 180.0f, {0.86f, 0.16f, 0.12f}},
-        Sign{{-13.0f, 0.22f, 9.2f}, 90.0f, {0.14f, 0.32f, 0.72f}},
-        Sign{{13.0f, 0.22f, -9.2f}, -90.0f, {0.14f, 0.32f, 0.72f}}
-    };
-
-    for (const Sign& sign : signs)
+    for (const RoadSign& sign : world_.roadSigns())
     {
         glm::mat4 parent = glm::translate(glm::mat4(1.0f), sign.position);
         parent = glm::rotate(parent, glm::radians(sign.yawDegrees), {0.0f, 1.0f, 0.0f});
@@ -532,29 +690,85 @@ void Scene::drawStreetFurniture()
     }
 }
 
-void Scene::drawFloodlightMast(bool illuminated)
+void Scene::drawBillboards(bool illuminated)
 {
-    // The mast that carries the spot light. Its head is tilted towards the
-    // middle of the intersection so the cone in the shader and the geometry
-    // the viewer sees agree with each other.
-    const glm::vec3 base {14.0f, 0.22f, 14.0f};
+    for (const Billboard& billboard : world_.billboards())
+    {
+        const glm::vec3 ground {billboard.centre.x, RoadNetwork::kerbTopY, billboard.centre.y};
+        const glm::mat4 frame = facingFrame(ground, billboard.facingDegrees);
+        const float middle = World::billboardBottom + 0.5f * World::billboardHeight;
+        const float top = World::billboardBottom + World::billboardHeight;
 
-    glm::mat4 mast = glm::translate(glm::mat4(1.0f), base);
-    mast = glm::scale(mast, {1.0f, 2.15f, 1.0f});
-    drawMesh(lampPost_, mast, {0.10f, 0.11f, 0.13f}, white_, {1.0f, 1.0f}, 34.0f, glm::vec3{0.0f});
+        // Two steel posts, and the dark box the picture is mounted on.
+        for (float side : {-1.0f, 1.0f})
+        {
+            const float x = side * (0.5f * World::billboardWidth - 0.4f);
+            drawCylinder(glm::scale(glm::translate(frame, {x, 0.5f * top, -0.18f}), {0.24f, top, 0.24f}),
+                         {0.22f, 0.23f, 0.25f}, 40.0f);
+        }
+        drawBeveledCube(glm::scale(glm::translate(frame, {0.0f, middle, -0.14f}),
+                                   {World::billboardWidth + 0.3f, World::billboardHeight + 0.3f, 0.22f}),
+                        {0.10f, 0.11f, 0.13f}, white_, {1.0f, 1.0f}, 20.0f);
 
-    glm::mat4 head = glm::translate(glm::mat4(1.0f), {14.0f, 12.0f, 14.0f});
-    head = glm::rotate(head, glm::radians(-135.0f), {0.0f, 1.0f, 0.0f});
-    head = glm::rotate(head, glm::radians(-38.0f), {1.0f, 0.0f, 0.0f});
+        // The picture. Back-lit ones glow in their own colours at night; the
+        // spot-lit one is lit only by its lamp, so the cone shows on it.
+        const bool glows = illuminated && !billboard.spotLit;
+        emissiveTextured_ = 1.0f;
+        drawMesh(faceQuad_,
+                 glm::scale(glm::translate(frame, {0.0f, middle, -0.02f}), {World::billboardWidth, World::billboardHeight, 1.0f}),
+                 {0.92f, 0.92f, 0.92f}, billboardFaces_[static_cast<std::size_t>(billboard.design) % billboardFaces_.size()],
+                 {1.0f, 1.0f}, 14.0f, glows ? glm::vec3{0.42f} : glm::vec3{0.0f}, &matte_);
+        emissiveTextured_ = 0.0f;
 
-    drawBeveledCube(glm::scale(head, {1.10f, 0.55f, 0.40f}),
-                    {0.13f, 0.14f, 0.16f}, white_, {1.0f, 1.0f}, 40.0f);
+        if (!billboard.spotLit)
+            continue;
 
-    drawBeveledCube(
-        glm::scale(glm::translate(head, {0.0f, 0.0f, 0.24f}), {0.94f, 0.42f, 0.08f}),
-        illuminated ? glm::vec3{1.0f, 0.96f, 0.82f} : glm::vec3{0.26f, 0.25f, 0.22f},
-        white_, {1.0f, 1.0f}, 96.0f,
-        illuminated ? glm::vec3{0.85f, 0.78f, 0.58f} : glm::vec3{0.0f});
+        // The lamp arm reaching out from the foot of the picture, and the
+        // lamp at its end tilted up at it (Lab 3's spot light shines from
+        // here).
+        const SpotLamp& spot = world_.spotLamp();
+        const float reach = glm::length(glm::vec2{spot.position.x, spot.position.z} - billboard.centre);
+        const float armHeight = spot.position.y - 0.16f;
+        drawBeveledCube(glm::scale(glm::translate(frame, {0.0f, armHeight, 0.5f * (reach - 0.14f)}),
+                                   {0.10f, 0.10f, reach + 0.14f}),
+                        {0.18f, 0.19f, 0.21f}, white_, {1.0f, 1.0f}, 40.0f);
+        glm::mat4 head = glm::translate(frame, {0.0f, spot.position.y, reach});
+        const float tilt = glm::degrees(std::atan2(spot.target.y - spot.position.y, reach));
+        head = glm::rotate(head, glm::radians(180.0f), {0.0f, 1.0f, 0.0f});
+        head = glm::rotate(head, glm::radians(-tilt), {1.0f, 0.0f, 0.0f});
+        drawBeveledCube(glm::scale(head, {0.70f, 0.24f, 0.34f}), {0.14f, 0.15f, 0.17f}, white_, {1.0f, 1.0f}, 40.0f);
+        drawBeveledCube(glm::scale(glm::translate(head, {0.0f, 0.10f, 0.02f}), {0.58f, 0.06f, 0.26f}),
+                        illuminated ? glm::vec3{1.0f, 0.95f, 0.82f} : glm::vec3{0.30f, 0.29f, 0.26f},
+                        white_, {1.0f, 1.0f}, 90.0f,
+                        illuminated ? glm::vec3{0.85f, 0.78f, 0.58f} : glm::vec3{0.0f});
+    }
+}
+
+void Scene::drawNeonSigns(bool illuminated)
+{
+    const std::vector<NeonSign>& signs = world_.neonSigns();
+    for (std::size_t index = 0; index < signs.size() && index < neonLetters_.size(); ++index)
+    {
+        const NeonSign& sign = signs[index];
+
+        // A dark rail behind the letters, fixed to the wall.
+        const glm::mat4 frame = facingFrame(sign.centre, sign.facingDegrees);
+        const float railWidth = sign.letterHeight * 0.95f * static_cast<float>(sign.text.size()) + 0.5f;
+        drawBeveledCube(glm::scale(glm::translate(frame, {0.0f, 0.0f, -0.07f}), {railWidth, sign.letterHeight + 0.35f, 0.06f}),
+                        {0.06f, 0.06f, 0.07f}, white_, {1.0f, 1.0f}, 30.0f);
+
+        // By day the glass just shows its colour; at night it glows, and the
+        // tired one stutters now and then.
+        float strength = illuminated ? 1.0f : 0.0f;
+        if (illuminated && sign.flickers)
+        {
+            const auto tick = static_cast<std::uint32_t>(elapsedSeconds_ * 14.0f);
+            if (hash01(tick * 7u + static_cast<std::uint32_t>(index)) < 0.10f)
+                strength = 0.12f;
+        }
+        drawMesh(neonLetters_[index], glm::mat4(1.0f), glm::mix(sign.color * 0.55f, glm::vec3{1.0f}, 0.25f * strength),
+                 white_, {1.0f, 1.0f}, 90.0f, sign.color * (0.08f + 1.25f * strength));
+    }
 }
 
 void Scene::drawStreetLamps(bool illuminated)
@@ -575,61 +789,31 @@ void Scene::drawSignals(const TrafficSystem& traffic)
 {
     // A signal head on the driver's right of every approach to a signalised
     // junction, just behind the stop line, facing the oncoming cars.
-    const RoadNetwork& network = traffic.network();
-    for (std::size_t index = 0; index < network.junctionCount(); ++index)
+    for (const SignalHead& head : world_.signalHeads())
     {
-        const Junction& junction = network.junctions()[index];
-        if (!junction.isSignalised())
-            continue;
-        for (int arm = 0; arm < 4; ++arm)
-        {
-            if (!junction.hasArm[static_cast<std::size_t>(arm)])
-                continue;
-            const glm::vec2 along = armDirection(arm);
-            // Right of the approaching car (heading -along): (along.z, -along.x).
-            const glm::vec2 right {along.y, -along.x};
-            const glm::vec2 foot = junction.centre + along * (RoadNetwork::stopLine + 0.6f) +
-                                   right * (RoadNetwork::halfWidth + 1.3f);
-            // The lenses face local -z; turn them to face along the arm.
-            const float yaw = glm::degrees(std::atan2(-along.x, -along.y));
-            drawTrafficSignal({foot.x, RoadNetwork::kerbTopY, foot.y}, yaw,
-                              traffic.signalFor(index, arm),
-                              traffic.leftArrowFor(index, arm) == SignalState::Green, true);
-        }
+        drawTrafficSignal({head.foot.x, RoadNetwork::kerbTopY, head.foot.y}, head.yawDegrees,
+                          traffic.signalFor(head.junction, head.arm),
+                          traffic.leftArrowFor(head.junction, head.arm) == SignalState::Green, true);
     }
 }
 
-void Scene::drawGiveWaySigns(const RoadNetwork& network)
+void Scene::drawGiveWaySigns()
 {
     // A red give-way sign at every approach that must yield: the entries of
-    // the roundabouts and the side road of the give-way T-junction.
-    for (const Junction& junction : network.junctions())
+    // the roundabouts and the side roads of the give-way T-junctions.
+    for (const GiveWaySign& sign : world_.giveWaySigns())
     {
-        const bool roundabout = junction.type == JunctionType::Roundabout;
-        if (!roundabout && junction.type != JunctionType::GiveWayT)
-            continue;
-        for (int arm = 0; arm < 4; ++arm)
-        {
-            if (!junction.hasArm[static_cast<std::size_t>(arm)] || junction.majorArm[static_cast<std::size_t>(arm)])
-                continue;
-            const glm::vec2 along = armDirection(arm);
-            const glm::vec2 right {along.y, -along.x};
-            const float out = roundabout ? 22.0f : RoadNetwork::stopLine + 1.5f;
-            const glm::vec2 foot = junction.centre + along * out + right * (RoadNetwork::halfWidth + 1.2f);
-            const float yaw = glm::degrees(std::atan2(-along.x, -along.y));
+        glm::mat4 parent = glm::translate(glm::mat4(1.0f), {sign.foot.x, RoadNetwork::kerbTopY, sign.foot.y});
+        parent = glm::rotate(parent, glm::radians(sign.yawDegrees), {0.0f, 1.0f, 0.0f});
+        drawMesh(lampPost_, glm::scale(parent, {0.42f, 0.42f, 0.42f}),
+                 {0.62f, 0.63f, 0.66f}, white_, {1.0f, 1.0f}, 48.0f, glm::vec3{0.0f});
 
-            glm::mat4 parent = glm::translate(glm::mat4(1.0f), {foot.x, RoadNetwork::kerbTopY, foot.y});
-            parent = glm::rotate(parent, glm::radians(yaw), {0.0f, 1.0f, 0.0f});
-            drawMesh(lampPost_, glm::scale(parent, {0.42f, 0.42f, 0.42f}),
-                     {0.62f, 0.63f, 0.66f}, white_, {1.0f, 1.0f}, 48.0f, glm::vec3{0.0f});
-
-            glm::mat4 plate = glm::translate(parent, {0.0f, 2.15f, 0.0f});
-            plate = glm::rotate(plate, glm::radians(45.0f), {0.0f, 0.0f, 1.0f});
-            drawBeveledCube(glm::scale(plate, {0.70f, 0.70f, 0.08f}), {0.86f, 0.12f, 0.10f}, white_, {1.0f, 1.0f}, 52.0f);
-            glm::mat4 face = glm::translate(parent, {0.0f, 2.15f, -0.05f});
-            face = glm::rotate(face, glm::radians(45.0f), {0.0f, 0.0f, 1.0f});
-            drawBeveledCube(glm::scale(face, {0.46f, 0.46f, 0.04f}), {0.96f, 0.96f, 0.94f}, white_, {1.0f, 1.0f}, 60.0f);
-        }
+        glm::mat4 plate = glm::translate(parent, {0.0f, 2.15f, 0.0f});
+        plate = glm::rotate(plate, glm::radians(45.0f), {0.0f, 0.0f, 1.0f});
+        drawBeveledCube(glm::scale(plate, {0.70f, 0.70f, 0.08f}), {0.86f, 0.12f, 0.10f}, white_, {1.0f, 1.0f}, 52.0f);
+        glm::mat4 face = glm::translate(parent, {0.0f, 2.15f, -0.05f});
+        face = glm::rotate(face, glm::radians(45.0f), {0.0f, 0.0f, 1.0f});
+        drawBeveledCube(glm::scale(face, {0.46f, 0.46f, 0.04f}), {0.96f, 0.96f, 0.94f}, white_, {1.0f, 1.0f}, 60.0f);
     }
 }
 
@@ -797,4 +981,32 @@ void Scene::drawDriverCockpit(const VehiclePose& vehicle)
     glm::mat4 instrumentPanel = glm::translate(parent, {0.43f, 1.01f, 0.80f});
     instrumentPanel = glm::scale(instrumentPanel, {0.30f, 0.08f, 0.05f});
     drawBeveledCube(instrumentPanel, {0.08f, 0.18f, 0.24f}, white_, {1, 1}, 60.0f, {0.01f, 0.06f, 0.08f});
+}
+
+void Scene::drawPlayerBonnet(const PlayerView& player)
+{
+    // The driver view looks out over the bonnet: that is all of the car
+    // there is to see from there.
+    glm::mat4 parent = glm::translate(glm::mat4(1.0f), player.carPosition);
+    parent = glm::rotate(parent, glm::radians(player.carYawDegrees), {0.0f, 1.0f, 0.0f});
+    drawBeveledCube(glm::scale(glm::translate(parent, {0.0f, 0.69f, 1.30f}), {1.84f, 0.26f, 1.40f}),
+                    {0.98f, 0.80f, 0.06f}, white_, {1, 1}, 76.0f);
+}
+
+void Scene::drawWalker(const PlayerView& player)
+{
+    // You, seen from outside: a simple figure 1.8 m tall.
+    glm::mat4 parent = glm::translate(glm::mat4(1.0f), player.walkerPosition);
+    parent = glm::rotate(parent, glm::radians(player.walkerYawDegrees), {0.0f, 1.0f, 0.0f});
+    for (float side : {-1.0f, 1.0f})
+    {
+        drawBeveledCube(glm::scale(glm::translate(parent, {side * 0.11f, 0.45f, 0.0f}), {0.16f, 0.90f, 0.20f}),
+                        {0.10f, 0.12f, 0.20f}, white_, {1, 1}, 20.0f);
+        drawBeveledCube(glm::scale(glm::translate(parent, {side * 0.29f, 1.18f, 0.0f}), {0.12f, 0.62f, 0.14f}),
+                        {0.08f, 0.55f, 0.72f}, white_, {1, 1}, 20.0f);
+    }
+    drawBeveledCube(glm::scale(glm::translate(parent, {0.0f, 1.20f, 0.0f}), {0.46f, 0.66f, 0.26f}),
+                    {0.08f, 0.55f, 0.72f}, white_, {1, 1}, 20.0f);
+    drawBeveledCube(glm::scale(glm::translate(parent, {0.0f, 1.66f, 0.02f}), {0.22f, 0.24f, 0.22f}),
+                    {0.86f, 0.66f, 0.52f}, white_, {1, 1}, 20.0f);
 }

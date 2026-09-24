@@ -173,6 +173,8 @@
     <ClCompile Include="MeshBuilder.cpp" />
     <ClCompile Include="LightManager.cpp" />
     <ClCompile Include="RoadRenderer.cpp" />
+    <ClCompile Include="World.cpp" />
+    <ClCompile Include="Player.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Camera.h" />
@@ -194,6 +196,8 @@
     <ClInclude Include="MeshBuilder.h" />
     <ClInclude Include="LightManager.h" />
     <ClInclude Include="RoadRenderer.h" />
+    <ClInclude Include="World.h" />
+    <ClInclude Include="Player.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="assets\asphalt-photoreal.png" />

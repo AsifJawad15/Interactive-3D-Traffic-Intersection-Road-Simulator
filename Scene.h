@@ -3,21 +3,33 @@
 #include "DayNight.h"
 #include "LightManager.h"
 #include "Mesh.h"
+#include "Player.h"
 #include "RoadRenderer.h"
 #include "Shader.h"
 #include "Simulation.h"
 #include "Texture.h"
+#include "World.h"
 
 #include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 
 #include <cstddef>
+#include <vector>
+
+// How the player is being watched this frame, which decides what is drawn:
+// the outside of the car, or only its bonnet, or nothing at all of you on foot.
+enum class PlayerDrawMode
+{
+    Outside,      // any view that is not yours
+    DriverSeat,   // the driver view: only the bonnet shows
+    OwnEyes       // you are on foot and look through your own eyes
+};
 
 class Scene
 {
 public:
-    explicit Scene(const TrafficSystem& traffic);
+    Scene(const TrafficSystem& traffic, const World& world);
 
     void render(
         const glm::mat4& view,
@@ -25,6 +37,8 @@ public:
         const glm::vec3& cameraPosition,
         const TrafficSystem& traffic,
         const std::vector<VehiclePose>& vehicles,
+        const PlayerView& player,
+        PlayerDrawMode playerDrawMode,
         const DayNight& dayNight,
         int shadingMode,
         bool driverView,
@@ -32,12 +46,14 @@ public:
         float elapsedSeconds);
 
 private:
+    const World& world_;
     Shader shader_;
     Mesh cube_;
     Mesh beveledCube_;
     Mesh buildingMesh_;
     Mesh carCabin_;
     Mesh cylinder_;
+    Mesh faceQuad_;   // a unit square facing +z, texture upright
 
     // Lab 5 surfaces of revolution. Each is one Bezier profile swept about the
     // Y axis by Mesh::makeBezierRevolution.
@@ -61,6 +77,11 @@ private:
     Texture crateDiffuse_;
     Texture crateSpecular_;
     Texture signFace_;
+
+    // The printed faces of the billboards, one per design, and the neon
+    // lettering, one mesh per sign.
+    std::vector<Texture> billboardFaces_;
+    std::vector<Mesh> neonLetters_;
 
     void drawMesh(
         const Mesh& mesh,
@@ -95,6 +116,7 @@ private:
         const glm::vec3& emissive = {0.0f, 0.0f, 0.0f});
 
     float waveAmplitude_ = 0.0f;
+    float emissiveTextured_ = 0.0f;
     float elapsedSeconds_ = 0.0f;
 
     // The road network, and every street lamp baked into three meshes.
@@ -105,11 +127,12 @@ private:
     Mesh lampBulbs_;
 
     void buildStreetLamps(const RoadNetwork& network);
+    void buildSigns();
     void drawRoads();
     void drawStreetLamps(bool illuminated);
     void drawBuildings();
     void drawSignals(const TrafficSystem& traffic);
-    void drawGiveWaySigns(const RoadNetwork& network);
+    void drawGiveWaySigns();
     void drawTrafficSignal(
         const glm::vec3& position, float yawDegrees, SignalState state, bool leftArrow, bool signalsLive);
     void drawIsland(const glm::vec2& centre);
@@ -117,7 +140,10 @@ private:
     void drawWaterJets(const glm::vec3& origin);
     void drawTrees();
     void drawStreetFurniture();
-    void drawFloodlightMast(bool illuminated);
+    void drawBillboards(bool illuminated);
+    void drawNeonSigns(bool illuminated);
     void drawVehicle(const VehiclePose& vehicle);
     void drawDriverCockpit(const VehiclePose& vehicle);
+    void drawPlayerBonnet(const PlayerView& player);
+    void drawWalker(const PlayerView& player);
 };

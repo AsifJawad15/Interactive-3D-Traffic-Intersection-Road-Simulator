@@ -1,6 +1,7 @@
 # Enhancement Plan: OpenGLMiniProject → Open-World Smart City Traffic Simulator
 
-> Status: **Phases 0 to 3 complete. Phase 4 (player car) is next and waits for your go-ahead.** Written 2026-09-23.
+> Status: **Phases 0 to 4 complete. Phase 5 (vehicle variety) is next and waits for your go-ahead.** Written 2026-09-23.
+> **Revised 2026-09-24 (Phase 4):** the player car has two views, a chase view above and behind it and a driver view over the bonnet (no cockpit interior); `C` locks the camera onto it and lets go again. The floodlight mast is gone: the city is lit by street lamps, signboards and neon. Pedestrian animation is planned in section 5.1.
 > **Revised 2026-09-24:** every junction keeps its own permanent type (T-junction, signalised intersection or roundabout), and no intersection is ever turned into a roundabout (section 3.2).
 > **Revised 2026-09-24 (later):** the city is closed. No road leads out of town: the 3×3 core sits inside a ring road, like a maze, and the same cars drive round it for ever with no respawning (section 3.2).
 > **Scope revised 2026-09-23:**
@@ -25,7 +26,60 @@
 | 1. Traffic core and collision fix | ✅ Done and verified | 2026-09-23 | `enhancement/phase-1-traffic` |
 | 2. Smooth motion and 1080p | ✅ Done and verified | 2026-09-24 | `enhancement/phase-2-smooth` |
 | 3. Road network | ✅ Done and verified | 2026-09-24 | `enhancement/phase-3-network` |
-| 4 to 11 | Not started | | |
+| 4. Player car, driver view, on foot | ✅ Done and verified | 2026-09-24 | `enhancement/phase-4-player` |
+| 5 to 11 | Not started | | |
+
+### ✅ Checkpoint 4: your car, on foot, and the night lights (2026-09-24)
+
+**What changed**
+- **The player (`Player.h/.cpp`):** a car of your own and yourself on foot, stepped in the same fixed 1/60 s steps as the traffic and drawn blended between steps.
+  - **Driving:** a kinematic bicycle model. The steering lock shrinks from 34° when slow to 7° at 80 km/h, and the wheel turns at a limited rate. Top speed is 50 km/h, or 80 km/h with boost (`Shift`). Brakes, then reverse; a handbrake (`Space`) that lets the rear step out a little. Arrows or `W A S D`.
+  - **Kerbs are bumps, not walls:** the car rides up onto sidewalks and lawns smoothly, so it can park off the road. It starts parked on the sidewalk south of X0.
+  - **Collisions:** buildings, crates, tree trunks, lamp posts, signal poles, sign and billboard posts, the roundabout islands and AI cars are solid. Movement is sub-stepped (at most 20 cm per sub-step), so nothing can be tunnelled through. The car is pushed out along the shortest way, and the part of its speed going into the obstacle is removed with a little bounce. A glancing blow on a wall swings the nose round so the car scrapes along it; a head-on hit just stops it.
+  - **On foot (`F`):** out through the driver's door once the car has nearly stopped, and back in when standing next to it. Walk or run where you look, step up onto kerbs, and slide along walls, cars and posts.
+- **The AI yields to you (`Simulation.*`):** you are a `Guest` of the traffic. Every AI car slides its body (0.3 m larger all round) along its own path and into its next route, and brakes for you as for a car in front, stopping short of the first place it would touch you. It never enters a junction you stand in. If you stop in a lane, the cars behind wait (they cannot overtake).
+- **Cameras, as you asked:**
+  - `C` locks the camera onto your car (or onto you on foot) and follows it; `C` again lets go and returns to the free camera where it was.
+  - `V` switches between two views of your car: the **chase view** above and behind it (a stiff spring) and the **driver view over the bonnet**. As you asked, there is no cockpit interior; only the bonnet is drawn. The driver view keeps a mouse head-turn of up to ±70°, `B` to look back, and a gentle lean under braking and cornering.
+  - On foot you see through your own eyes. `M` is the top view (it replaced the old `C` cycle); `Tab` and `V` still follow an AI car and ride in it.
+  - A single mouse jump of more than 300 px (the window taking the cursor back) is ignored, and captures ignore the mouse, so the view never snaps sideways.
+- **Night lights, as you asked: street lamps, signboards and neon; the floodlight mast is removed.**
+  - **Neon signs** above six doors at X0: HOTEL, CAFE, PIZZA, CINEMA, BAR and 24H. Every stroke of the `stb_easy_font` text becomes a thin glass tube that glows and blooms at night; the BAR sign stutters. Each throws a coloured spill light onto the pavement.
+  - **Six billboards** on the lawns, with pictures generated at start-up (gradient, frame, two lines of text). At night five glow from behind in their own colours (a new `uEmissiveTextured` shader switch) and light the ground in front.
+  - The one at X0 is lit from the front by a small lamp on an arm under it: this is now the **Lab 3 spot light** (cosine cut-offs 30° and 42°), aimed up at the picture so the cone lands on it and not on the grass.
+  - All of these join the street lamps in the 32-light budget.
+- **HUD:** a speedometer (with reverse), short messages that fade, and a **minimap** in the corner. It shows the roads, the roundabouts, every signal's two axis colours, every car, and your car (with its heading) or you. It is drawn looking down with north up, the same way round as the 3D top view.
+- **`World.h/.cpp` (new):** one list of everything standing in the city (buildings, trees, crates, signs, signal heads, give-way signs, billboards, neon signs, the spot lamp), used both for drawing and for collisions, plus the ground height (road or kerb top) at any point.
+- **Tools:**
+  - `--player-test` is new (crashes, a walk into a wall, and laps of the ring among the AI with a camera judder check).
+  - `--light-test` now includes the neon and billboard lights.
+  - Capture views 8 (chase), 9 (driver view) and 10 (on foot).
+- **Pedestrian animation** was researched but not built, as you asked: section 5.1 sets out the approach from the four reference projects.
+
+**New files:** `Player.h/.cpp`, `World.h/.cpp`.
+**Edited:** `Camera.h/.cpp`, `Scene.h/.cpp`, `Simulation.h/.cpp`, `Collision.h/.cpp` (push-out for boxes and circles), `Overlay.h/.cpp`, `shaders/scene.frag`, `main.cpp`, `README.md` and both project files.
+
+**Verification results**
+- **Build:** Release and Debug x64 build with no errors and no warnings.
+- **`--player-test`:**
+
+  | Check | Result |
+  |---|---|
+  | Head-on crash into a building at boost speed (47 km/h) | 0.000 m into the wall, stopped against it: PASS |
+  | 35° crash (48 km/h) | 0.000 m into the wall, slid 6.6 m along it: PASS |
+  | Walking (running) into a wall at 45° | 0.000 m inside, slid 7.2 m along it: PASS |
+  | Autopilot laps of the ring road among 36 AI cars (240 s) | 1.5 laps; **AI into player 0**; overlaps left 0; judder 0.0003 in both the chase and the driver view (limit 0.02): PASS |
+
+- **Traffic unchanged:** `--self-test` passes all 5721 checks. The 30-minute soaks with 36 cars give exactly the Phase 3 numbers on seeds 1 to 8 (0 overlaps, longest stop 28–48 s, busiest junction 8–11 %).
+- **`--motion-test`:** judder 0.0007 to 0.0014, all PASS.
+- **`--light-test`:** 193 lights (lamps, neon and billboards), 109,008 frames, largest change of one light in one frame 0.011, no pops: PASS.
+- **1080p:** the chase view at night over 400 frames runs at 71–72 FPS, 99th percentile 16.1 ms, 2.6 ms of GPU time. The one frame near 108 ms is the known one-time driver stall.
+- **Screenshots:** chase, driver and on-foot views by day and night, the neon and billboards at night, the spot-lit billboard (the cone on the picture, no pool on the grass), the minimap and the speedometer all look right.
+
+**Known leftovers**
+- AI cars cannot overtake, so a car you leave stopped in a lane holds up the traffic behind it until you move it (park on the sidewalk instead).
+- You on foot are a simple block figure when seen from outside; the animated mannequin comes with the pedestrians (Phase 7, section 5.1).
+- The car has no suspension: it glides up the 15 cm kerbs rather than bouncing over them.
 
 ### ✅ Checkpoint 3: the closed city road network (2026-09-24)
 
@@ -375,7 +429,7 @@ OpenGL has **no hardware ray-tracing API**. A full software BVH ray tracer is ex
 The renderer stays **forward**, which keeps the Flat/Gouraud/Phong demo working.
 - **Light list:** lights live in a UBO with room for **up to 32 point lights and 8 spot lights**.
 - **Per frame:** the CPU frustum-culls all lights, then keeps the ones that matter most, ranked by intensity over distance to the camera.
-- **Always in the list:** the four central "lab" lamps, which keep the Lab 3 constants k_c=1, k_l=0.09, k_q=0.032, and the floodlight spot light.
+- **Always in the list:** the four central "lab" lamps, which keep the Lab 3 constants k_c=1, k_l=0.09, k_q=0.032. The Lab 3 spot light is the lamp under the billboard at X0 (since Phase 4; the floodlight mast is gone). Neon spill and billboard glow share the budget.
 - **Lamps beyond about 80 m:** drawn as emissive bulbs only. Bloom and the horizon haze hide the missing light.
 - **Falloff:** lights use a windowed falloff, so a light switching in or out of the list never pops.
 
@@ -476,6 +530,30 @@ The renderer stays **forward**, which keeps the Flat/Gouraud/Phong demo working.
   - Variety: different skin, shirt, trousers and hair colours. Umbrellas appear in rain.
   - Movement: a sidewalk graph that loops around each block and connects blocks through crossings.
   - Rendering: 60 to 100 walkers, **instanced per body part**, about 10 draw calls for all of them.
+  - **Animation (added 2026-09-24, plan only):** see section 5.1.
+
+### 5.1 Pedestrian animation: approach and references (added 2026-09-24, not yet built)
+Four projects were reviewed as references. What each offers, and whether it can be used here:
+
+| Reference | What it is | Use in this project |
+|---|---|---|
+| [ozz-animation](https://github.com/guillaumeblanc/ozz-animation) | C++17 runtime for skeletal animation: sampling, blending (including partial and additive), local-to-model, two-bone and aim IK, skinning helpers. Offline tools convert glTF / FBX into compact `.ozz` files. Renderer-agnostic, CMake, **MIT licence**. | The best candidate **if** we ever import rigged characters: its runtime would do sampling and blending, and our own shader would do the skinning. It is a dependency, though, and needs an asset pipeline. |
+| [colonelsalt/animation-blending](https://github.com/colonelsalt/animation-blending) | C++ / OpenGL skinned character (Mixamo) with an **animation graph**: idle, walk, jog, jump, roll, with smooth cross-fades between them. Built on LearnOpenGL's skeletal animation chapter. No licence stated. | **Reference only** (no licence, so no code copied): the state-machine design and the cross-fade timing. |
+| [Futuramistic/Animation](https://github.com/Futuramistic/Animation) | C++ / GLUT player for **BVH** motion capture (walk, jog, jump) with forward kinematics in matrix and quaternion form, a Jacobian-inverse **IK** arm, and a "mannequin" drawn from simple shapes on the bones. No licence stated. | **Reference only**: BVH parsing, quaternion joints, and the mannequin idea. The mannequin fits this project's rule of authored geometry with no model files. |
+| [SMPL-Scene-Viewer](https://github.com/climbingdaily/SMPL-Scene-Viewer) | Python / Open3D viewer for SMPL body-model sequences and point-cloud scenes. The SMPL model needs registration; **CC BY-NC-SA** (non-commercial). | **Not used at runtime.** At most an offline way to look at motion data. |
+
+**Proposed design (for Phase 7):**
+- **Body:** a mannequin of the hierarchical parts above (hips, torso, head, two-part arms and legs), built from our own Bezier and box meshes and hung on a ~15-joint skeleton. No imported character mesh, so there is no skinning pass and every part can be instanced.
+- **Motion:** a few short BVH clips (idle, walk, jog, wait at the kerb, look both ways) from a freely usable motion-capture source, loaded by a small BVH reader of our own. Joints are stored as quaternions, resampled to 30 Hz, with the root motion taken out.
+- **Blending:**
+  - Idle, walk and jog blend by speed, synchronised by the gait phase so the feet stay in step.
+  - States change through a small animation graph (after colonelsalt): Idle → Walk → WaitAtKerb → Cross → Walk, with 0.2 to 0.3 s cross-fades.
+  - The playback rate follows the distance walked, so the feet never slide (the same idea as wheel rotation).
+- **Feet on kerbs:** two-bone leg IK lifts a foot onto the 0.15 m kerb and the island steps (the analytic two-bone solution, as in ozz and Futuramistic's IK chapter).
+- **Crowds:** 60 to 100 walkers, with distant ones animated at a lower rate and far ones frozen on a pose. Poses are blended between simulation steps like the cars.
+- **Traffic:** pedestrians are `Guest`s to the AI traffic, the same mechanism the player uses since Phase 4, so cars already yield to them. Crossings claim conflict zones as in section 4.6.
+- **The player on foot** uses the same mannequin when seen from outside, replacing the Phase 4 block figure.
+- **If rigged glTF characters are ever wanted instead:** switch the runtime to ozz-animation (MIT), with skinning matrices in a uniform buffer. That would end the "no model files" rule, so it is a decision for later.
 - **Sky and atmosphere:** a sky gradient that follows sun elevation, sun glow, moon, stars, and a faint horizon haze coloured by the sky (all done in Phase 0). There is no fog weather. The haze only blends the far edge of the world into the sky.
 
 - **Sun, moon and time presets (`DayNight.*`):**
@@ -525,11 +603,11 @@ The renderer stays **forward**, which keeps the Flat/Gouraud/Phong demo working.
 | **Arrow keys** | Drive the player car, or walk when on foot |
 | `Space` / `Left Shift` | Handbrake / run or boost |
 | **`F`** | Switch between on foot and driving (spawns or enters the player car) |
-| `C` | Cycle camera: Free → Top → Follow → Driver → **Chase (player)** → **On-foot first person** |
-| **`V`** | While driving: player camera **Chase → Driver seat → Hood**. Otherwise: driver view of the followed AI car (unchanged). |
+| `C` | Lock the camera onto the player (your car, or you on foot) and follow; press again to let go (built in Phase 4) |
+| **`V`** | On your car: **chase view ↔ driver view over the bonnet**. Otherwise: driver view of the followed AI car (unchanged). |
 | `Tab` / **`Shift+Tab`** | Next AI vehicle / follow an AI pedestrian (pedestrian-eye view) |
 | **Mouse (driver seat)** | Head look, limited to ±70°. **`B`** looks back. |
-| `M` | Retired in Phase 3: every junction keeps its own type (section 3.2). |
+| `M` | Top view of the whole city (Phase 4). The old roundabout toggle was retired in Phase 3. |
 | **`O`** | Cycle time presets: Morning → Noon → Afternoon → Evening → Night |
 | **`[` / `]`** | Move the time of day back or forward by 1 hour (the sun glides) |
 | `T`, `Y/N` | Automatic day cycle on or off / jump to day or night (unchanged) |
@@ -639,7 +717,12 @@ Each new `.cpp`, `.h` and shader file is registered in `OpenGLMiniProject.vcxpro
   - Soak: 25 vehicles, 0 overlaps, and traffic spread across junctions (no junction holds more than 35% of cars).
   - Night: roads are lit, with no light popping as the camera moves.
 
-### Phase 4: Player car, driver-seat view, on foot
+### Phase 4: Player car, driver view, on foot ✅ DONE (see Checkpoint 4)
+- **As built (revised 2026-09-24):**
+  - two views of the player car, the chase view (above and behind) and the driver view over the bonnet, with no cockpit interior;
+  - `C` locks the camera onto the car and lets go;
+  - the floodlight mast is replaced by neon signs and lit billboards;
+  - the items below are the original plan, kept for reference.
 - **Driving:** a player car with a kinematic bicycle model on the arrow keys, plus handbrake and boost. It is fixed-step and interpolated like the AI. It collides with the world and AI, and the AI yields to the player.
 - **Cameras:** Chase, **Driver seat** and Hood, switched with `V`.
 - **Driver seat:**
@@ -669,7 +752,7 @@ Each new `.cpp`, `.h` and shader file is registered in `OpenGLMiniProject.vcxpro
   - The frame rate stays at 60 FPS or more at 1080p, and the HUD shows draw calls.
 
 ### Phase 7: Pedestrians
-- The sidewalk graph, crossings (signalised and zebra), the walker model and animation, instanced rendering, vehicles yielding, and umbrellas.
+- The sidewalk graph, crossings (signalised and zebra), the walker model and animation (section 5.1: mannequin, BVH clips, speed- and phase-synchronised blending, a small animation graph, leg IK on kerbs), instanced rendering, vehicles yielding, and umbrellas.
 - **Files:** new `Pedestrians.*`, `PedestrianRenderer.*`.
 - **Check:** soak shows 0 vehicle-pedestrian overlaps on crossings and no pedestrian stuck for more than 90 s. You can see people waiting for WALK and then crossing.
 

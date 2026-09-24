@@ -20,6 +20,10 @@ uniform vec3 uEmissiveColor;
 // than lit surfaces and pick up bloom.
 uniform float uEmissiveStrength;
 
+// 1 for a back-lit picture (a billboard at night): the glow takes the colour
+// of the texture instead of being one flat colour.
+uniform float uEmissiveTextured;
+
 // Hemisphere ambient: sky light from above, bounce light from the ground.
 uniform vec3 uAmbientSky;
 uniform vec3 uAmbientGround;
@@ -112,7 +116,7 @@ void main()
         result = illuminate(normal, albedo, specularMap);
     }
 
-    result += uEmissiveColor * uEmissiveStrength;
+    result += uEmissiveColor * uEmissiveStrength * mix(vec3(1.0), albedo / max(baseColor, vec3(1e-4)), uEmissiveTextured);
     result = applyFog(result, vWorldPosition, uViewPosition);
     fragmentColor = vec4(result, 1.0);
 }

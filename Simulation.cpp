@@ -385,10 +385,14 @@ void TrafficSystem::update(float dt)
     const std::size_t count = vehicles_.size();
     std::vector<Leader>& leaders = leaders_;
     leaders.assign(count, Leader {});
+    guestLimits_.assign(count, GuestLimit {});
     for (std::size_t index = 0; index < count; ++index)
     {
-        if (vehicles_[index].active)
-            leaders[index] = findLeader(index);
+        if (!vehicles_[index].active)
+            continue;
+        leaders[index] = findLeader(index);
+        if (!guests_.empty())
+            guestLimits_[index] = guestAhead(index);
     }
 
     // 2. A car let through on green that has not reached its line when the
@@ -466,6 +470,11 @@ void TrafficSystem::update(float dt)
         float limit = std::numeric_limits<float>::max();
         if (leader.vehicle != nullptr)
             limit = std::max(0.0f, leader.gap - hardMinimumGap);
+        // The player: the first touching position was found in half-metre
+        // steps with a 0.3 m margin, so stopping half a metre short of it
+        // always leaves a gap.
+        if (guestLimits_[index].present)
+            limit = std::min(limit, std::max(0.0f, guestLimits_[index].gap - 0.5f));
         if (!vehicle.committed)
             limit = std::min(limit, std::max(0.0f, info.stopDistance - vehicle.distance));
         if (travel > limit)
@@ -645,6 +654,14 @@ float TrafficSystem::commandedAcceleration(const Vehicle& vehicle, const Leader&
     if (leader.vehicle != nullptr)
         acceleration = std::min(acceleration,
             followingAcceleration(speed, desired, leader.gap, speed - leader.speed));
+
+    // The player, like a car in front.
+    if (vehicle.id < guestLimits_.size() && guestLimits_[vehicle.id].present)
+    {
+        const GuestLimit& guest = guestLimits_[vehicle.id];
+        acceleration = std::min(acceleration,
+            followingAcceleration(speed, desired, std::max(guest.gap - 0.5f, 0.05f), speed - guest.speed));
+    }
 
     // Until it has been let through, the stop line acts as a stationary car.
     // The standstill gap is added so the model settles with the car centre
@@ -842,6 +859,11 @@ const char* TrafficSystem::commitBlocker(std::size_t vehicleIndex, const Leader&
     if (!exitHasRoom(vehicle))
         return "no room at the exit";
 
+    // Never into a junction the player is standing or parked in.
+    if (vehicleIndex < guestLimits_.size() && guestLimits_[vehicleIndex].present &&
+        guestLimits_[vehicleIndex].gap < info.junctionExit - vehicle.distance + 2.0f * vehicle.halfLength)
+        return "waiting for the player";
+
     for (const ConflictRef& ref : info.conflicts)
     {
         const Conflict& conflict = conflicts_[ref.conflict];
@@ -919,6 +941,63 @@ const char* TrafficSystem::commitBlocker(std::size_t vehicleIndex, const Leader&
 // ---------------------------------------------------------------------------
 // Measurements
 // ---------------------------------------------------------------------------
+
+TrafficSystem::GuestLimit TrafficSystem::guestAhead(std::size_t vehicleIndex) const
+{
+    GuestLimit result;
+    const Vehicle& me = vehicles_[vehicleIndex];
+    const float reach = std::min(60.0f, me.currentSpeed * me.currentSpeed / (2.0f * comfortableBraking) + 14.0f);
+    const glm::vec2 here {me.position.x, me.position.z};
+
+    bool anyNear = false;
+    for (const Guest& guest : guests_)
+        anyNear = anyNear || glm::length(guest.body.centre - here) < reach + 6.0f;
+    if (!anyNear)
+        return result;
+
+    // Slide the car's body (0.3 m larger all round) along its path, into
+    // the next route, and stop at the first place it would touch a guest.
+    const RouteInfo& info = routeFor(me);
+    const float length = info.route.totalLength();
+    const glm::vec2 inflated {me.halfWidth + 0.3f, me.halfLength + 0.3f};
+    for (float ahead = 0.0f; ahead <= reach; ahead += 0.5f)
+    {
+        float along = me.distance + ahead;
+        const Route* route = &info.route;
+        if (along > length)
+        {
+            if (me.nextRouteIndex == noRoute)
+                break;
+            route = &routes_[me.nextRouteIndex].route;
+            along -= length;
+            if (along > route->totalLength())
+                break;
+        }
+        const RouteSample sample = route->sample(along);
+        const OrientedBox body = makeOrientedBox({sample.position.x, sample.position.z}, sample.headingDegrees, inflated);
+        for (const Guest& guest : guests_)
+        {
+            if (!boxesOverlap(body, guest.body))
+                continue;
+            const float yaw = glm::radians(sample.headingDegrees);
+            result.present = true;
+            result.gap = ahead;
+            result.speed = std::max(0.0f, glm::dot(guest.velocity, glm::vec2 {std::sin(yaw), std::cos(yaw)}));
+            return result;
+        }
+    }
+    return result;
+}
+
+void TrafficSystem::bodies(std::vector<OrientedBox>& out) const
+{
+    out.clear();
+    for (const Vehicle& vehicle : vehicles_)
+    {
+        if (vehicle.active)
+            out.push_back(bodyOf(vehicle));
+    }
+}
 
 OrientedBox TrafficSystem::bodyOf(const Vehicle& vehicle) const
 {
