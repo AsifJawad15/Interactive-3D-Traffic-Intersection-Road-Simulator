@@ -93,6 +93,15 @@
     <ClCompile Include="PropRenderer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Mannequin.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Pedestrians.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PedestrianRenderer.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="TreeGenerator.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -128,6 +137,9 @@
     <ClInclude Include="VehicleTypes.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="NeonText.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="PropRenderer.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Mannequin.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Pedestrians.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="PedestrianRenderer.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="TreeGenerator.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="VehicleRenderer.h"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>

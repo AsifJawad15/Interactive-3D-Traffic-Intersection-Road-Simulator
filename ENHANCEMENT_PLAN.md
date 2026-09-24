@@ -1,6 +1,7 @@
 ﻿# Enhancement Plan: OpenGLMiniProject → Open-World Smart City Traffic Simulator
 
-> Status: **Phases 0 to 6 complete. Phase 7 (pedestrians) is next and waits for your go-ahead.** Written 2026-09-23.
+> Status: **Phases 0 to 6 complete. Phase 7 (pedestrians) is in progress: built and mostly verified; see Checkpoint 7 for what still fails.** Written 2026-09-23.
+> **Revised 2026-09-25 (Phase 7):** the `G` key (advance every signal) is removed, as you asked. As agreed, the walking motion is authored as keyframed clips in code instead of BVH motion-capture files, and umbrellas are built but stay closed until Phase 9.
 > **Revised 2026-09-24 (Phase 6):** a seeded city generator lines every street with buildings in six styles (164 in all, more than the 30–40 first planned, so no stretch looks empty). Windows are drawn by the fragment shader. Trees and props are baked meshes with vertex colours rather than instanced.
 > **Revised 2026-09-24 (Phase 5):** 11 vehicle kinds with lofted Bezier bodies. Long vehicles swing through turns (the rear axle trails the front). The bus line is a loop of kerb-lane left turns round the X0–G–G2–X1 block with 4 stops. Trucks make wide right turns into the far lane and use roundabouts straight on only.
 > **Revised 2026-09-24 (Phase 4):** the player car has two views, a chase view above and behind it and a driver view over the bonnet (no cockpit interior); `C` locks the camera onto it and lets go again. The floodlight mast is gone: the city is lit by street lamps, signboards and neon. Pedestrian animation is planned in section 5.1.
@@ -31,7 +32,62 @@
 | 4. Player car, driver view, on foot | ✅ Done and verified | 2026-09-24 | `enhancement/phase-4-player` |
 | 5. Vehicle variety | ✅ Done and verified | 2026-09-24 | `enhancement/phase-5-vehicles` |
 | 6. City dressing | ✅ Done and verified | 2026-09-24 | `enhancement/phase-6-city` |
-| 7 to 11 | Not started | | |
+| 7. Pedestrians | In progress (see Checkpoint 7) | 2026-09-25 | `enhancement/phase-7-pedestrians` |
+| 8 to 11 | Not started | | |
+
+### ⏳ Checkpoint 7: pedestrians, in progress (2026-09-25)
+
+Committed mid-phase, as you asked, because the context was running out. Everything below is built and compiles cleanly. Two soak criteria still fail on some seeds (see "Still failing").
+
+**What changed**
+- **`G` removed:** the key, `TrafficSystem::advancePhase()`, the help line and the README row.
+- **Crossings as shared geometry (`RoadNetwork::crossings()`):** 54 crossings: one over every arm of the crossroads and T-junctions, and two halves over every roundabout arm, with the splitter island as a refuge. The traffic, the world and the people all read this one list.
+- **The traffic and the people (`Simulation.*`, `TrafficBuild.cpp`):**
+  - Every route knows, per size class, the stretch of route over which its body (with a 0.3 m margin) is over each crossing band (with a 0.4 m margin).
+  - The people report, every step, who waits at and who is on each crossing (`CrossingState`).
+  - Vehicles stop short of an occupied crossing. They do not enter a junction while people are on a crossing on their way, or waiting at one they can comfortably stop for.
+  - On a roundabout's approach, drivers who can stop comfortably let waiting people over the zebra.
+  - A vehicle does not commit into a junction before it has reached the zebra on its approach. Otherwise it could stop for people after crossing traffic had been timed to pass behind it.
+  - Every route over a crossing has a waiting place at the line, even a free-flowing turn. A vehicle giving way to people then stands on its approach lane, where the traffic behind sees it. Without this, a van stopping just past the split was clipped by a car from the same lane.
+  - Patience: after 7 s standing for people, a vehicle stops giving way to those at the kerb, and they let it go first.
+  - People step out only when `crossingClear` holds: nobody is on it, no vehicle is already turning onto it, and every vehicle heading for it can still stop. A vehicle before its line counts only if it would be let in now and could not stop even braking 30 % firmer than comfortable.
+- **Signals for walkers:** WALK shows with the parallel green, never during the left arrows. A green due to end first closes the walk (the red figure flashes), then holds up to 12 s until everyone crossing will be over before the crossing traffic's green. People waiting count as demand for their green. Walk lights stand at both ends of all 17 signalised crossings (baked poles, instanced lenses).
+- **The people (`Pedestrians.*`, new):**
+  - 80 by default (`--pedestrians N`, up to 150), with varied height, build, skin, hair and clothes, and 7 % joggers.
+  - Two walking lines per sidewalk (keep right; 22 lines, 11.9 km), laid out once and swerving round posts and shelters.
+  - At crossing ends they turn off at random, wait at the kerb in up to 6 places, 1.15 m back (clear of a turning bus's 0.8 m overhang), cross together, and join the far sidewalk.
+  - Occasional pauses; the player is walked round.
+- **The figure (`Mannequin.*`, new):** as described in section 5.1, except that the clips are keyframed curves in code (idle, walk, jog, wait with looks both ways, cross) instead of BVH files.
+  - Walk and jog are blended by speed at one gait phase, and the graph cross-fades take 0.25 s.
+  - The swing is a Hermite curve that leaves and lands at rest. The foot rolls about heel and ball.
+  - Foot locking: the simulation records where each foot landed.
+  - Two-bone leg IK on the ground under each foot, with the pelvis lowered so both feet reach. Kerb heights are blended from lift-off to landing, rising before the edge and dropping after it.
+- **Drawing (`PedestrianRenderer.*`, new):** 13 instanced draw calls for the whole crowd (new `InstanceBuffer` and `Mesh::drawInstanced`; `scene.vert` takes a per-copy matrix and colour, and colour alpha makes it glow).
+  - People out of view are skipped. Poses are refreshed every frame near the camera and every 2 or 4 frames further off, carried along in between.
+  - You on foot are the same figure, replacing the block figure.
+- **Cameras and HUD:** `Shift+Tab` follows the next person over the shoulder, and `V` shows their eyes, which turn as they look both ways. The HUD has a PEOPLE / WAITING / CROSSING line, and the minimap shows people.
+- **Tools:**
+  - `--walk-test` (new).
+  - The soak now includes the people and adds `--pedestrians`, `--trace-people`, and a dump at the first vehicle overlap.
+  - `--self-test` adds the sidewalk network and crossing checks.
+  - Capture: `--warm S` (run the city first), `--umbrellas`, and views 20 to 25 (the X0, G and R1 crossings, following a person, their eyes, people waiting at X0).
+
+**New files:** `Mannequin.h/.cpp`, `Pedestrians.h/.cpp`, `PedestrianRenderer.h/.cpp`.
+**Edited:** `RoadNetwork.*`, `Simulation.*`, `TrafficBuild.cpp`, `World.*`, `Scene.*`, `Mesh.*`, `Player.*`, `Camera.*`, `Overlay.*`, `shaders/scene.vert`, `shaders/scene.frag`, `main.cpp`, `README.md` and both project files.
+
+**Verification so far**
+- **Build:** Release x64, no errors, no warnings.
+- **`--self-test`:** all 16282 traffic checks pass (54 crossings; every crossing is driven over, and no vehicle waiting at its line stands on one). The city check passes. All 575 sidewalk checks pass: 22 walking lines clear of everything solid and off the road, 640 waiting places clear, every sidewalk reachable over the crossings.
+- **`--walk-test`:** all 9 cases pass. Planted feet slide 0.5–1.1 % of the distance (0.9 % speeding up from standing to jogging, down from 9.7 % before foot locking). Nothing sinks or floats, the legs always reach, and no foot jumps at a kerb.
+- **30-minute soaks, seeds 1 to 8, 36 vehicles, 80 people:** 0 vehicle-vehicle overlaps and 0 vehicle-person touches on every seed (closest vehicle to a person 0.49–0.50 m). 0 hard stops at crossings, 0 starts against the lights, and 1070–1290 crossings made per run.
+- **The same soaks without people (`--pedestrians 0`):** 8 of 8 pass (0 overlaps, longest stop 31–58 s, 88–99 bus stops). These numbers differ slightly from Phase 6, because free-flowing turns over a crossing now wait at their line.
+
+**Still failing (next steps)**
+- **Longest wait of a person:** 53–120 s (limit 90 s); 4 of 8 seeds fail. The long waits are at the signalised crossroads X0 and X1 and at ST2. The traces (`--trace-people`) show a near-continuous flow of committed turning vehicles during WALK, and vehicles whose patience ran out.
+  - Next: stop turning vehicles committing as soon as people wait with WALK (not only those that can stop comfortably), and give walkers a protected start at the beginning of each green.
+- **Longest vehicle stop:** 61–72 s on 2 of 8 seeds (limit 60 s): turning vehicles held by people on top of a red.
+- **Not yet checked by eye:** no screenshots or FPS measurements with people yet (capture views 20 to 25 are ready).
+- **Soak speed:** 30 minutes now takes about 20 s (was 4–10 s).
 
 ### ✅ Checkpoint 6: city dressing (2026-09-24)
 
@@ -780,7 +836,7 @@ Four projects were reviewed as references. What each offers, and whether it can 
 | `F5` / `F6` | Debug overlay (conflict zones, claims, collision count, **frame-time graph**) / quality preset (Low, Medium, High). Phase 2 built the graph and a resolution cycle (Auto, Native, 720p) on `F6`. |
 | **`F7`** | Frame pacing: steady (every second refresh on 120 Hz+ screens) or full rate (added in Phase 2) |
 | **`F11`** | Fullscreen on or off |
-| `G`, `P`, `1/2/3`, `L`, `R`, `H`, `Esc` | Unchanged |
+| `P`, `1/2/3`, `L`, `R`, `H`, `Esc` | Unchanged (`G`, advance every signal, was removed in Phase 7) |
 
 **Corner panel (top-right, clickable):** `ENHANCED: ON/OFF`, and below it the Morning, Noon, Afternoon, Evening and Night buttons. The active preset is highlighted.
 

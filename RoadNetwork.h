@@ -68,6 +68,39 @@ struct StreetLamp
     bool lab = false;            // one of the four Lab 3 lamps at the centre
 };
 
+// A zebra crossing over one arm of a junction, as walkers and drivers both
+// see it. A point on it is described by two coordinates: `across` the road
+// (0 on the centreline) and `along` the arm (0 in the middle of the painted
+// band). The walked part runs from across = `from` to across = `to`: kerb to
+// kerb, or at a roundabout kerb to the splitter island, where a walker waits
+// half way (the crossing is two crossings, one each side of the island).
+struct Crossing
+{
+    std::size_t junction = 0;
+    int arm = 0;
+    bool signalised = false;
+    // Signalised: WALK shows while the parallel traffic has green, so a
+    // crossing over the east or west arm walks with the north-south green.
+    bool walksWithNorthSouth = false;
+
+    glm::vec2 origin {0.0f};    // on the centreline, in the middle of the band
+    glm::vec2 along {0.0f};     // unit, away from the junction
+    glm::vec2 across {0.0f};    // unit, across the road
+    float from = 0.0f;          // across coordinates of the two edges walked between
+    float to = 0.0f;
+    float halfWidth = 1.4f;     // of the painted band, along the arm
+    int refugeEnd = -1;         // 0 or 1: that end is on the splitter island
+
+    glm::vec2 point(float acrossCoordinate, float alongCoordinate) const
+    {
+        return origin + across * acrossCoordinate + along * alongCoordinate;
+    }
+    // Where a walker stands to step off the kerb at end 0 (`from`) or 1
+    // (`to`): on the sidewalk clear of turning buses' overhang, or in the
+    // middle of the island.
+    float endAcross(int end) const;
+};
+
 class RoadNetwork
 {
 public:
@@ -127,6 +160,11 @@ public:
     // Street lamps along every road, plus the four Lab 3 lamps at the centre.
     const std::vector<StreetLamp>& streetLamps() const { return lamps_; }
 
+    // Every zebra crossing: one over each arm of every crossroads and
+    // T-junction, and two (either side of the splitter island) over each arm
+    // of a roundabout. Bends have none.
+    const std::vector<Crossing>& crossings() const { return crossings_; }
+
     // Every road between two junctions. A road may run straight on past grid
     // points where nothing joins it.
     struct Road
@@ -159,10 +197,12 @@ private:
     std::vector<Road> roads_;
     std::vector<Block> blocks_;
     std::vector<StreetLamp> lamps_;
+    std::vector<Crossing> crossings_;
     std::size_t centralJunction_ = 0;
 
     void connect(std::size_t a, int armA, std::size_t b, int armB);
     void placeLamps();
+    void placeCrossings();
     // The kerb around a set of cells. `outside` traces the set's boundary
     // the other way round, for the ground around the whole city.
     std::vector<glm::vec2> traceOutline(const std::vector<Cell>& cells, float inset, bool outside) const;

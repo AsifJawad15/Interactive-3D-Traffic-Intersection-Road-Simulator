@@ -1503,7 +1503,18 @@ void TrafficSystem::finishRoutes()
                 firstZone[tier] = std::min(firstZone[tier], conflicts_[ref.conflict].in[static_cast<std::size_t>(ref.side)]);
                 lastZone[tier] = std::max(lastZone[tier], conflicts_[ref.conflict].out[static_cast<std::size_t>(ref.side)]);
             }
-            info.needsCommit[tier] = !info.conflicts[tier].empty() || junction.isSignalised();
+            // A route over a pedestrian crossing always has a place to wait
+            // at the line, even a turn that crosses no other traffic: a
+            // vehicle giving way to people must stand on its approach lane,
+            // where the traffic behind it sees it, not just past the point
+            // where its lane splits from theirs.
+            bool overCrossing = false;
+            for (std::size_t sizeClass = 0; sizeClass < sizeClassCount; ++sizeClass)
+            {
+                if (static_cast<std::size_t>(widthTier(static_cast<SizeClass>(sizeClass))) == tier)
+                    overCrossing = overCrossing || !info.crossings[sizeClass].empty();
+            }
+            info.needsCommit[tier] = !info.conflicts[tier].empty() || junction.isSignalised() || overCrossing;
         }
 
         for (std::size_t sizeClass = 0; sizeClass < sizeClassCount; ++sizeClass)
@@ -1518,6 +1529,11 @@ void TrafficSystem::finishRoutes()
             info.stopDistance[sizeClass] = stop;
             info.junctionExit[sizeClass] = lastZone[tier] > 0.0f ? lastZone[tier] + rearReach_[sizeClass]
                                                                  : std::min(stop + 12.0f, length);
+
+            // Crossings beyond the waiting place are only reached after
+            // being let into the junction.
+            for (CrossingRef& ref : info.crossings[sizeClass])
+                ref.afterLine = info.needsCommit[tier] && ref.in > stop;
         }
 
         // Comfortable cornering speed at every metre: v = sqrt(a * r).
@@ -1530,6 +1546,63 @@ void TrafficSystem::finishRoutes()
                 info.curveSpeed[static_cast<std::size_t>(metre)] = std::sqrt(lateralAcceleration / curvature);
         }
     }
+}
+
+void TrafficSystem::buildCrossingRefs()
+{
+    // Where each size of body passes over each crossing of its junction:
+    // the body grown by 0.3 m against the band grown by 0.4 m along the road
+    // and 0.2 m past its ends, sampled every quarter metre. The interval is
+    // widened by one sample either way, so it is never too short.
+    const std::vector<Crossing>& crossings = network_.crossings();
+    std::vector<OrientedBox> bands;
+    for (const Crossing& crossing : crossings)
+    {
+        const glm::vec2 centre = crossing.point(0.5f * (crossing.from + crossing.to), 0.0f);
+        bands.push_back(makeOrientedBox(centre, glm::degrees(std::atan2(crossing.along.x, crossing.along.y)),
+                                        {0.5f * (crossing.to - crossing.from) + 0.2f, crossing.halfWidth + 0.4f}));
+    }
+
+    std::vector<std::size_t> routeOrder(routes_.size());
+    std::iota(routeOrder.begin(), routeOrder.end(), std::size_t {0});
+    std::for_each(std::execution::par, routeOrder.begin(), routeOrder.end(), [&](std::size_t routeIndex)
+    {
+        RouteInfo& info = routes_[routeIndex];
+        const float length = info.route.totalLength();
+        for (std::size_t sizeClass = 0; sizeClass < sizeClassCount; ++sizeClass)
+        {
+            const SizeClassSpec& spec = sizeClassSpec(static_cast<SizeClass>(sizeClass));
+            std::vector<CrossingRef>& refs = info.crossings[sizeClass];
+            refs.clear();
+            for (std::size_t index = 0; index < crossings.size(); ++index)
+            {
+                if (crossings[index].junction != info.junction)
+                    continue;
+                float first = -1.0f;
+                float last = -1.0f;
+                for (float distance = 0.0f; distance <= length; distance += bodyStep)
+                {
+                    const BodyFrame frame = bodyFrame(routeIndex, static_cast<SizeClass>(sizeClass), distance);
+                    const OrientedBox body = makeOrientedBox({frame.centre.x, frame.centre.z}, frame.yawDegrees,
+                                                             {spec.halfWidth + 0.3f, spec.halfLength + 0.3f});
+                    if (!boxesOverlap(body, bands[index]))
+                        continue;
+                    if (first < 0.0f)
+                        first = distance;
+                    last = distance;
+                }
+                if (first < 0.0f)
+                    continue;
+                CrossingRef ref;
+                ref.crossing = index;
+                ref.in = std::max(0.0f, first - bodyStep);
+                ref.out = std::min(length, last + bodyStep);
+                refs.push_back(ref);
+            }
+            std::sort(refs.begin(), refs.end(), [](const CrossingRef& a, const CrossingRef& b) { return a.in < b.in; });
+        }
+    });
+    crossingStates_.assign(crossings.size(), CrossingState {});
 }
 
 std::vector<StopMarking> TrafficSystem::stopMarkings() const
@@ -2100,6 +2173,39 @@ bool TrafficSystem::selfTest(std::string& report) const
         checks += 4;
     }
 
+    // Pedestrian crossings: every one is driven over by some route, and a
+    // vehicle waiting at its line never stands on a crossing beyond it, or
+    // nobody could ever cross in front of it.
+    {
+        std::vector<std::size_t> drivenOver(network_.crossings().size(), 0);
+        for (std::size_t index = 0; index < routes_.size(); ++index)
+        {
+            const RouteInfo& info = routes_[index];
+            for (std::size_t sizeClass = 0; sizeClass < sizeClassCount; ++sizeClass)
+            {
+                if (!info.allowed[sizeClass])
+                    continue;
+                for (const CrossingRef& ref : info.crossings[sizeClass])
+                {
+                    ++drivenOver[ref.crossing];
+                    if (!(ref.in < ref.out))
+                        fail(routeName(index) + ": an empty crossing interval");
+                    if (ref.afterLine && info.stopDistance[sizeClass] >= ref.in)
+                        fail(routeName(index) + ": a " + className(sizeClass) + " waiting at its line stands on crossing " +
+                             std::to_string(ref.crossing));
+                    ++checks;
+                }
+            }
+        }
+        for (std::size_t crossing = 0; crossing < drivenOver.size(); ++crossing)
+        {
+            const Crossing& info = network_.crossings()[crossing];
+            if (drivenOver[crossing] == 0)
+                fail("no route drives over the crossing at " + network_.junctions()[info.junction].name + " " + armName(info.arm));
+            ++checks;
+        }
+    }
+
     // Every conflict must be listed by both of its routes, once each, on
     // opposite sides and for the right tier, and only ever pair routes of
     // the same junction.
@@ -2232,7 +2338,8 @@ bool TrafficSystem::selfTest(std::string& report) const
             truckRoutes += info.allowed[static_cast<std::size_t>(SizeClass::Truck)] ? 1 : 0;
         report = "All " + std::to_string(checks) + " network, route, body, conflict, signal and bus line checks passed (" +
                  std::to_string(network_.junctionCount()) + " junctions, " + std::to_string(routes_.size()) +
-                 " routes, " + std::to_string(conflicts_.size()) + " conflict zones, trucks on " +
+                 " routes, " + std::to_string(conflicts_.size()) + " conflict zones, " +
+                 std::to_string(network_.crossings().size()) + " crossings, trucks on " +
                  std::to_string(truckRoutes) + " routes, bus line of " + std::to_string(busLine_.size()) + " legs).\n";
     }
     return passed;

@@ -3,7 +3,9 @@
 #include <glm/common.hpp>
 #include <glm/geometric.hpp>
 
+#include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <numbers>
 #include <utility>
 
@@ -175,6 +177,52 @@ void Mesh::draw() const
     glBindVertexArray(vao_);
     glDrawElements(GL_TRIANGLES, indexCount_, GL_UNSIGNED_INT, nullptr);
     glBindVertexArray(0);
+}
+
+void Mesh::drawInstanced(const InstanceBuffer& instances, std::size_t count) const
+{
+    if (indexCount_ == 0 || count == 0 || instances.id() == 0)
+        return;
+    ++drawCalls_;
+    glBindVertexArray(vao_);
+    glBindBuffer(GL_ARRAY_BUFFER, instances.id());
+    // The model matrix takes four attribute slots, one per column.
+    for (GLuint column = 0; column < 4; ++column)
+    {
+        glEnableVertexAttribArray(4 + column);
+        glVertexAttribPointer(4 + column, 4, GL_FLOAT, GL_FALSE, sizeof(InstanceData),
+                              reinterpret_cast<void*>(offsetof(InstanceData, model) + sizeof(glm::vec4) * column));
+        glVertexAttribDivisor(4 + column, 1);
+    }
+    glEnableVertexAttribArray(8);
+    glVertexAttribPointer(8, 4, GL_FLOAT, GL_FALSE, sizeof(InstanceData), reinterpret_cast<void*>(offsetof(InstanceData, color)));
+    glVertexAttribDivisor(8, 1);
+    glDrawElementsInstanced(GL_TRIANGLES, indexCount_, GL_UNSIGNED_INT, nullptr, static_cast<GLsizei>(count));
+    // Leave the mesh as it was for ordinary draws.
+    for (GLuint slot = 4; slot <= 8; ++slot)
+        glDisableVertexAttribArray(slot);
+    glBindVertexArray(0);
+}
+
+InstanceBuffer::~InstanceBuffer()
+{
+    if (vbo_ != 0)
+        glDeleteBuffers(1, &vbo_);
+}
+
+void InstanceBuffer::upload(const std::vector<InstanceData>& instances)
+{
+    if (vbo_ == 0)
+        glGenBuffers(1, &vbo_);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+    const std::size_t bytes = instances.size() * sizeof(InstanceData);
+    if (bytes > capacity_)
+        capacity_ = std::max(bytes, capacity_ * 2);
+    // Fresh storage every time (orphaning), so the driver never waits for
+    // the GPU to finish drawing from the last contents.
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(capacity_), nullptr, GL_STREAM_DRAW);
+    if (bytes > 0)
+        glBufferSubData(GL_ARRAY_BUFFER, 0, static_cast<GLsizeiptr>(bytes), instances.data());
 }
 
 Mesh Mesh::makeCube()

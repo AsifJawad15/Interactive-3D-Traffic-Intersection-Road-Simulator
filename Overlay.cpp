@@ -66,7 +66,7 @@ void Overlay::render(
 
     // The key list folds away with H so it does not cover the scene during a
     // demonstration; the status lines always stay.
-    const float panelHeight = showHelp ? 661.0f : 173.0f;
+    const float panelHeight = showHelp ? 702.0f : 194.0f;
     drawRectangle(14.0f, 14.0f, 470.0f, panelHeight, {0.015f, 0.025f, 0.045f, 0.90f}, width, height);
     drawRectangle(14.0f, 14.0f, 470.0f, 34.0f, {0.02f, 0.08f, 0.12f, 0.97f}, width, height);
 
@@ -84,6 +84,11 @@ void Overlay::render(
 
     std::snprintf(line.data(), line.size(), "CAMERA: %s   SIGNAL: %s", cameraMode.c_str(), trafficPhase.c_str());
     drawText(left, y, 1.20f, line.data(), {0.55f, 0.82f, 1.0f, 1.0f}, width, height);
+    y += 21.0f;
+
+    std::snprintf(line.data(), line.size(), "PEOPLE: %zu   WAITING: %zu   CROSSING: %zu",
+                  extras.people != nullptr ? extras.people->size() : 0u, extras.peopleWaiting, extras.peopleCrossing);
+    drawText(left, y, 1.12f, line.data(), {0.55f, 0.95f, 0.80f, 1.0f}, width, height);
     y += 21.0f;
 
     std::snprintf(line.data(), line.size(), "TIME: %s %s   LAMPS: %s   SHADE: %s",
@@ -122,7 +127,7 @@ void Overlay::render(
             "F         GET OUT / GET BACK IN",
             "M         TOP VIEW OF THE CITY",
             "TAB       FOLLOW AN AI CAR (V: ITS SEAT)",
-            "G         ADVANCE ALL TRAFFIC SIGNALS",
+            "SHIFT+TAB FOLLOW A PERSON (V: THEIR EYES)",
             "P         PAUSE / RESUME",
             "1 / 2 / 3 FLAT / GOURAUD / PHONG",
             "T         TOGGLE AUTO DAY / NIGHT",
@@ -274,6 +279,16 @@ void Overlay::drawMinimap(const HudExtras& extras, int screenWidth, int screenHe
         }
     }
 
+    if (extras.people != nullptr)
+    {
+        vertices_.clear();
+        for (const glm::vec2& person : *extras.people)
+        {
+            const glm::vec2 p = toScreen(person);
+            appendRectangle(p.x - 0.9f, p.y - 0.9f, 1.8f, 1.8f);
+        }
+        drawVertices({0.45f, 1.0f, 0.70f, 0.9f}, screenWidth, screenHeight);
+    }
     if (extras.cars != nullptr)
     {
         vertices_.clear();

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Pedestrians.h"
 #include "Player.h"
 #include "Simulation.h"
 
@@ -18,7 +19,9 @@ enum class CameraMode
     Driver,        // in an AI car
     PlayerChase,   // above and behind the player's car
     PlayerSeat,    // the player's driver view, over the bonnet
-    OnFoot         // the player's own eyes
+    OnFoot,        // the player's own eyes
+    Pedestrian,    // just behind a person walking the city
+    PedestrianEyes // through that person's eyes
 };
 
 struct GLFWwindow;
@@ -32,7 +35,8 @@ public:
     void processMouse(float xOffset, float yOffset);
     // `vehicles` and `player` are the interpolated poses for this frame, so a
     // camera that rides on a car moves exactly as smoothly as the car is drawn.
-    void update(float dt, const std::vector<VehiclePose>& vehicles, const PlayerView& player);
+    void update(float dt, const std::vector<VehiclePose>& vehicles, const PlayerView& player,
+                const std::vector<PedestrianPose>& pedestrians);
 
     // C: lock the camera onto the player (the car, or yourself on foot), or
     // let go again and return to the free camera where it was.
@@ -48,6 +52,12 @@ public:
 
     void nextFollow(std::size_t vehicleCount);
     void toggleDriverView(std::size_t vehicleCount);
+
+    // Shift+Tab: walk along behind the next person; V then looks through
+    // their eyes (and back).
+    void nextPedestrian(std::size_t pedestrianCount);
+    void togglePedestrianEyes();
+    bool onPedestrian() const { return mode_ == CameraMode::Pedestrian || mode_ == CameraMode::PedestrianEyes; }
     void reset();
 
     // Places the free camera at an exact pose. Used by --capture so that the
@@ -81,6 +91,7 @@ private:
     CameraMode modeBeforeTop_ = CameraMode::Free;
     CameraMode playerCarView_ = CameraMode::PlayerChase;
     std::size_t followedVehicleIndex_ = 0;
+    std::size_t followedPedestrianIndex_ = 0;
     glm::vec3 savedFreePosition_ {20.0f, 17.0f, 24.0f};
     float savedFreeYaw_ = -130.0f;
     float savedFreePitch_ = -22.0f;

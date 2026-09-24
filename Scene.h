@@ -3,6 +3,8 @@
 #include "DayNight.h"
 #include "LightManager.h"
 #include "Mesh.h"
+#include "PedestrianRenderer.h"
+#include "Pedestrians.h"
 #include "Player.h"
 #include "PropRenderer.h"
 #include "RoadRenderer.h"
@@ -41,6 +43,8 @@ public:
         const std::vector<VehiclePose>& vehicles,
         const PlayerView& player,
         PlayerDrawMode playerDrawMode,
+        const std::vector<PedestrianPose>& pedestrians,
+        const std::vector<WalkerLook>& looks,
         const DayNight& dayNight,
         int shadingMode,
         bool driverView,
@@ -134,6 +138,15 @@ private:
     // Buildings, shops, trees, paving and street furniture, baked.
     PropRenderer props_;
 
+    // The people, and you on foot: one instanced draw per body shape.
+    PedestrianRenderer people_;
+    // The walkers' lights: poles and housings baked, the lamps drawn as
+    // instances in this frame's colours.
+    Mesh walkSignalPoles_;
+    Mesh walkSignalHousings_;
+    Mesh walkSignalLens_;
+    std::vector<InstanceData> walkLenses_;
+
     // The bus shelters, baked into one mesh per material.
     Mesh shelterFrames_;
     Mesh shelterGlass_;
@@ -162,5 +175,10 @@ private:
     void drawStreetFurniture();
     void drawBillboards(bool illuminated);
     void drawNeonSigns(bool illuminated);
-    void drawWalker(const PlayerView& player);
+    void buildWalkSignals();
+    void drawWalkSignals(const TrafficSystem& traffic);
+    void drawPeople(const std::vector<PedestrianPose>& pedestrians, const std::vector<WalkerLook>& looks,
+                    const PlayerView& player, bool drawPlayer, const glm::vec3& cameraPosition,
+                    const glm::mat4& viewProjection);
+    void drawInstances(const Mesh& mesh, const std::vector<InstanceData>& instances, float shininess, bool matte);
 };

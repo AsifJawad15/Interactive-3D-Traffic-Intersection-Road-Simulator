@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Collision.h"
+#include "Mannequin.h"
 #include "World.h"
 
 #include <glm/vec2.hpp>
@@ -46,6 +47,9 @@ struct PlayerView
 
     glm::vec3 walkerPosition {0.0f};     // feet
     float walkerYawDegrees = 0.0f;
+    float walkerSpeed = 0.0f;            // m/s over the ground
+    float walkerPhase = 0.0f;            // gait cycle (Mannequin), from the distance walked
+    FootLock walkerFeet[2];              // where the feet are planted
 };
 
 class Player
@@ -91,6 +95,7 @@ public:
     static constexpr float carHalfLength = 2.03f;
     static constexpr float walkerRadius = 0.3f;
     static constexpr float eyeHeight = 1.65f;
+    static constexpr float playerHeight = 1.78f;
 
 private:
     struct CarState
@@ -110,6 +115,9 @@ private:
         float height = 0.0f;
         float yawDegrees = 0.0f;
         glm::vec2 velocity {0.0f};
+        float speed = 0.0f;
+        float phase = 0.0f;
+        FootLock lock[2];
     };
 
     const World& world_;

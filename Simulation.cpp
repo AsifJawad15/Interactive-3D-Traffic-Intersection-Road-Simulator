@@ -63,6 +63,25 @@ namespace
     constexpr float allRedSeconds = 2.5f;
     constexpr float demandRange = 35.0f;   // metres before the line
 
+    // Pedestrian crossings. A vehicle held by a crossing stops this far
+    // short of touching it (the touching distance already has 0.7 m of
+    // margin between the body and the painted band).
+    constexpr float crossingClearance = 0.5f;
+    // After standing this long for people, a vehicle stops giving way to
+    // those still at the kerb, and they let it go first.
+    constexpr float pedestrianPatience = 7.0f;
+    // A green holds at most this long past its end for people still crossing.
+    constexpr float walkerHoldSeconds = 12.0f;
+    // How far ahead a driver looks for people waiting at a zebra.
+    constexpr float zebraLookAhead = 40.0f;
+
+    // Distance a vehicle needs to stop comfortably, with half a second to react.
+    float comfortableStop(const Vehicle& vehicle)
+    {
+        const float speed = vehicle.currentSpeed;
+        return speed * speed / (2.0f * vehicle.comfortableBraking) + 0.5f * speed;
+    }
+
     // Normalised logistic curve, scaled so 0 maps exactly to 0 and 1 exactly to
     // 1. It shapes how fast the acceleration may change (the jerk), so small
     // corrections are gentle and large ones are quick but never a step.
@@ -149,6 +168,7 @@ TrafficSystem::TrafficSystem(std::size_t vehicleCount, unsigned int seed)
     findAllowedRoutes();
     buildSharedSpans();
     buildConflicts();
+    buildCrossingRefs();
     finishRoutes();
     reset();
 }
@@ -171,6 +191,7 @@ void TrafficSystem::reset()
 
     randomState_ = seed_;
     std::fill(claimCounts_.begin(), claimCounts_.end(), 0);
+    std::fill(crossingStates_.begin(), crossingStates_.end(), CrossingState {});
     vehicles_.clear();
 
     const std::vector<VehicleKind> mix = trafficMix(vehicleCount_);
@@ -407,9 +428,21 @@ void TrafficSystem::update(float dt)
     {
         if (!network_.junctions()[junction].isSignalised())
             continue;
-        signals_[junction].elapsed += dt;
-        if (signalPhaseOver(junction))
-            advancePhase(junction);
+        SignalController& controller = signals_[junction];
+        controller.elapsed += dt;
+        if (!signalPhaseOver(junction))
+            continue;
+        // A green due to end first closes the walk (the walkers' lights
+        // flash), then holds until everyone crossing with it will be over
+        // before the crossing traffic's green.
+        if (isGreen(controller.phase) && controller.heldSeconds < walkerHoldSeconds &&
+            !walkersClear(junction, phaseServesNorthSouth(controller.phase)))
+        {
+            controller.walkClosed = true;
+            controller.heldSeconds += dt;
+            continue;
+        }
+        advancePhase(junction);
     }
 
     // Remember where everything was, for render interpolation.
@@ -428,6 +461,7 @@ void TrafficSystem::update(float dt)
     std::vector<Leader>& leaders = leaders_;
     leaders.assign(count, Leader {});
     guestLimits_.assign(count, GuestLimit {});
+    crossingLimits_.assign(count, GuestLimit {});
     for (std::size_t index = 0; index < count; ++index)
     {
         if (!vehicles_[index].active)
@@ -435,6 +469,7 @@ void TrafficSystem::update(float dt)
         leaders[index] = findLeader(index);
         if (!guests_.empty())
             guestLimits_[index] = guestAhead(index);
+        crossingLimits_[index] = crossingAhead(index);
     }
 
     // 2. A car let through on green that has not reached its line when the
@@ -520,6 +555,16 @@ void TrafficSystem::update(float dt)
             limit = std::min(limit, std::max(0.0f, guestLimits_[index].gap - 0.5f));
         if (!vehicle.committed)
             limit = std::min(limit, std::max(0.0f, stopFor(vehicle) - vehicle.distance));
+        // Never onto a crossing somebody is on (or short of a zebra it has
+        // chosen to stop at). Being held here while still moving at a
+        // walking pace or more is counted: the rules should never need it.
+        const GuestLimit& crossingLimit = crossingLimits_[index];
+        if (crossingLimit.present && crossingLimit.gap < limit)
+        {
+            limit = std::max(0.0f, crossingLimit.gap);
+            if (travel > limit && speed > 1.0f)
+                ++stats_.crossingHardStops;
+        }
         const bool stopAhead = vehicle.lineBus && info.busStop >= 0.0f && !vehicle.stopServed &&
                                info.busStop >= vehicle.distance - 0.01f;
         if (stopAhead)
@@ -600,6 +645,16 @@ void TrafficSystem::update(float dt)
         {
             vehicle.stoppedSeconds = 0.0f;
         }
+
+        // Standing for people: held short of a crossing, or at the line
+        // because of people at a crossing beyond it.
+        vehicle.heldByPedestrians =
+            (crossingLimit.present && crossingLimit.gap < 1.0f) ||
+            (!vehicle.committed && stopFor(vehicle) - vehicle.distance < 1.0f && pedestriansHold(vehicle));
+        if (vehicle.currentSpeed < 0.05f && vehicle.heldByPedestrians)
+            vehicle.pedestrianWaitSeconds += dt;
+        else if (vehicle.currentSpeed > 0.5f)
+            vehicle.pedestrianWaitSeconds = 0.0f;
 
         updateLights(vehicle);
     }
@@ -741,6 +796,13 @@ float TrafficSystem::commandedAcceleration(const Vehicle& vehicle, const Leader&
         const GuestLimit& guest = guestLimits_[vehicle.id];
         acceleration = std::min(acceleration,
             followingAcceleration(vehicle, speed, desired, std::max(guest.gap - 0.5f, 0.05f), speed - guest.speed));
+    }
+
+    // A crossing it must stop short of, like a stop line.
+    if (vehicle.id < crossingLimits_.size() && crossingLimits_[vehicle.id].present)
+    {
+        acceleration = std::min(acceleration,
+            followingAcceleration(vehicle, speed, desired, crossingLimits_[vehicle.id].gap + standstillGap, speed));
     }
 
     // Until it has been let through, the stop line acts as a stationary car.
@@ -947,6 +1009,21 @@ const char* TrafficSystem::commitBlocker(std::size_t vehicleIndex, const Leader&
     if (!exitHasRoom(vehicle))
         return "no room at the exit";
 
+    // People on a crossing on its way through, or waiting to cross it with
+    // WALK or at a zebra: turning traffic gives way.
+    if (pedestriansHold(vehicle))
+        return "giving way to pedestrians";
+
+    // A zebra before the line (a roundabout's entry) is dealt with first: a
+    // vehicle let into the junction must never stop for people after that,
+    // or crossing traffic timed to pass behind it could run into it. Once
+    // its body is over the zebra nobody steps onto it any more.
+    for (const CrossingRef& ref : info.crossings[static_cast<std::size_t>(vehicle.sizeClass)])
+    {
+        if (!ref.afterLine && vehicle.distance < ref.in)
+            return "not over the zebra yet";
+    }
+
     // Never into a junction the player is standing or parked in.
     if (vehicleIndex < guestLimits_.size() && guestLimits_[vehicleIndex].present &&
         guestLimits_[vehicleIndex].gap < exitFor(vehicle) - vehicle.distance + 2.0f * vehicle.halfLength)
@@ -1078,6 +1155,198 @@ TrafficSystem::GuestLimit TrafficSystem::guestAhead(std::size_t vehicleIndex) co
     return result;
 }
 
+// ---------------------------------------------------------------------------
+// Pedestrian crossings
+// ---------------------------------------------------------------------------
+
+void TrafficSystem::setCrossingStates(const std::vector<CrossingState>& states)
+{
+    if (states.size() == crossingStates_.size())
+        crossingStates_ = states;
+}
+
+bool TrafficSystem::walkAllowed(std::size_t crossing) const
+{
+    const Crossing& info = network_.crossings()[crossing];
+    if (!info.signalised)
+        return true;
+    const SignalController& controller = signals_[info.junction];
+    return isGreen(controller.phase) && !controller.walkClosed &&
+           phaseServesNorthSouth(controller.phase) == info.walksWithNorthSouth;
+}
+
+WalkLight TrafficSystem::walkLight(std::size_t crossing) const
+{
+    const Crossing& info = network_.crossings()[crossing];
+    if (!info.signalised)
+        return WalkLight::None;
+    if (walkAllowed(crossing))
+        return WalkLight::Walk;
+    const SignalController& controller = signals_[info.junction];
+    const bool parallelGreen = isGreen(controller.phase) &&
+                               phaseServesNorthSouth(controller.phase) == info.walksWithNorthSouth;
+    return parallelGreen && controller.walkClosed ? WalkLight::Flashing : WalkLight::DontWalk;
+}
+
+bool TrafficSystem::walkersClear(std::size_t junction, bool northSouth) const
+{
+    // Anyone still crossing will be over within the yellow and the all-red,
+    // with a second to spare.
+    const std::vector<Crossing>& crossings = network_.crossings();
+    for (std::size_t index = 0; index < crossings.size() && index < crossingStates_.size(); ++index)
+    {
+        if (crossings[index].junction != junction || crossings[index].walksWithNorthSouth != northSouth)
+            continue;
+        const CrossingState& state = crossingStates_[index];
+        if (state.onBand > 0 && state.clearSeconds > yellowSeconds + allRedSeconds - 1.0f)
+            return false;
+    }
+    return true;
+}
+
+TrafficSystem::GuestLimit TrafficSystem::crossingAhead(std::size_t vehicleIndex) const
+{
+    GuestLimit result;
+    if (crossingStates_.empty())
+        return result;
+    const Vehicle& me = vehicles_[vehicleIndex];
+    const std::size_t sizeClass = static_cast<std::size_t>(me.sizeClass);
+    const float canStopIn = comfortableStop(me);
+
+    // Along this route and on into the next one, nearest first.
+    float offset = 0.0f;
+    std::size_t routeIndex = me.routeIndex;
+    for (int pass = 0; pass < 2; ++pass)
+    {
+        if (pass == 1)
+        {
+            if (me.nextRouteIndex == noRoute)
+                break;
+            offset = routes_[me.routeIndex].route.totalLength();
+            routeIndex = me.nextRouteIndex;
+        }
+        for (const CrossingRef& ref : routes_[routeIndex].crossings[sizeClass])
+        {
+            const float in = ref.in + offset;
+            if (me.distance >= in || in - me.distance > leaderLookAhead)
+                continue;   // on it or past it already (it was clear then), or far off
+            const CrossingState& state = crossingStates_[ref.crossing];
+            const float stopAt = in - crossingClearance;
+            const float toStop = stopAt - me.distance;
+
+            // Somebody is on it: stop short of it, whatever else is going on.
+            bool hold = state.onBand > 0;
+            // Somebody waits at a zebra on the approach (not one beyond the
+            // line, which the junction decision deals with): give way if
+            // that is a comfortable stop, and not for ever.
+            if (!hold && state.waiting > 0 && !ref.afterLine && walkAllowed(ref.crossing) &&
+                me.pedestrianWaitSeconds < pedestrianPatience && toStop >= canStopIn - 0.05f &&
+                in - me.distance < zebraLookAhead)
+                hold = true;
+            if (!hold)
+                continue;
+
+            result.present = true;
+            // Already inside the clearance: stop just short of touching.
+            result.gap = toStop >= 0.0f ? toStop : std::max(0.0f, in - 0.1f - me.distance);
+            result.speed = 0.0f;
+            return result;
+        }
+    }
+    return result;
+}
+
+bool TrafficSystem::pedestriansHold(const Vehicle& vehicle) const
+{
+    if (vehicle.committed || crossingStates_.empty())
+        return false;
+    const float toLine = stopFor(vehicle) - vehicle.distance;
+    const bool canStop = toLine >= comfortableStop(vehicle) - 0.05f;
+    for (const CrossingRef& ref : routeFor(vehicle).crossings[static_cast<std::size_t>(vehicle.sizeClass)])
+    {
+        if (!ref.afterLine || ref.out < vehicle.distance)
+            continue;
+        const CrossingState& state = crossingStates_[ref.crossing];
+        if (state.onBand > 0)
+            return true;
+        if (state.waiting > 0 && canStop && walkAllowed(ref.crossing) &&
+            vehicle.pedestrianWaitSeconds < pedestrianPatience)
+            return true;
+    }
+    return false;
+}
+
+const Vehicle* TrafficSystem::crossingBlocker(std::size_t crossing, const char** reason) const
+{
+    const auto blocked = [reason](const Vehicle& vehicle, const char* why)
+    {
+        if (reason != nullptr)
+            *reason = why;
+        return &vehicle;
+    };
+    for (const Vehicle& vehicle : vehicles_)
+    {
+        if (!vehicle.active)
+            continue;
+        const std::size_t sizeClass = static_cast<std::size_t>(vehicle.sizeClass);
+        const bool longWait = vehicle.pedestrianWaitSeconds >= pedestrianPatience;
+        float offset = 0.0f;
+        std::size_t routeIndex = vehicle.routeIndex;
+        for (int pass = 0; pass < 2; ++pass)
+        {
+            if (pass == 1)
+            {
+                if (vehicle.nextRouteIndex == noRoute)
+                    break;
+                offset = routes_[vehicle.routeIndex].route.totalLength();
+                routeIndex = vehicle.nextRouteIndex;
+            }
+            const RouteInfo& info = routes_[routeIndex];
+            for (const CrossingRef& ref : info.crossings[sizeClass])
+            {
+                if (ref.crossing != crossing)
+                    continue;
+                const float in = ref.in + offset;
+                const float out = ref.out + offset;
+                if (vehicle.distance > out)
+                    continue;              // gone past
+                if (vehicle.distance >= in)
+                    return blocked(vehicle, "on the crossing");
+
+                if (ref.afterLine)
+                {
+                    // Beyond its line: one already let into the junction
+                    // is let clear. One still before the line is held there
+                    // while anyone is on the crossing - it cannot enter the
+                    // junction - so it only matters if it would be let in
+                    // now and could no longer stop comfortably at the line,
+                    // or if it has waited its turn.
+                    if (pass == 0 && vehicle.committed)
+                        return blocked(vehicle, "turning onto it");
+                    // (A vehicle already braking for the line is not too
+                    // close: it only has to brake a little firmer at most.)
+                    const float toLine = info.stopDistance[sizeClass] + offset - vehicle.distance;
+                    const float firmStop = vehicle.currentSpeed * vehicle.currentSpeed / (2.6f * vehicle.comfortableBraking);
+                    if (pass == 0 && toLine < firmStop && movementPermitted(vehicle))
+                        return blocked(vehicle, "too close to its line to stop");
+                    if (longWait && toLine < 2.0f)
+                        return blocked(vehicle, "has waited its turn");
+                    continue;
+                }
+
+                // On the approach: it must still be able to stop comfortably
+                // short of it, or have waited its turn.
+                const float toStop = in - crossingClearance - vehicle.distance;
+                if (toStop < comfortableStop(vehicle) + 0.3f)
+                    return blocked(vehicle, "too close to stop");
+                if (longWait && toStop < 3.0f)
+                    return blocked(vehicle, "has waited its turn");
+            }
+        }
+    }
+    return nullptr;
+}
+
 void TrafficSystem::bodies(std::vector<OrientedBox>& out) const
 {
     out.clear();
@@ -1132,6 +1401,18 @@ void TrafficSystem::measureBodies(float)
 
 bool TrafficSystem::signalDemand(std::size_t junction, bool northSouth, bool leftTurnsOnly) const
 {
+    // People waiting to walk with this green (they pressed the button).
+    if (!leftTurnsOnly)
+    {
+        const std::vector<Crossing>& crossings = network_.crossings();
+        for (std::size_t index = 0; index < crossings.size() && index < crossingStates_.size(); ++index)
+        {
+            if (crossings[index].junction == junction && crossings[index].walksWithNorthSouth == northSouth &&
+                crossingStates_[index].waiting > 0)
+                return true;
+        }
+    }
+
     for (std::size_t index = 0; index < vehicles_.size(); ++index)
     {
         const Vehicle& vehicle = vehicles_[index];
@@ -1196,15 +1477,8 @@ void TrafficSystem::advancePhase(std::size_t junction)
 
     controller.phase = next;
     controller.elapsed = 0.0f;
-}
-
-void TrafficSystem::advancePhase()
-{
-    for (std::size_t junction = 0; junction < signals_.size(); ++junction)
-    {
-        if (network_.junctions()[junction].isSignalised())
-            advancePhase(junction);
-    }
+    controller.walkClosed = false;
+    controller.heldSeconds = 0.0f;
 }
 
 SignalState TrafficSystem::signalFor(std::size_t junction, int arm) const

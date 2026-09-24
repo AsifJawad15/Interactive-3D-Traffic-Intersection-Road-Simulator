@@ -180,7 +180,66 @@ RoadNetwork RoadNetwork::makeCity()
     };
 
     network.placeLamps();
+    network.placeCrossings();
     return network;
+}
+
+float Crossing::endAcross(int end) const
+{
+    if (end == refugeEnd)
+        return 0.0f;   // the middle of the splitter island
+    // On the sidewalk, far enough behind the kerb that the overhang of a
+    // bus or truck finishing a turn (up to 0.8 m over the kerb) misses.
+    constexpr float behindKerb = 1.15f;
+    return end == 0 ? from - behindKerb : to + behindKerb;
+}
+
+void RoadNetwork::placeCrossings()
+{
+    // Exactly where the zebras are painted (RoadRenderer.cpp): across every
+    // arm of a crossroads or T-junction just beyond the kerb corners, and
+    // across every roundabout arm in two halves either side of the island,
+    // which is 0.8 m wide there - room for a walker to wait in the middle.
+    crossings_.clear();
+    for (std::size_t index = 0; index < junctions_.size(); ++index)
+    {
+        const Junction& junction = junctions_[index];
+        const bool roundabout = junction.type == JunctionType::Roundabout;
+        if (!junction.isIntersection() && !roundabout)
+            continue;
+        for (int arm = 0; arm < 4; ++arm)
+        {
+            if (!junction.hasArm[static_cast<std::size_t>(arm)])
+                continue;
+            Crossing crossing;
+            crossing.junction = index;
+            crossing.arm = arm;
+            crossing.signalised = junction.isSignalised();
+            crossing.walksWithNorthSouth = arm == ArmEast || arm == ArmWest;
+            crossing.along = armDirection(arm);
+            crossing.across = {crossing.along.y, -crossing.along.x};
+            const float near = roundabout ? roundaboutCrossingNear : crossingNear;
+            const float far = roundabout ? roundaboutCrossingFar : crossingFar;
+            crossing.origin = junction.centre + crossing.along * (0.5f * (near + far));
+            crossing.halfWidth = 0.5f * (far - near);
+            if (!roundabout)
+            {
+                crossing.from = -halfWidth;
+                crossing.to = halfWidth;
+                crossings_.push_back(crossing);
+                continue;
+            }
+            constexpr float islandHalf = 0.4f;
+            crossing.from = -halfWidth;
+            crossing.to = -islandHalf;
+            crossing.refugeEnd = 1;
+            crossings_.push_back(crossing);
+            crossing.from = islandHalf;
+            crossing.to = halfWidth;
+            crossing.refugeEnd = 0;
+            crossings_.push_back(crossing);
+        }
+    }
 }
 
 void RoadNetwork::connect(std::size_t a, int armA, std::size_t b, int armB)

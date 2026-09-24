@@ -48,6 +48,23 @@ enum class TrafficPhase
 
 inline constexpr std::size_t noRoute = std::numeric_limits<std::size_t>::max();
 
+// What the walkers tell the traffic about one crossing, every step.
+struct CrossingState
+{
+    int waiting = 0;             // at the kerb (or on the island), wanting to cross
+    int onBand = 0;              // on their way over it
+    float clearSeconds = 0.0f;   // until the last of those is across
+};
+
+// The walkers' lights at a signalised crossing.
+enum class WalkLight
+{
+    None,       // a zebra with no lights
+    Walk,       // the green figure: start crossing
+    Flashing,   // the red figure flashing: finish crossing, do not start
+    DontWalk
+};
+
 struct Vehicle
 {
     std::size_t id = 0;
@@ -97,6 +114,12 @@ struct Vehicle
     std::vector<std::size_t> claims;
 
     float stoppedSeconds = 0.0f;
+
+    // How long it has been standing for people on a crossing, or waiting to
+    // cross. After a while it stops giving way to people still at the kerb,
+    // and they let it go first, so a busy crossing cannot hold it for ever.
+    float pedestrianWaitSeconds = 0.0f;
+    bool heldByPedestrians = false;
 
     // Lights: brake lights, and the indicator (-1 left, +1 right, 0 off).
     bool braking = false;
@@ -148,6 +171,10 @@ struct TrafficStats
     std::size_t trips = 0;              // routes completed
     std::size_t busStopsServed = 0;     // times a line bus opened its doors at a stop
     std::vector<double> junctionSeconds;   // vehicle-seconds spent on each junction's routes
+    // Times a vehicle that was still moving faster than 1 m/s had to be held
+    // back by the safety net short of an occupied crossing: a stop harder
+    // than any driver would make. The rules are meant to keep this at 0.
+    std::size_t crossingHardStops = 0;
 };
 
 // Where every lane stops, for painting the lines where the cars really stop.
@@ -174,7 +201,6 @@ public:
 
     void update(float dt);
     void reset();
-    void advancePhase();   // every signalised junction moves on one phase
 
     const RoadNetwork& network() const { return network_; }
     const std::vector<Vehicle>& vehicles() const { return vehicles_; }
@@ -209,6 +235,26 @@ public:
     // Every active AI body as it stands now, for the player's collisions.
     void bodies(std::vector<OrientedBox>& out) const;
 
+    // ---- Pedestrian crossings (plan section 4.6) ------------------------
+    // Walkers on a crossing never wait for anything; the traffic keeps out
+    // of their way. A vehicle stops short of a crossing someone is on; one
+    // about to turn across a crossing where people wait (at a zebra, or at
+    // WALK) gives way before it enters the junction; and on the approach to
+    // a zebra, drivers who can comfortably stop let waiting people over.
+    const std::vector<Crossing>& crossings() const { return network_.crossings(); }
+    // From the walkers, once a step.
+    void setCrossingStates(const std::vector<CrossingState>& states);
+    const std::vector<CrossingState>& crossingStates() const { return crossingStates_; }
+    // As far as the lights go, people may start over it now: WALK, or a zebra.
+    bool walkAllowed(std::size_t crossing) const;
+    WalkLight walkLight(std::size_t crossing) const;
+    // And as far as the traffic goes: no vehicle is on it or already turning
+    // onto it, and every vehicle heading for it can still stop comfortably
+    // before it (or is held at its line until it is clear).
+    bool crossingClear(std::size_t crossing) const { return crossingBlocker(crossing) == nullptr; }
+    // The vehicle that keeps the crossing from being clear, and why.
+    const Vehicle* crossingBlocker(std::size_t crossing, const char** reason = nullptr) const;
+
     // Geometry and rule checks that need no OpenGL context. Used by --self-test.
     bool selfTest(std::string& report) const;
 
@@ -242,6 +288,18 @@ private:
     {
         std::size_t conflict = 0;
         int side = 0;
+    };
+
+    // A crossing on a route. While the vehicle's centre is between `in` and
+    // `out`, its body (with a margin) is over the band (with a margin).
+    // `afterLine`: the crossing lies beyond where the vehicle waits to enter
+    // the junction, so it is only ever reached after committing.
+    struct CrossingRef
+    {
+        std::size_t crossing = 0;
+        float in = 0.0f;
+        float out = 0.0f;
+        bool afterLine = false;
     };
 
     // Where a vehicle shows its indicator on a route: from `from` to `to`
@@ -306,6 +364,10 @@ private:
         // A stop of the bus line on this route: where the bus centre stands
         // (route distance), or below zero for none.
         float busStop = -1.0f;
+
+        // Per size class: every crossing the body passes over, as the
+        // interval of route distance in which it would touch the band.
+        std::array<std::vector<CrossingRef>, sizeClassCount> crossings;
     };
 
     // Two routes whose vehicles would touch somewhere near the middle. The
@@ -328,6 +390,11 @@ private:
     {
         TrafficPhase phase = TrafficPhase::NorthSouthLeftArrow;
         float elapsed = 0.0f;
+        // The green is due to end but people are still crossing with it: the
+        // walkers' lights flash (nobody new may start) and the green holds
+        // until they will be over before the crossing traffic gets its turn.
+        bool walkClosed = false;
+        float heldSeconds = 0.0f;
     };
 
     // Where a size class's body stands at one route distance.
@@ -375,6 +442,7 @@ private:
     void buildConflicts();
     void finishRoutes();
     void buildBusLine();
+    void buildCrossingRefs();
 
     // --- placement and routing
     void placeVehiclesInTown();
@@ -430,9 +498,18 @@ private:
     };
     GuestLimit guestAhead(std::size_t vehicleIndex) const;
 
+    // The nearest crossing the vehicle must stop short of: one somebody is
+    // on, or a zebra where somebody waits that it can comfortably stop for.
+    // `gap` is how far its centre may still move.
+    GuestLimit crossingAhead(std::size_t vehicleIndex) const;
+    // Whether people at a crossing beyond the line hold the vehicle there.
+    bool pedestriansHold(const Vehicle& vehicle) const;
+    std::vector<CrossingState> crossingStates_;
+
     // Scratch space for one simulation step, kept so a step never allocates.
     std::vector<Leader> leaders_;
     std::vector<GuestLimit> guestLimits_;
+    std::vector<GuestLimit> crossingLimits_;
     std::vector<std::size_t> order_;
 
     Leader findLeader(std::size_t vehicleIndex) const;
@@ -457,6 +534,9 @@ private:
     // --- signals
     bool signalDemand(std::size_t junction, bool northSouth, bool leftTurnsOnly) const;
     bool signalPhaseOver(std::size_t junction) const;
+    // Everyone crossing with the ending green will be over before the
+    // crossing traffic's green begins.
+    bool walkersClear(std::size_t junction, bool northSouth) const;
     void advancePhase(std::size_t junction);
 
     // --- stats

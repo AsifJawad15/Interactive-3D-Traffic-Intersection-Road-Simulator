@@ -90,7 +90,8 @@ void Camera::processMouse(float xOffset, float yOffset)
     saveFreeCamera();
 }
 
-void Camera::update(float dt, const std::vector<VehiclePose>& vehicles, const PlayerView& player)
+void Camera::update(float dt, const std::vector<VehiclePose>& vehicles, const PlayerView& player,
+                    const std::vector<PedestrianPose>& pedestrians)
 {
     // A stalled frame (window dragged, breakpoint) must not fling the camera.
     dt = glm::clamp(dt, 0.0f, 0.25f);
@@ -157,6 +158,35 @@ void Camera::update(float dt, const std::vector<VehiclePose>& vehicles, const Pl
             followSettled_ = true;
         }
         position_ = smoothDamp(position_, desiredPosition, followVelocity_, 0.18f, dt);
+        front_ = glm::normalize(target - position_);
+        return;
+    }
+
+    if (onPedestrian() && !pedestrians.empty())
+    {
+        followedPedestrianIndex_ %= pedestrians.size();
+        const PedestrianPose& person = pedestrians[followedPedestrianIndex_];
+        const glm::vec3 forward = headingVector(person.motion.yawDegrees);
+        if (mode_ == CameraMode::PedestrianEyes)
+        {
+            // Their eyes, turning with their head: looking both ways at the
+            // kerb, glancing at the traffic on the way over.
+            const float lookYaw = person.motion.yawDegrees + Mannequin::headYaw(person.motion);
+            position_ = person.motion.position + glm::vec3 {0.0f, 0.93f * person.height, 0.0f} + forward * 0.1f;
+            const glm::vec3 look = headingVector(lookYaw);
+            front_ = glm::normalize(look - glm::vec3 {0.0f, 0.08f, 0.0f});
+            followSettled_ = false;
+            return;
+        }
+        // Over the shoulder, a few steps behind.
+        const glm::vec3 desiredPosition = person.motion.position - forward * 3.4f + glm::vec3 {0.0f, 2.1f, 0.0f};
+        const glm::vec3 target = person.motion.position + forward * 2.0f + glm::vec3 {0.0f, 1.1f, 0.0f};
+        if (!followSettled_)
+        {
+            followVelocity_ = glm::vec3 {0.0f};
+            followSettled_ = true;
+        }
+        position_ = smoothDamp(position_, desiredPosition, followVelocity_, 0.3f, dt);
         front_ = glm::normalize(target - position_);
         return;
     }
@@ -287,6 +317,29 @@ void Camera::nextFollow(std::size_t vehicleCount)
     }
 }
 
+void Camera::nextPedestrian(std::size_t pedestrianCount)
+{
+    if (pedestrianCount == 0)
+        return;
+    leaveFree();
+    if (onPedestrian())
+        followedPedestrianIndex_ = (followedPedestrianIndex_ + 1) % pedestrianCount;
+    else
+    {
+        mode_ = CameraMode::Pedestrian;
+        followedPedestrianIndex_ %= pedestrianCount;
+    }
+    followSettled_ = false;
+}
+
+void Camera::togglePedestrianEyes()
+{
+    if (!onPedestrian())
+        return;
+    mode_ = mode_ == CameraMode::Pedestrian ? CameraMode::PedestrianEyes : CameraMode::Pedestrian;
+    followSettled_ = false;
+}
+
 void Camera::toggleDriverView(std::size_t vehicleCount)
 {
     if (vehicleCount == 0)
@@ -376,6 +429,8 @@ std::string Camera::modeName() const
     case CameraMode::PlayerChase: return "YOUR CAR - CHASE";
     case CameraMode::PlayerSeat: return "YOUR CAR - DRIVER VIEW";
     case CameraMode::OnFoot: return "ON FOOT";
+    case CameraMode::Pedestrian: return "FOLLOW PERSON " + std::to_string(followedPedestrianIndex_ + 1);
+    case CameraMode::PedestrianEyes: return "EYES OF PERSON " + std::to_string(followedPedestrianIndex_ + 1);
     }
     return "UNKNOWN";
 }

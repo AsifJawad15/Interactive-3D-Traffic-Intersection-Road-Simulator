@@ -7,6 +7,7 @@ in vec3 vGouraudDiffuse;
 in vec3 vGouraudSpecular;
 in vec4 vColor;
 flat in float vSeed;
+flat in float vGlow;
 
 uniform sampler2D uDiffuseTexture;
 
@@ -192,6 +193,7 @@ void main()
 
     result += uEmissiveColor * uEmissiveStrength * mix(vec3(1.0), texel.rgb * paint, uEmissiveTextured);
     result += windowGlow;
+    result += paint * vGlow * uEmissiveStrength;
     result = applyFog(result, vWorldPosition, uViewPosition);
     if (uHaze > 0.0)
     {

@@ -202,6 +202,7 @@ Scene::Scene(const TrafficSystem& traffic, const World& world)
     buildStreetLamps(traffic.network());
     buildSigns();
     buildBusShelters();
+    buildWalkSignals();
 }
 
 void Scene::buildSigns()
@@ -288,6 +289,8 @@ void Scene::render(
     const std::vector<VehiclePose>& vehicles,
     const PlayerView& player,
     PlayerDrawMode playerDrawMode,
+    const std::vector<PedestrianPose>& pedestrians,
+    const std::vector<WalkerLook>& looks,
     const DayNight& dayNight,
     int shadingMode,
     bool driverView,
@@ -312,6 +315,7 @@ void Scene::render(
     shader_.setFloat("uAlphaCutoff", 0.0f);
     shader_.setFloat("uSway", 0.0f);
     shader_.setFloat("uHaze", 0.0f);
+    shader_.setFloat("uInstanced", 0.0f);
 
     // This frame's lights: the 32 that matter most of the street lamps, the
     // neon spill and the billboard glow, with the four Lab 3 lamps of the
@@ -367,6 +371,7 @@ void Scene::render(
     drawBillboards(night);
     drawNeonSigns(night);
     drawSignals(traffic);
+    drawWalkSignals(traffic);
     drawGiveWaySigns();
 
     // Every vehicle in view. A vehicle whose whole body is outside the view
@@ -434,8 +439,10 @@ void Scene::render(
         vehicleLooks_.collect(car, lamps, vehicleParts_);
     }
     drawVehicleParts();
-    if (player.walking && playerDrawMode != PlayerDrawMode::OwnEyes)
-        drawWalker(player);
+
+    // The people, and you on foot unless you look through your own eyes.
+    drawPeople(pedestrians, looks, player, player.walking && playerDrawMode != PlayerDrawMode::OwnEyes,
+               cameraPosition, viewProjection);
 }
 
 void Scene::drawMesh(
@@ -1013,20 +1020,105 @@ void Scene::drawBusShelters(bool illuminated)
     }
 }
 
-void Scene::drawWalker(const PlayerView& player)
+void Scene::buildWalkSignals()
 {
-    // You, seen from outside: a simple figure 1.8 m tall.
-    glm::mat4 parent = glm::translate(glm::mat4(1.0f), player.walkerPosition);
-    parent = glm::rotate(parent, glm::radians(player.walkerYawDegrees), {0.0f, 1.0f, 0.0f});
-    for (float side : {-1.0f, 1.0f})
+    // Every walkers' light in the city: a slim pole and a dark housing,
+    // baked into two meshes. Its two lamps, the red figure over the green
+    // one, face across the road.
+    MeshBuilder poles;
+    MeshBuilder housings;
+    const MeshData post = Mesh::cylinderData(10);
+    const MeshData box = Mesh::beveledCubeData(0.1f);
+    for (const WalkSignal& signal : world_.walkSignals())
     {
-        drawBeveledCube(glm::scale(glm::translate(parent, {side * 0.11f, 0.45f, 0.0f}), {0.16f, 0.90f, 0.20f}),
-                        {0.10f, 0.12f, 0.20f}, white_, {1, 1}, 20.0f);
-        drawBeveledCube(glm::scale(glm::translate(parent, {side * 0.29f, 1.18f, 0.0f}), {0.12f, 0.62f, 0.14f}),
-                        {0.08f, 0.55f, 0.72f}, white_, {1, 1}, 20.0f);
+        const glm::mat4 frame = facingFrame({signal.foot.x, RoadNetwork::kerbTopY, signal.foot.y}, signal.facingDegrees);
+        poles.append(post, glm::scale(glm::translate(frame, {0.0f, 1.35f, 0.0f}), {0.09f, 2.7f, 0.09f}));
+        housings.append(box, glm::scale(glm::translate(frame, {0.0f, 2.55f, 0.0f}), {0.36f, 0.74f, 0.26f}));
     }
-    drawBeveledCube(glm::scale(glm::translate(parent, {0.0f, 1.20f, 0.0f}), {0.46f, 0.66f, 0.26f}),
-                    {0.08f, 0.55f, 0.72f}, white_, {1, 1}, 20.0f);
-    drawBeveledCube(glm::scale(glm::translate(parent, {0.0f, 1.66f, 0.02f}), {0.22f, 0.24f, 0.22f}),
-                    {0.86f, 0.66f, 0.52f}, white_, {1, 1}, 20.0f);
+    walkSignalPoles_ = poles.build();
+    walkSignalHousings_ = housings.build();
+    walkSignalLens_ = Mesh::makeBeveledCube(0.15f);
+}
+
+void Scene::drawWalkSignals(const TrafficSystem& traffic)
+{
+    if (world_.walkSignals().empty())
+        return;
+    const glm::mat4 identity(1.0f);
+    drawMesh(walkSignalPoles_, identity, {0.07f, 0.08f, 0.09f}, white_, {1.0f, 1.0f}, 30.0f, glm::vec3{0.0f});
+    drawMesh(walkSignalHousings_, identity, {0.03f, 0.035f, 0.04f}, white_, {1.0f, 1.0f}, 24.0f, glm::vec3{0.0f});
+
+    // The lamps: red (don't walk) above, green (walk) below; the red one
+    // flashes while the green is over but people are still crossing.
+    const bool blink = std::fmod(elapsedSeconds_, 1.0f) < 0.5f;
+    walkLenses_.clear();
+    for (const WalkSignal& signal : world_.walkSignals())
+    {
+        const WalkLight light = traffic.walkLight(signal.crossing);
+        const bool red = light == WalkLight::DontWalk || (light == WalkLight::Flashing && blink);
+        const bool green = light == WalkLight::Walk;
+        const glm::mat4 frame = facingFrame({signal.foot.x, RoadNetwork::kerbTopY, signal.foot.y}, signal.facingDegrees);
+        InstanceData lens;
+        lens.model = glm::scale(glm::translate(frame, {0.0f, 2.73f, 0.135f}), {0.25f, 0.25f, 0.03f});
+        lens.color = red ? glm::vec4{1.0f, 0.24f, 0.07f, 0.9f} : glm::vec4{0.16f, 0.035f, 0.02f, 0.0f};
+        walkLenses_.push_back(lens);
+        lens.model = glm::scale(glm::translate(frame, {0.0f, 2.37f, 0.135f}), {0.25f, 0.25f, 0.03f});
+        lens.color = green ? glm::vec4{0.45f, 1.0f, 0.70f, 0.9f} : glm::vec4{0.03f, 0.12f, 0.07f, 0.0f};
+        walkLenses_.push_back(lens);
+    }
+    drawInstances(walkSignalLens_, walkLenses_, 60.0f, false);
+}
+
+void Scene::drawInstances(const Mesh& mesh, const std::vector<InstanceData>& instances, float shininess, bool matte)
+{
+    if (instances.empty())
+        return;
+    people_.buffer().upload(instances);
+    shader_.setFloat("uInstanced", 1.0f);
+    shader_.setVec3("uBaseColor", glm::vec3{1.0f});
+    shader_.setVec3("uEmissiveColor", glm::vec3{0.0f});
+    shader_.setVec2("uUvScale", {1.0f, 1.0f});
+    shader_.setFloat("uShininess", shininess);
+    shader_.setFloat("uWaveAmplitude", 0.0f);
+    shader_.setFloat("uEmissiveTextured", 0.0f);
+    white_.bind(0);
+    (matte ? matte_ : white_).bind(1);
+    mesh.drawInstanced(people_.buffer(), instances.size());
+    shader_.setFloat("uInstanced", 0.0f);
+}
+
+void Scene::drawPeople(const std::vector<PedestrianPose>& pedestrians, const std::vector<WalkerLook>& looks,
+                       const PlayerView& player, bool drawPlayer, const glm::vec3& cameraPosition,
+                       const glm::mat4& viewProjection)
+{
+    people_.begin(cameraPosition, viewProjection);
+    people_.addCrowd(pedestrians, looks);
+    if (drawPlayer)
+    {
+        // You: the same figure as everyone else, in a teal jacket.
+        static const WalkerLook you = []
+        {
+            WalkerLook look;
+            look.height = Player::playerHeight;
+            look.skin = {0.86f, 0.66f, 0.52f};
+            look.hair = {0.10f, 0.07f, 0.05f};
+            look.top = {0.08f, 0.55f, 0.72f};
+            look.trousers = {0.10f, 0.12f, 0.20f};
+            look.shoes = {0.90f, 0.90f, 0.88f};
+            return look;
+        }();
+        WalkerMotion motion;
+        motion.position = player.walkerPosition;
+        motion.yawDegrees = player.walkerYawDegrees;
+        motion.speed = player.walkerSpeed;
+        motion.phase = player.walkerPhase;
+        motion.clock = elapsedSeconds_;
+        motion.lock[0] = player.walkerFeet[0];
+        motion.lock[1] = player.walkerFeet[1];
+        const World& world = world_;
+        people_.addPerson(you, motion, [&world](glm::vec2 point) { return world.surfaceHeight(point); });
+    }
+    for (std::size_t shape = 0; shape < bodyShapeCount; ++shape)
+        drawInstances(people_.mesh(shape), people_.instances(shape), PedestrianRenderer::shininess(shape),
+                      PedestrianRenderer::matte(shape));
 }

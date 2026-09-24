@@ -175,6 +175,16 @@ struct GiveWaySign
     float yawDegrees = 0.0f;
 };
 
+// The walkers' lights at each end of a signalised crossing: a short pole
+// just beyond the band, its lamps facing across the road at the people
+// waiting on the other side.
+struct WalkSignal
+{
+    std::size_t crossing = 0;
+    glm::vec2 foot {0.0f};
+    float facingDegrees = 0.0f;
+};
+
 // A roadside billboard on two posts. At night its face is lit from behind,
 // except for the one at the central crossroads: that one is lit from the
 // front by a small lamp on an arm below it - the Lab 3 spot light.
@@ -239,6 +249,7 @@ public:
     const std::vector<RoadSign>& roadSigns() const { return roadSigns_; }
     const std::vector<SignalHead>& signalHeads() const { return signalHeads_; }
     const std::vector<GiveWaySign>& giveWaySigns() const { return giveWaySigns_; }
+    const std::vector<WalkSignal>& walkSignals() const { return walkSignals_; }
     const std::vector<Billboard>& billboards() const { return billboards_; }
     const std::vector<NeonSign>& neonSigns() const { return neonSigns_; }
     const SpotLamp& spotLamp() const { return spotLamp_; }
@@ -299,6 +310,7 @@ private:
     std::vector<RoadSign> roadSigns_;
     std::vector<SignalHead> signalHeads_;
     std::vector<GiveWaySign> giveWaySigns_;
+    std::vector<WalkSignal> walkSignals_;
     std::vector<Billboard> billboards_;
     std::vector<NeonSign> neonSigns_;
     SpotLamp spotLamp_;

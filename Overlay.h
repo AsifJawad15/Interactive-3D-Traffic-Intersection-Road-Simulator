@@ -55,6 +55,11 @@ struct HudExtras
     glm::vec2 playerCar {0.0f};
     float playerCarYawDegrees = 0.0f;
     glm::vec2 walker {0.0f};
+
+    // The people: on the minimap, and how many wait at or are on a crossing.
+    const std::vector<glm::vec2>* people = nullptr;
+    std::size_t peopleWaiting = 0;
+    std::size_t peopleCrossing = 0;
 };
 
 class Overlay

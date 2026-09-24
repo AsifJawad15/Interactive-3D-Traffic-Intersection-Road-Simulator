@@ -6,7 +6,9 @@
 #include "FrameStats.h"
 #include "Framebuffer.h"
 #include "LightManager.h"
+#include "Mannequin.h"
 #include "Overlay.h"
+#include "Pedestrians.h"
 #include "Player.h"
 #include "PostProcess.h"
 #include "Scene.h"
@@ -56,6 +58,8 @@ namespace
         float scale = 1.0f;           // --scale 0.67 renders at 720p inside 1080p
         bool graph = false;           // --graph shows the frame-time graph
         bool fullRate = false;        // --full-rate draws on every refresh
+        float warmSeconds = 0.0f;     // --warm S runs the city S seconds before the first frame
+        bool umbrellas = false;       // --umbrellas: everyone's umbrella up (ready for the rain of Phase 9)
     };
 
     // Views 11 to 13 stage vehicles instead of showing the traffic. 11 and 13
@@ -123,8 +127,19 @@ namespace
     // Views 8 to 10 are the player's: 8 the chase view of your car, 9 the
     // driver view over its bonnet, 10 on foot beside it. Views 11 and 12 look
     // at the staged vehicles above. Views 16 to 19 look at the city dressing.
-    void applyCaptureView(Camera& camera, int view, Player& player, const TrafficSystem& traffic)
+    // Views 20 to 25 look at the people: the crossings at X0 (signals), G (a
+    // zebra) and R1 (a roundabout, with the wait on the island), following a
+    // person and through their eyes, and people waiting at X0 close up.
+    void applyCaptureView(Camera& camera, int view, Player& player, const TrafficSystem& traffic,
+                          const PedestrianSystem& pedestrians)
     {
+        if (view == 23 || view == 24)
+        {
+            camera.nextPedestrian(pedestrians.count());
+            if (view == 24)
+                camera.togglePedestrianEyes();
+            return;
+        }
         if (view == 11 || view == 13)
         {
             // Three-quarter views: from ahead and to the left (11), and from
@@ -183,6 +198,10 @@ namespace
         case 17: camera.setFreePose({125.0f, 3.5f, -4.0f}, -44.0f, -6.0f); break;    // the petrol station
         case 18: camera.setFreePose({-40.0f, 1.8f, -3.5f}, 180.0f, -2.0f); break;    // a shopping street west of X0
         case 19: camera.setFreePose({-103.5f, 2.0f, 25.0f}, 90.0f, -3.0f); break;    // houses and flats north of G
+        case 20: camera.setFreePose({-11.0f, 2.3f, -24.0f}, 36.0f, -7.0f); break;     // X0 south crossing, signals
+        case 21: camera.setFreePose({-76.0f, 2.4f, -13.0f}, 128.0f, -8.0f); break;    // the zebra over G's east arm
+        case 22: camera.setFreePose({64.0f, 2.8f, -14.0f}, 55.0f, -9.0f); break;      // R1 west arm, the island between
+        case 25: camera.setFreePose({6.5f, 1.45f, 23.0f}, -127.0f, -4.0f); break;     // waiting at X0's north crossing
         default: camera.reset(); break;
         }
     }
@@ -191,6 +210,7 @@ namespace
     {
         Camera* camera = nullptr;
         TrafficSystem* traffic = nullptr;
+        PedestrianSystem* pedestrians = nullptr;
         Player* player = nullptr;
         DayNight* dayNight = nullptr;
         int framebufferWidth = 1280;
@@ -304,7 +324,7 @@ namespace
         state->camera->processMouse(xOffset, yOffset);
     }
 
-    void keyCallback(GLFWwindow* window, int key, int, int action, int)
+    void keyCallback(GLFWwindow* window, int key, int, int action, int mods)
     {
         if (action != GLFW_PRESS)
             return;
@@ -318,10 +338,13 @@ namespace
             state->camera->togglePlayer(state->player->view(1.0f));
         else if (key == GLFW_KEY_V && state->camera != nullptr && state->traffic != nullptr)
         {
-            // On your car: chase view <-> driver view. Otherwise the driver
-            // view of the AI car being followed, as before.
+            // On your car: chase view <-> driver view. Following a person:
+            // behind them <-> their eyes. Otherwise the driver view of the AI
+            // car being followed, as before.
             if (state->camera->onPlayer())
                 state->camera->togglePlayerView();
+            else if (state->camera->onPedestrian())
+                state->camera->togglePedestrianEyes();
             else
                 state->camera->toggleDriverView(state->traffic->vehicles().size());
         }
@@ -332,10 +355,11 @@ namespace
         }
         else if (key == GLFW_KEY_M && state->camera != nullptr)
             state->camera->toggleTop();
+        else if (key == GLFW_KEY_TAB && state->camera != nullptr && state->pedestrians != nullptr &&
+                 (mods & GLFW_MOD_SHIFT) != 0)
+            state->camera->nextPedestrian(state->pedestrians->count());
         else if (key == GLFW_KEY_TAB && state->camera != nullptr && state->traffic != nullptr)
             state->camera->nextFollow(state->traffic->vehicles().size());
-        else if (key == GLFW_KEY_G && state->traffic != nullptr)
-            state->traffic->advancePhase();
         else if (key == GLFW_KEY_P)
             state->paused = !state->paused;
         else if (key == GLFW_KEY_H)
@@ -369,6 +393,8 @@ namespace
         {
             state->camera->reset();
             state->traffic->reset();
+            if (state->pedestrians != nullptr)
+                state->pedestrians->reset();
             if (state->player != nullptr)
                 state->player->reset();
             state->dayNight->reset();
@@ -435,33 +461,55 @@ namespace
         return "PHONG";
     }
 
-    // Headless endurance test: runs the city's traffic for simulated minutes
-    // at the real 60 Hz step and checks that no two vehicle bodies ever
-    // overlapped, that nobody was stuck, and that the traffic spread over the
-    // junctions instead of piling up at one.
-    //     OpenGLMiniProject.exe --soak 30 7 [--cars 25] [--trace [T]]
-    int runSoak(float minutes, unsigned int seed, std::size_t cars, float traceFrom, float longestAllowedStop)
+    // Headless endurance test: runs the city's traffic and its people for
+    // simulated minutes at the real 60 Hz step and checks that no two vehicle
+    // bodies ever overlapped, that no vehicle ever touched a person, that
+    // nobody (driver or walker) was stuck, and that the traffic spread over
+    // the junctions instead of piling up at one.
+    //     OpenGLMiniProject.exe --soak 30 7 [--cars 25] [--pedestrians 80] [--trace [T]]
+    int runSoak(float minutes, unsigned int seed, std::size_t cars, std::size_t people, float traceFrom,
+                float longestAllowedStop, bool tracePeople)
     {
         constexpr float step = 1.0f / 60.0f;
         constexpr double largestAllowedShare = 0.35;
+        constexpr float longestAllowedWalkerWait = 90.0f;
         const long long steps = static_cast<long long>(minutes * 60.0f / step);
 
         const auto started = std::chrono::steady_clock::now();
         TrafficSystem traffic(cars, seed);
+        const World world = World::make(traffic.network(), traffic.busStopSites());
+        PedestrianSystem pedestrians(world, traffic, people, seed);
         // --trace [T] prints every vehicle every 2 s, twenty times, starting at
         // simulated second T, or by default from the moment some vehicle has
         // been standing still for too long.
         int traceDumps = traceFrom >= -1.0f ? 20 : 0;
+        int peopleDumps = tracePeople ? 3 : 0;
+        bool overlapDumped = false;
+        float nextPeopleDump = 60.0f;
         long long nextTraceStep = traceFrom >= 0.0f ? static_cast<long long>(traceFrom / step) : 0;
         for (long long index = 0; index < steps; ++index)
         {
             traffic.update(step);
+            pedestrians.update(step, traffic);
             const bool triggered = traceFrom >= 0.0f || traffic.stats().longestStop > longestAllowedStop;
             if (traceDumps > 0 && index >= nextTraceStep && triggered)
             {
                 std::printf("t = %.1f s  %s", index * step, traffic.describe().c_str());
                 nextTraceStep = index + 120;
                 --traceDumps;
+            }
+            // The first time two vehicle bodies touch, what everyone was doing.
+            if (!overlapDumped && traffic.stats().overlapSteps > 0)
+            {
+                overlapDumped = true;
+                std::printf("t = %.2f s: two vehicles touch\n%s", index * step, traffic.describe().c_str());
+            }
+            if (peopleDumps > 0 && pedestrians.stats().longestWait > nextPeopleDump)
+            {
+                std::printf("t = %.1f s: someone has waited %.0f s\n%s%s", index * step, pedestrians.stats().longestWait,
+                            traffic.describe().c_str(), pedestrians.describe(traffic).c_str());
+                nextPeopleDump += 15.0f;
+                --peopleDumps;
             }
         }
         const double wallSeconds = std::chrono::duration<double>(
@@ -487,10 +535,14 @@ namespace
             buses += vehicle.lineBus && vehicle.active ? 1 : 0;
         const bool busesRan = stats.busStopsServed >= buses * static_cast<std::size_t>(minutes);
 
+        const PedestrianStats& walking = pedestrians.stats();
+        const bool peoplePassed = walking.overlapSteps == 0 && walking.longestWait <= longestAllowedWalkerWait &&
+                                  walking.startsAgainstLights == 0 && stats.crossingHardStops == 0 &&
+                                  (people == 0 || walking.crossingsMade > 0);
         const bool passed = stats.overlapSteps == 0 &&
                             stats.longestStop <= longestAllowedStop &&
                             share <= largestAllowedShare &&
-                            stats.trips > 0 && busesRan;
+                            stats.trips > 0 && busesRan && peoplePassed;
 
         std::printf(
             "CITY seed %-5u cars %2zu  %5.1f min | overlaps %zu | closest gap %.2f m | longest stop %5.1f s | "
@@ -499,8 +551,18 @@ namespace
             stats.longestStop, stats.trips, stats.busStopsServed,
             traffic.network().junctions()[busiest].name.c_str(), share * 100.0,
             wallSeconds, passed ? "PASS" : "FAIL");
+        std::printf(
+            "     people %3zu | crossings made %5zu | vehicle-person overlaps %zu | closest vehicle %.2f m | "
+            "longest wait %5.1f s | hard stops at crossings %zu | starts against the lights %zu\n",
+            people, walking.crossingsMade, walking.overlapSteps,
+            walking.closestVehicleGap > 1.0e8f ? 0.0f : walking.closestVehicleGap, walking.longestWait,
+            stats.crossingHardStops, walking.startsAgainstLights);
+        if (!walking.firstTouch.empty())
+            std::printf("     first touch: %s\n", walking.firstTouch.c_str());
+        if (!walking.longestWaitAt.empty())
+            std::printf("     longest wait: %s\n", walking.longestWaitAt.c_str());
         if (!passed)
-            std::printf("%s", traffic.describe().c_str());
+            std::printf("%s%s", traffic.describe().c_str(), pedestrians.describe(traffic).c_str());
         return passed ? EXIT_SUCCESS : EXIT_FAILURE;
     }
 
@@ -911,6 +973,7 @@ namespace
 
             std::vector<Guest> guests;
             std::vector<OrientedBox> bodies;
+            const std::vector<PedestrianPose> noPeople;
             int target = 1;
             int cornersPassed = 0;
             std::size_t aiIntoPlayer = 0;
@@ -996,8 +1059,8 @@ namespace
                 const float alpha = backlog / step;
                 traffic.interpolatePoses(alpha, poses);
                 const PlayerView view = player.view(alpha);
-                seat.update(frameSeconds, poses, view);
-                chase.update(frameSeconds, poses, view);
+                seat.update(frameSeconds, poses, view, noPeople);
+                chase.update(frameSeconds, poses, view, noPeople);
 
                 // Judder: how much the camera's speed changes from frame to
                 // frame, relative to how fast it moves (as --motion-test).
@@ -1027,6 +1090,105 @@ namespace
                         "ring road with 36 AI cars", laps, testSeconds, aiIntoPlayer, overlapAfterStep,
                         player.worldContacts(), slowestSeconds, seatScore, chaseScore, passed ? "PASS" : "FAIL");
         }
+        return allPassed ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+
+    // Headless check of the walking figure (Phase 7). At every speed from a
+    // stroll to a jog, a foot on the ground must stay exactly where it was
+    // put down (heel and ball, as the foot rolls), the leg must reach it,
+    // and no sole may sink into the ground or float above it while planted.
+    // Then stepping down and up a kerb, and speeding up from a standstill to
+    // a jog through the whole walk-to-jog blend with no jump in the pose.
+    //     OpenGLMiniProject.exe --walk-test
+    int runWalkTest()
+    {
+        constexpr float dt = 1.0f / 240.0f;
+        constexpr float onGround = 0.004f;   // a heel or ball this close to the ground touches it
+        WalkerLook look;
+        bool allPassed = true;
+
+        struct Result
+        {
+            double slide = 0.0;       // metres a touching heel or ball moved along the ground
+            double travel = 0.0;      // metres walked meanwhile
+            float sinking = 0.0f;     // deepest any sole went below the ground
+            float floating = 0.0f;    // highest a planted foot's lower sole point stood off the flat ground
+            float reach = 0.0f;       // largest miss of a planted ankle's target
+            float footSpeed = 0.0f;   // fastest an ankle moved in one frame, m/s
+        };
+        const auto walk = [&](float fromSpeed, float toSpeed, float seconds, const GroundHeight& ground, bool flat)
+        {
+            Result result;
+            WalkerMotion motion;
+            MannequinPose pose;
+            MannequinPose previous;
+            bool havePrevious = false;
+            const int frames = static_cast<int>(seconds / dt);
+            for (int frame = 0; frame < frames; ++frame)
+            {
+                motion.speed = glm::mix(fromSpeed, toSpeed, static_cast<float>(frame) / static_cast<float>(frames));
+                const float step = motion.speed * dt;
+                motion.position.z += step;
+                motion.phase = std::fmod(motion.phase + step / Mannequin::stride(motion.speed, look.height), 1.0f);
+                motion.clock += dt;
+                motion.stateSeconds += dt;
+                Mannequin::plantFeet(look, motion);
+                Mannequin::pose(look, motion, ground, pose);
+                for (int side = 0; side < 2; ++side)
+                {
+                    const glm::vec3 points[2] = {pose.heel[side], pose.ball[side]};
+                    for (int which = 0; which < 2; ++which)
+                    {
+                        const glm::vec3& point = points[which];
+                        const float groundHere = ground({point.x, point.z});
+                        result.sinking = std::max(result.sinking, groundHere - point.y);
+                        const glm::vec3& before = which == 0 ? previous.heel[side] : previous.ball[side];
+                        if (havePrevious && point.y - groundHere < onGround &&
+                            before.y - ground({before.x, before.z}) < onGround)
+                            result.slide += glm::length(glm::vec2 {point.x - before.x, point.z - before.z});
+                    }
+                    if (pose.planted[side])
+                    {
+                        result.reach = std::max(result.reach, glm::length(pose.ankle[side] - pose.ankleTarget[side]));
+                        if (flat)
+                        {
+                            const float lowest = std::min(pose.heel[side].y, pose.ball[side].y);
+                            result.floating = std::max(result.floating, lowest - ground({pose.ankle[side].x, pose.ankle[side].z}));
+                        }
+                    }
+                    if (havePrevious)
+                        result.footSpeed = std::max(result.footSpeed, glm::length(pose.ankle[side] - previous.ankle[side]) / dt);
+                }
+                result.travel += step;
+                previous = pose;
+                havePrevious = true;
+            }
+            return result;
+        };
+        const auto report = [&allPassed](const char* name, const Result& result, float topSpeed)
+        {
+            const float slideShare = result.travel > 0.0 ? static_cast<float>(result.slide / result.travel) : 0.0f;
+            const bool passed = slideShare <= 0.02f && result.sinking <= 0.01f && result.floating <= 0.015f &&
+                                result.reach <= 0.01f && result.footSpeed <= 5.0f * topSpeed + 2.0f;
+            allPassed = allPassed && passed;
+            std::printf("%-30s | feet slide %.2f%% of the distance | sink %.3f m | float %.3f m | reach miss %.3f m | "
+                        "fastest foot %4.1f m/s | %s\n",
+                        name, 100.0f * slideShare, result.sinking, result.floating, result.reach, result.footSpeed,
+                        passed ? "PASS" : "FAIL");
+        };
+
+        const GroundHeight flat = [](glm::vec2) { return RoadNetwork::kerbTopY; };
+        for (const float speed : {0.8f, 1.2f, 1.5f, 2.0f, 2.4f, 3.0f})
+        {
+            char name[48];
+            std::snprintf(name, sizeof(name), "%s at %.1f m/s", speed < 1.9f ? "walking" : (speed < 2.7f ? "walk-jog blend" : "jogging"), speed);
+            report(name, walk(speed, speed, 6.0f, flat, true), speed);
+        }
+        const GroundHeight kerbDown = [](glm::vec2 point) { return point.y < 4.0f ? RoadNetwork::kerbTopY : RoadNetwork::roadY; };
+        const GroundHeight kerbUp = [](glm::vec2 point) { return point.y < 4.0f ? RoadNetwork::roadY : RoadNetwork::kerbTopY; };
+        report("down a kerb at 1.4 m/s", walk(1.4f, 1.4f, 5.5f, kerbDown, false), 1.4f);
+        report("up a kerb at 1.4 m/s", walk(1.4f, 1.4f, 5.5f, kerbUp, false), 1.4f);
+        report("standing to jogging in 8 s", walk(0.0f, 3.2f, 8.0f, flat, true), 3.2f);
         return allPassed ? EXIT_SUCCESS : EXIT_FAILURE;
     }
 }
@@ -1082,14 +1244,24 @@ int main(int argc, char** argv)
                     shelterFailures == 0 ? "all on the sidewalk and clear of every other thing" : "FAILED");
         passed = passed && shelterFailures == 0 && !world.busShelters().empty();
         passed = checkCity(world) && passed;
+
+        // The sidewalks and crossings the people walk.
+        const PedestrianSystem people(world, traffic, 0);
+        std::string walkReport;
+        const bool walksPassed = people.selfTest(walkReport);
+        std::cout << walkReport;
+        passed = passed && walksPassed;
         return passed ? EXIT_SUCCESS : EXIT_FAILURE;
     }
 
     std::size_t vehicleCount = 36;   // the closed 400 m city holds up to 40 (tested by --soak)
+    std::size_t pedestrianCount = 80;
     for (int index = 1; index + 1 < argc; ++index)
     {
         if (std::strcmp(argv[index], "--cars") == 0)
             vehicleCount = static_cast<std::size_t>(std::clamp(std::atoi(argv[index + 1]), 1, 40));
+        if (std::strcmp(argv[index], "--pedestrians") == 0)
+            pedestrianCount = static_cast<std::size_t>(std::clamp(std::atoi(argv[index + 1]), 0, 150));
     }
 
     for (int index = 1; index < argc; ++index)
@@ -1113,7 +1285,10 @@ int main(int argc, char** argv)
                     traceFrom = static_cast<float>(std::atof(argv[other + 1]));
             }
         }
-        return runSoak(std::max(minutes, 0.1f), seed, vehicleCount, traceFrom, stopLimit);
+        bool tracePeople = false;
+        for (int other = 1; other < argc; ++other)
+            tracePeople = tracePeople || std::strcmp(argv[other], "--trace-people") == 0;
+        return runSoak(std::max(minutes, 0.1f), seed, vehicleCount, pedestrianCount, traceFrom, stopLimit, tracePeople);
     }
 
     for (int index = 1; index < argc; ++index)
@@ -1124,6 +1299,8 @@ int main(int argc, char** argv)
             return runLightTest();
         if (std::strcmp(argv[index], "--player-test") == 0)
             return runPlayerTest();
+        if (std::strcmp(argv[index], "--walk-test") == 0)
+            return runWalkTest();
     }
 
     for (int index = 1; index < argc; ++index)
@@ -1177,6 +1354,10 @@ int main(int argc, char** argv)
             capture.fullRate = true;
         else if (argument == "--graph")
             capture.graph = true;
+        else if (argument == "--warm" && hasValue)
+            capture.warmSeconds = std::max(0.0f, static_cast<float>(std::atof(argv[++index])));
+        else if (argument == "--umbrellas")
+            capture.umbrellas = true;
         else if (argument == "--fullscreen")
             startFullscreen = true;
     }
@@ -1273,11 +1454,13 @@ int main(int argc, char** argv)
         const World world = World::make(traffic.network(), traffic.busStopSites());
         const double citySeconds = secondsSince(cityStart);
         Player player(world);
+        PedestrianSystem pedestrians(world, traffic, pedestrianCount);
         DayNight dayNight;
         RenderScaler scaler;
         ApplicationState state;
         state.camera = &camera;
         state.traffic = &traffic;
+        state.pedestrians = &pedestrians;
         state.player = &player;
         state.dayNight = &dayNight;
         state.scaler = &scaler;
@@ -1300,7 +1483,7 @@ int main(int argc, char** argv)
 
         if (capture.enabled)
         {
-            applyCaptureView(camera, capture.view, player, traffic);
+            applyCaptureView(camera, capture.view, player, traffic, pedestrians);
             state.ignoreMouse = true;
             if (capture.hour >= 0.0f)
                 dayNight.setTime(capture.hour);
@@ -1322,7 +1505,25 @@ int main(int argc, char** argv)
         poses.reserve(64);
         std::vector<Guest> guests;
         std::vector<OrientedBox> trafficBodies;
+        std::vector<PedestrianPose> pedestrianPoses;
         PlayerView playerView = player.view(0.0f);
+
+        // A capture can let the city run for a while first, so people are
+        // out waiting at and crossing the roads when the picture is taken.
+        if (capture.enabled && capture.warmSeconds > 0.0f)
+        {
+            const int warmSteps = static_cast<int>(capture.warmSeconds / simulationStep);
+            for (int index = 0; index < warmSteps; ++index)
+            {
+                player.guests(guests);
+                traffic.setGuests(guests);
+                pedestrians.setGuests(guests);
+                traffic.update(simulationStep);
+                pedestrians.update(simulationStep, traffic);
+            }
+        }
+        if (capture.enabled && capture.umbrellas)
+            pedestrians.openUmbrellasNow(1.0f);
 
         // The minimap's fixed parts: every road piece, the roundabouts, and
         // where the signals stand.
@@ -1345,6 +1546,7 @@ int main(int argc, char** argv)
             }
         }
         std::vector<glm::vec2> mapCars;
+        std::vector<glm::vec2> mapPeople;
         std::vector<glm::vec2> mapBuses;
         std::vector<glm::vec2> mapEmergency;
         std::vector<glm::vec3> northSouthColors(signalJunctions.size());
@@ -1383,6 +1585,7 @@ int main(int argc, char** argv)
             scene.render(
                 view, projection, camera.position(),
                 traffic, poses, playerView, playerDrawMode,
+                pedestrianPoses, pedestrians.looks(),
                 dayNight, state.shadingMode,
                 camera.mode() == CameraMode::Driver,
                 camera.followedVehicleIndex(),
@@ -1457,6 +1660,12 @@ int main(int argc, char** argv)
                 extras.playerCar = {playerView.carPosition.x, playerView.carPosition.z};
                 extras.playerCarYawDegrees = playerView.carYawDegrees;
                 extras.walker = {playerView.walkerPosition.x, playerView.walkerPosition.z};
+                mapPeople.clear();
+                for (const PedestrianPose& person : pedestrianPoses)
+                    mapPeople.push_back({person.motion.position.x, person.motion.position.z});
+                extras.people = &mapPeople;
+                extras.peopleWaiting = pedestrians.waitingCount();
+                extras.peopleCrossing = pedestrians.crossingCount();
 
                 overlay.render(
                     outputWidth,
@@ -1480,9 +1689,10 @@ int main(int argc, char** argv)
 
         // Warm-up: draw one complete frame while the window is still hidden.
         traffic.interpolatePoses(0.0f, poses);
+        pedestrians.interpolate(0.0f, pedestrianPoses);
         if (capture.enabled)
             stageCaptureVehicles(capture.view, traffic, poses);
-        camera.update(0.0f, poses, playerView);
+        camera.update(0.0f, poses, playerView, pedestrianPoses);
         renderFrame(0.0f, glfwGetTime());
         glFinish();
 
@@ -1558,8 +1768,11 @@ int main(int argc, char** argv)
                     // pushed out of anything (or anyone) you run into.
                     player.guests(guests);
                     traffic.setGuests(guests);
+                    pedestrians.setGuests(guests);
                     traffic.update(simulationStep);
+                    pedestrians.update(simulationStep, traffic);
                     traffic.bodies(trafficBodies);
+                    pedestrians.bodies(trafficBodies);
                     player.step(simulationStep, playerInput, trafficBodies);
                     dayNight.update(simulationStep);
                     simulationBacklog -= simulationStep;
@@ -1572,10 +1785,11 @@ int main(int argc, char** argv)
             // How far the clock has run into the next step: the blend factor.
             const float alpha = simulationBacklog / simulationStep;
             traffic.interpolatePoses(alpha, poses);
+            pedestrians.interpolate(alpha, pedestrianPoses);
             if (capture.enabled)
                 stageCaptureVehicles(capture.view, traffic, poses);
             playerView = player.view(alpha);
-            camera.update(dt, poses, playerView);
+            camera.update(dt, poses, playerView, pedestrianPoses);
             scaler.update(frameSeconds, frameStats.frameMs(), frameStats.gpuMs());
 
             renderFrame(alpha, currentTime);

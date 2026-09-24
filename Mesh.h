@@ -1,6 +1,7 @@
 #pragma once
 
 #include <glad/glad.h>
+#include <glm/mat4x4.hpp>
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
@@ -17,6 +18,32 @@ struct Vertex
     // differently painted things. Alpha carries a per-object number: the
     // seed of a building's lit windows, or how far a leaf sways in the wind.
     glm::vec4 color {1.0f};
+};
+
+// One copy of a mesh in an instanced draw: where it goes, and its colour
+// (multiplying the vertex colour; the alpha is how brightly it glows).
+struct InstanceData
+{
+    glm::mat4 model {1.0f};
+    glm::vec4 color {1.0f, 1.0f, 1.0f, 0.0f};
+};
+
+// A buffer of instances, refilled every frame. It grows as needed and never
+// shrinks, so once warmed up a frame does not reallocate it.
+class InstanceBuffer
+{
+public:
+    InstanceBuffer() = default;
+    ~InstanceBuffer();
+    InstanceBuffer(const InstanceBuffer&) = delete;
+    InstanceBuffer& operator=(const InstanceBuffer&) = delete;
+
+    void upload(const std::vector<InstanceData>& instances);
+    GLuint id() const { return vbo_; }
+
+private:
+    GLuint vbo_ = 0;
+    std::size_t capacity_ = 0;
 };
 
 // Geometry on the CPU side, before it is uploaded. Kept separately so the
@@ -42,6 +69,9 @@ public:
     Mesh& operator=(Mesh&& other) noexcept;
 
     void draw() const;
+    // `count` copies in one draw call, each placed and painted by the
+    // buffer's instances (vertex attributes 4 to 8, one step per copy).
+    void drawInstanced(const InstanceBuffer& instances, std::size_t count) const;
     bool empty() const { return indexCount_ == 0; }
 
     // Draw calls issued since the last reset, for the HUD.

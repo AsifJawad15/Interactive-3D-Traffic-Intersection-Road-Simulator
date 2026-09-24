@@ -178,6 +178,9 @@
     <ClCompile Include="VehicleTypes.cpp" />
     <ClCompile Include="NeonText.cpp" />
     <ClCompile Include="PropRenderer.cpp" />
+    <ClCompile Include="Mannequin.cpp" />
+    <ClCompile Include="Pedestrians.cpp" />
+    <ClCompile Include="PedestrianRenderer.cpp" />
     <ClCompile Include="TreeGenerator.cpp" />
     <ClCompile Include="WorldCity.cpp" />
     <ClCompile Include="VehicleRenderer.cpp" />
@@ -207,6 +210,9 @@
     <ClInclude Include="VehicleTypes.h" />
     <ClInclude Include="NeonText.h" />
     <ClInclude Include="PropRenderer.h" />
+    <ClInclude Include="Mannequin.h" />
+    <ClInclude Include="Pedestrians.h" />
+    <ClInclude Include="PedestrianRenderer.h" />
     <ClInclude Include="TreeGenerator.h" />
     <ClInclude Include="VehicleRenderer.h" />
   </ItemGroup>

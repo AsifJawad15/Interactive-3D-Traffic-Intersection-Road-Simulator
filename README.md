@@ -73,7 +73,7 @@ that `shaders/` and `assets/` resolve. `--cars N` sets the number of cars
 | `F` | Get out of the car / get back in (stand next to it) |
 | `M` | Top view of the whole city, and back |
 | `Tab` | Follow the next AI car |
-| `G` | Advance every traffic signal by one phase |
+| `Shift`+`Tab` | Walk behind the next person; `V` then looks through their eyes |
 | `P` | Pause / resume |
 | `1` `2` `3` | Flat / Gouraud / Phong shading |
 | `T` | Toggle the automatic day–night cycle |
@@ -396,6 +396,40 @@ traffic, and they are drawn blended between steps just like the AI cars.
 
 ---
 
+## The people
+
+80 people (`--pedestrians N`, up to 150) walk the sidewalks round every block,
+keeping to the right, and cross at the 54 zebra crossings (`Pedestrians.cpp`).
+
+* **Walking lines:** each sidewalk has two, one per direction, laid out at
+  start-up and bent round lamp posts, signal poles and shelters. Crossing ends
+  join them into one network that reaches every block.
+* **Crossing:** at signalised junctions people wait for WALK (lights on poles at
+  both ends: green figure, then the red one flashing while the last people are
+  still over). At zebras they go when the traffic lets them. Over a roundabout
+  arm they cross in two halves with a wait on the splitter island. They step
+  out only when no vehicle is on the crossing or already turning onto it, and
+  every vehicle heading for it can still stop comfortably. Once on it, they
+  never stop.
+* **The traffic gives way:** a vehicle never enters a junction while people
+  are on a crossing on its way through, or waiting at one it could stop for.
+  On the approach to a zebra, drivers who can stop comfortably let waiting
+  people over. After a while a waiting driver stops giving way and the people
+  let it go first. Every route over a crossing has a place to wait on its
+  approach lane, where the traffic behind can see it.
+* **The figure (`Mannequin.cpp`):** a mannequin of Bezier-revolution parts on a
+  small skeleton. Its motion is authored as keyframed curves (idle, walk, jog,
+  waiting at the kerb and looking both ways, crossing). Walk and jog are sampled
+  at the same gait phase and blended by speed. States change through a small
+  animation graph with 0.25 s cross-fades. The phase follows the distance
+  walked, and a planted foot is locked where it landed. The legs are placed by
+  two-bone IK on the ground under each foot, so people step up and down kerbs.
+* **Drawing (`PedestrianRenderer.cpp`):** one instanced draw call per body
+  shape (13 for the whole crowd). Far away, poses are refreshed every second or
+  fourth frame. Umbrellas are built but stay closed until the rain of Phase 9
+  (`--umbrellas` opens them for a capture).
+* **You on foot** are drawn as the same figure.
+
 ## The vehicles
 
 Eleven kinds drive the city (`VehicleTypes.cpp`): sedan, hatchback, SUV, taxi,
@@ -448,11 +482,18 @@ These command-line modes run without opening a window:
 ```
 OpenGLMiniProject.exe --self-test
 OpenGLMiniProject.exe --plot
-OpenGLMiniProject.exe --soak 30 1 [--cars 36] [--stop-limit 60] [--trace [T]]
+OpenGLMiniProject.exe --soak 30 1 [--cars 36] [--pedestrians 80] [--stop-limit 60] [--trace [T]] [--trace-people]
 OpenGLMiniProject.exe --motion-test
 OpenGLMiniProject.exe --light-test
 OpenGLMiniProject.exe --player-test
+OpenGLMiniProject.exe --walk-test
 ```
+
+`--walk-test` checks the walking figure: at speeds from a stroll to a jog, and
+stepping down and up a kerb, and speeding up from standing to jogging, a foot on
+the ground must not slide (under 2 % of the distance walked), no sole may sink
+into the ground or float above it, the leg must always reach its foot, and no
+foot may jump from one frame to the next.
 
 `--self-test` checks the whole network (15228 checks), that every bus shelter
 stands on the sidewalk clear of everything else, and the city dressing: every
@@ -492,8 +533,13 @@ truck and car bodies drawn every metre through a turn.
 tests every pair of real vehicle outlines (oriented boxes, separating-axis test)
 every step. It passes when there are no overlaps, no car stood still longer than
 the stop limit (60 s), no junction carries more than 35 % of all traffic, and
-every line bus stopped at a stop at least once a minute.
-`--trace` prints the junction state and why each waiting car is waiting.
+every line bus stopped at a stop at least once a minute. With people (80 by
+default) it also tests every person against every vehicle body each step (there
+must be no touch), counts how long anyone stood waiting (at most 90 s), and
+checks nobody ever stepped out against the lights.
+`--trace` prints the junction state and why each waiting car is waiting;
+`--trace-people` prints everyone at a crossing, the lights, and which vehicle
+keeps it from being clear, when someone has waited a minute.
 The HUD shows the same overlap count live.
 
 `--motion-test` replays the frame loop at 144, 60 and 75 Hz with realistically

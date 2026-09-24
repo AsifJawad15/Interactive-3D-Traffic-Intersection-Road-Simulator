@@ -200,6 +200,23 @@ World World::make(const RoadNetwork& network, const std::vector<BusStopSite>& bu
         }
     }
 
+    // ---- The walkers' lights at the signalised crossings ----------------------
+    // Just beyond the band on the sidewalk, facing across the road.
+    for (std::size_t index = 0; index < network.crossings().size(); ++index)
+    {
+        const Crossing& crossing = network.crossings()[index];
+        if (!crossing.signalised)
+            continue;
+        for (int end = 0; end < 2; ++end)
+        {
+            const float outward = end == 0 ? -1.0f : 1.0f;
+            const float kerb = end == 0 ? crossing.from : crossing.to;
+            const glm::vec2 foot = crossing.point(kerb + 0.6f * outward, crossing.halfWidth + 0.55f);
+            const glm::vec2 facing = crossing.across * -outward;
+            world.walkSignals_.push_back({index, foot, glm::degrees(std::atan2(facing.x, facing.y))});
+        }
+    }
+
     // ---- Bus shelters at the stops of the bus line ----------------------------
     for (std::size_t index = 0; index < busStops.size(); ++index)
         world.busShelters_.push_back({busStops[index].shelter, busStops[index].facingDegrees,
@@ -232,6 +249,8 @@ World World::make(const RoadNetwork& network, const std::vector<BusStopSite>& bu
         world.solidPosts_.push_back({head.foot, 0.16f});
     for (const GiveWaySign& sign : world.giveWaySigns_)
         world.solidPosts_.push_back({sign.foot, 0.12f});
+    for (const WalkSignal& signal : world.walkSignals_)
+        world.solidPosts_.push_back({signal.foot, 0.09f});
     for (const RoadSign& sign : world.roadSigns_)
         world.solidPosts_.push_back({{sign.position.x, sign.position.z}, 0.12f});
     for (const StreetLamp& lamp : world.extraLamps_)

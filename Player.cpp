@@ -1,5 +1,6 @@
 #include "Player.h"
 
+#include "Mannequin.h"
 #include "Route.h"
 
 #include <glm/common.hpp>
@@ -406,6 +407,24 @@ void Player::stepWalker(float dt, const PlayerInput& input, const std::vector<Or
     // Step up onto the kerb and down again smoothly.
     const float ground = world_.surfaceHeight(walker.position);
     walker.height += (ground - walker.height) * std::min(1.0f, dt * 16.0f);
+
+    // The legs keep time with the distance actually covered.
+    const float moved = glm::length(walker.position - previousWalker_.position);
+    walker.speed = moved / dt;
+    walker.phase = std::fmod(walker.phase + moved / Mannequin::stride(walker.speed, playerHeight), 1.0f);
+
+    WalkerLook you;
+    you.height = playerHeight;
+    WalkerMotion motion;
+    motion.position = {walker.position.x, 0.0f, walker.position.y};
+    motion.yawDegrees = walker.yawDegrees;
+    motion.speed = walker.speed;
+    motion.phase = walker.phase;
+    motion.lock[0] = walker.lock[0];
+    motion.lock[1] = walker.lock[1];
+    Mannequin::plantFeet(you, motion);
+    walker.lock[0] = motion.lock[0];
+    walker.lock[1] = motion.lock[1];
 }
 
 PlayerView Player::view(float alpha) const
@@ -429,5 +448,12 @@ PlayerView Player::view(float alpha) const
     const glm::vec2 walkerPosition = glm::mix(previousWalker_.position, walker_.position, alpha);
     result.walkerPosition = {walkerPosition.x, glm::mix(previousWalker_.height, walker_.height, alpha), walkerPosition.y};
     result.walkerYawDegrees = blendAngle(previousWalker_.yawDegrees, walker_.yawDegrees, alpha);
+    result.walkerSpeed = glm::mix(previousWalker_.speed, walker_.speed, alpha);
+    float phaseStep = walker_.phase - previousWalker_.phase;
+    if (phaseStep < -0.5f)
+        phaseStep += 1.0f;
+    result.walkerPhase = std::fmod(previousWalker_.phase + phaseStep * alpha + 1.0f, 1.0f);
+    result.walkerFeet[0] = walker_.lock[0];
+    result.walkerFeet[1] = walker_.lock[1];
     return result;
 }
