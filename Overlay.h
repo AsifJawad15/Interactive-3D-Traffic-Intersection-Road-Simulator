@@ -60,6 +60,49 @@ struct HudExtras
     const std::vector<glm::vec2>* people = nullptr;
     std::size_t peopleWaiting = 0;
     std::size_t peopleCrossing = 0;
+
+    // The time of day: the part of the day it is (0 Morning .. 4 Night),
+    // whether the clock stands on that preset, and the preset names for the
+    // corner buttons.
+    int period = 0;
+    bool onPreset = false;
+    const char* periodName = "";
+    const char* const* presetNames = nullptr;
+    int presetCount = 0;
+
+    // Shadows and headlights, for the status lines.
+    const char* shadowQuality = "";
+    int shadowMaps = 0;
+    float shadowMs = 0.0f;
+    int headlights = 0;
+    bool moonlight = false;
+};
+
+// The clickable time buttons in the top-right corner, as laid out on a
+// screen `screenWidth` pixels wide.
+struct TimeButtons
+{
+    static constexpr float buttonWidth = 100.0f;
+    static constexpr float buttonHeight = 30.0f;
+    static constexpr float gap = 6.0f;
+    static constexpr float top = 14.0f;
+    static constexpr float header = 26.0f;
+    static float left(int screenWidth, int count)
+    {
+        return static_cast<float>(screenWidth) - 24.0f - count * buttonWidth - (count - 1) * gap;
+    }
+    // The button under a point in framebuffer pixels, or -1.
+    static int at(float x, float y, int screenWidth, int count)
+    {
+        const float x0 = left(screenWidth, count);
+        const float y0 = top + header;
+        if (y < y0 || y > y0 + buttonHeight || x < x0)
+            return -1;
+        const int index = static_cast<int>((x - x0) / (buttonWidth + gap));
+        if (index >= count || x - x0 - index * (buttonWidth + gap) > buttonWidth)
+            return -1;
+        return index;
+    }
 };
 
 class Overlay
@@ -101,6 +144,7 @@ private:
     void drawFrameGraph(const PerformanceInfo& performance, int screenWidth, int screenHeight);
     void drawMinimap(const HudExtras& extras, int screenWidth, int screenHeight);
     void drawPlayerPanel(const HudExtras& extras, int screenWidth, int screenHeight);
+    void drawTimePanel(const HudExtras& extras, const std::string& timeText, int screenWidth, int screenHeight);
     void appendRectangle(float x, float y, float width, float height);
     void drawVertices(const glm::vec4& color, int screenWidth, int screenHeight);
 };

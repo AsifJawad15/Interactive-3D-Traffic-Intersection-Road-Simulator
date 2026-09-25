@@ -24,6 +24,14 @@ public:
     void beginGpu();
     void endGpu();
 
+    // Brackets the shadow maps inside the frame, with two GPU timestamps
+    // (a time-elapsed query cannot nest inside the frame's own). A frame
+    // that draws no shadows calls neither, and the time falls to zero.
+    void beginShadows();
+    void endShadows();
+    void noShadows() { smoothedShadowMs_ = 0.0f; }
+    float shadowMs() const { return smoothedShadowMs_; }
+
     void recordFrame(float frameSeconds);
 
     float fps() const { return smoothedFrameMs_ > 0.0f ? 1000.0f / smoothedFrameMs_ : 0.0f; }
@@ -39,6 +47,11 @@ private:
     std::array<GLuint, queryCount> queries_ {};
     std::array<bool, queryCount> pending_ {};
     std::size_t querySlot_ = 0;
+
+    std::array<GLuint, queryCount * 2> shadowQueries_ {};
+    std::array<bool, queryCount> shadowPending_ {};
+    std::size_t shadowSlot_ = 0;
+    float smoothedShadowMs_ = 0.0f;
 
     std::array<float, historySize> frameHistory_ {};
     std::size_t head_ = 0;

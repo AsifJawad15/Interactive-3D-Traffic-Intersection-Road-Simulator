@@ -35,3 +35,46 @@ void addPointLights(vec3 position, vec3 normal, vec3 viewDirection, float shinin
         specular += color * pow(max(dot(viewDirection, reflection), 0.0), shininess) * attenuation * 0.45;
     }
 }
+
+// Headlights, chosen by the same kind of budget: up to 8 cones.
+layout(std140) uniform SpotLightBlock
+{
+    vec4 uConePositionRange[8];    // xyz = position, w = range in metres
+    vec4 uConeDirectionOuter[8];   // xyz = the way the light shines, w = cos(outer angle)
+    vec4 uConeColorInner[8];       // rgb = colour (already faded), w = cos(inner angle)
+    ivec4 uConeCount;              // x = number of cones in use
+};
+
+// A headlight throws its light far, so it uses gentle long-throw attenuation
+// (like the Lab 3 floodlight), again windowed to exactly zero at its range.
+void addSpotLights(vec3 position, vec3 normal, vec3 viewDirection, float shininess,
+                   inout vec3 diffuse, inout vec3 specular)
+{
+    for (int index = 0; index < uConeCount.x; ++index)
+    {
+        vec3 toLight = uConePositionRange[index].xyz - position;
+        float distanceToLight = length(toLight);
+        float range = uConePositionRange[index].w;
+        if (distanceToLight >= range)
+            continue;
+
+        vec3 lightDirection = toLight / max(distanceToLight, 1e-4);
+        float theta = dot(-lightDirection, uConeDirectionOuter[index].xyz);
+        float outer = uConeDirectionOuter[index].w;
+        float inner = uConeColorInner[index].w;
+        float cone = clamp((theta - outer) / max(inner - outer, 1e-4), 0.0, 1.0);
+        if (cone <= 0.0)
+            continue;
+
+        float x = distanceToLight / range;
+        float window = clamp(1.0 - x * x * x * x, 0.0, 1.0);
+        window *= window;
+        float attenuation = cone * cone * window /
+            (1.0 + 0.014 * distanceToLight + 0.0007 * distanceToLight * distanceToLight);
+
+        vec3 color = uConeColorInner[index].rgb;
+        diffuse += color * max(dot(normal, lightDirection), 0.0) * attenuation;
+        vec3 reflection = reflect(-lightDirection, normal);
+        specular += color * pow(max(dot(viewDirection, reflection), 0.0), shininess) * attenuation * 0.45;
+    }
+}

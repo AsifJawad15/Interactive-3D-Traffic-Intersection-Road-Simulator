@@ -60,6 +60,8 @@ namespace
         bool fullRate = false;        // --full-rate draws on every refresh
         float warmSeconds = 0.0f;     // --warm S runs the city S seconds before the first frame
         bool umbrellas = false;       // --umbrellas: everyone's umbrella up (ready for the rain of Phase 9)
+        float glideTo = -1.0f;        // --glide H: the sun starts gliding to H with the first frame
+        ShadowQuality shadows = ShadowQuality::High;   // --shadows high|low|off
     };
 
     // Views 11 to 13 stage vehicles instead of showing the traffic. 11 and 13
@@ -220,6 +222,12 @@ namespace
         int shadingMode = 2;
         bool firstMouseEvent = true;
         bool ignoreMouse = false;
+        // The cursor is shown (and the mouse clicks buttons instead of
+        // turning the view) in the camera modes that do not look with the
+        // mouse, and in the others while Alt is held.
+        bool cursorFree = false;
+        bool hudShown = true;
+        ShadowQuality shadows = ShadowQuality::High;
         double lastMouseX = 0.0;
         double lastMouseY = 0.0;
         bool showFrameGraph = false;
@@ -318,10 +326,34 @@ namespace
         // A capture renders a fixed view, whatever the mouse does. And a jump
         // of hundreds of pixels in one event is the window taking the cursor
         // back (on showing it or regaining focus), not a hand moving: turning
-        // the view by it would snap the camera sideways.
-        if (state->ignoreMouse || std::abs(xOffset) > 300.0f || std::abs(yOffset) > 300.0f)
+        // the view by it would snap the camera sideways. A free cursor is
+        // pointing at buttons, not looking round.
+        if (state->ignoreMouse || state->cursorFree || std::abs(xOffset) > 300.0f || std::abs(yOffset) > 300.0f)
             return;
         state->camera->processMouse(xOffset, yOffset);
+    }
+
+    // A click on one of the time buttons in the top-right corner.
+    void mouseButtonCallback(GLFWwindow* window, int button, int action, int)
+    {
+        ApplicationState* state = stateFrom(window);
+        if (state == nullptr || state->dayNight == nullptr || !state->cursorFree || !state->hudShown ||
+            button != GLFW_MOUSE_BUTTON_LEFT || action != GLFW_PRESS)
+            return;
+        // The cursor is in window coordinates; the HUD is laid out in
+        // framebuffer pixels, which differ on a scaled (high-DPI) display.
+        double x = 0.0;
+        double y = 0.0;
+        glfwGetCursorPos(window, &x, &y);
+        int windowWidth = 1;
+        int windowHeight = 1;
+        glfwGetWindowSize(window, &windowWidth, &windowHeight);
+        const float scaleX = static_cast<float>(state->framebufferWidth) / static_cast<float>(std::max(windowWidth, 1));
+        const float scaleY = static_cast<float>(state->framebufferHeight) / static_cast<float>(std::max(windowHeight, 1));
+        const int preset = TimeButtons::at(static_cast<float>(x) * scaleX, static_cast<float>(y) * scaleY,
+                                           state->framebufferWidth, DayNight::presetCount);
+        if (preset >= 0)
+            state->dayNight->glideToPreset(preset);
     }
 
     void keyCallback(GLFWwindow* window, int key, int, int action, int mods)
@@ -381,6 +413,17 @@ namespace
             state->shadingMode = 1;
         else if (key == GLFW_KEY_3)
             state->shadingMode = 2;
+        else if (key == GLFW_KEY_O && state->dayNight != nullptr)
+            state->dayNight->nextPreset();
+        else if (key == GLFW_KEY_LEFT_BRACKET && state->dayNight != nullptr)
+            state->dayNight->stepHours(-1.0f);
+        else if (key == GLFW_KEY_RIGHT_BRACKET && state->dayNight != nullptr)
+            state->dayNight->stepHours(1.0f);
+        else if (key == GLFW_KEY_F2)
+        {
+            state->shadows = state->shadows == ShadowQuality::High ? ShadowQuality::Low
+                           : state->shadows == ShadowQuality::Low ? ShadowQuality::Off : ShadowQuality::High;
+        }
         else if (key == GLFW_KEY_T && state->dayNight != nullptr)
             state->dayNight->toggleAutomatic();
         else if (key == GLFW_KEY_Y && state->dayNight != nullptr)
@@ -654,6 +697,203 @@ namespace
             std::printf("%3.0f Hz display | judder without interpolation %.3f | with interpolation %.4f | %s\n",
                         refreshRate, scoreStepped, scoreSmooth, passed ? "PASS" : "FAIL");
         }
+        return allPassed ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+
+    // Headless check of the sky (Phase 8): where the sun and moon stand at
+    // the five presets and which way the shadows fall; that gliding from
+    // preset to preset, stepping an hour and the automatic day never jump;
+    // that the light passing from the sun to the moon at dusk (and back at
+    // dawn) happens while it is black; and that the near shadow map follows
+    // a moving camera in whole texels, so shadow edges cannot crawl.
+    //     OpenGLMiniProject.exe --sun-test
+    int runSunTest()
+    {
+        bool allPassed = true;
+        const auto verdict = [&allPassed](bool passed)
+        {
+            allPassed = allPassed && passed;
+            return passed ? "PASS" : "FAIL";
+        };
+        // Compass bearing of a direction over the ground: 0 north, 90 east.
+        const auto bearing = [](float east, float north)
+        {
+            float degrees = glm::degrees(std::atan2(east, north));
+            return degrees < 0.0f ? degrees + 360.0f : degrees;
+        };
+        const auto within = [](float bearingDegrees, float from, float to)
+        {
+            return from <= to ? bearingDegrees >= from && bearingDegrees <= to
+                              : bearingDegrees >= from || bearingDegrees <= to;
+        };
+
+        // 1. The presets.
+        struct Expected
+        {
+            float lowest;          // elevation of the light, degrees
+            float highest;
+            float shadowFrom;      // the bearing the shadows point to
+            float shadowTo;
+            bool lamps;
+            bool moon;
+        };
+        const std::array<Expected, DayNight::presetCount> expected = {{
+            {5.0f, 20.0f, 225.0f, 315.0f, false, false},    // morning: low in the east, shadows west
+            {55.0f, 62.0f, 315.0f, 45.0f, false, false},    // noon: high in the south, short shadows north
+            {25.0f, 50.0f, 20.0f, 80.0f, false, false},     // afternoon: south-west, shadows north-east
+            {2.0f, 10.0f, 60.0f, 120.0f, true, false},      // evening: sunset in the west, long shadows east
+            {15.0f, 60.0f, 0.0f, 360.0f, true, true}        // night: the moon up, lamps on
+        }};
+        DayNight sky;
+        for (int index = 0; index < DayNight::presetCount; ++index)
+        {
+            const TimePreset& preset = DayNight::presets()[static_cast<std::size_t>(index)];
+            const Expected& want = expected[static_cast<std::size_t>(index)];
+            sky.setTime(preset.hours);
+            const glm::vec3 towards = -sky.lightDirection();
+            const glm::vec3 body = sky.moonlit() ? sky.moonVector() : sky.sunVector();
+            const float elevation = glm::degrees(std::asin(glm::clamp(body.y, -1.0f, 1.0f)));
+            const float shadowBearing = bearing(-towards.x, -towards.z);
+            const float perMetre = std::sqrt(std::max(0.0f, 1.0f - body.y * body.y)) / std::max(body.y, 1.0e-3f);
+            const bool passed = elevation >= want.lowest && elevation <= want.highest &&
+                                within(shadowBearing, want.shadowFrom, want.shadowTo) &&
+                                sky.streetLampsOn() == want.lamps && sky.moonlit() == want.moon &&
+                                std::string(sky.periodName()) == preset.name && sky.onPreset() &&
+                                (index != 1 || perMetre < 0.7f);
+            std::printf("%-9s %s | %s %5.1f deg up, bearing %5.1f | shadows point to %5.1f, %5.2f m per metre of height | "
+                        "lamps %s | %s\n",
+                        preset.name, sky.timeText().c_str(), sky.moonlit() ? "moon" : "sun ", elevation,
+                        bearing(body.x, body.z), shadowBearing, perMetre, sky.streetLampsOn() ? "on " : "off",
+                        verdict(passed));
+        }
+
+        // 2. Gliding: O from every preset, and an hour each way. Every
+        // frame (60 Hz) the light may turn only a little, and its colour
+        // may change only a little; where it passes from sun to moon it
+        // must be black.
+        const auto glide = [&](const char* name, float from, auto&& start)
+        {
+            DayNight clock;
+            clock.setTime(from);
+            start(clock);
+            glm::vec3 lastDirection = clock.lightDirection();
+            glm::vec3 lastColor = clock.lightColor();
+            bool lastMoon = clock.moonlit();
+            float largestTurn = 0.0f;
+            float largestColorStep = 0.0f;
+            float colorAtSwitch = 0.0f;
+            int frames = 0;
+            while (clock.gliding() && frames < 1000)
+            {
+                clock.animate(1.0f / 60.0f);
+                ++frames;
+                const glm::vec3 direction = clock.lightDirection();
+                const glm::vec3 color = clock.lightColor();
+                if (clock.moonlit() != lastMoon)
+                    colorAtSwitch = std::max({colorAtSwitch, glm::length(color), glm::length(lastColor)});
+                else if (glm::length(color) > 0.01f && glm::length(lastColor) > 0.01f)
+                    largestTurn = std::max(largestTurn, glm::degrees(std::acos(glm::clamp(glm::dot(direction, lastDirection), -1.0f, 1.0f))));
+                largestColorStep = std::max(largestColorStep, glm::length(color - lastColor));
+                lastDirection = direction;
+                lastColor = color;
+                lastMoon = clock.moonlit();
+            }
+            const bool passed = frames < 1000 && largestTurn <= 3.0f && largestColorStep <= 0.03f && colorAtSwitch <= 0.003f;
+            std::printf("glide %-24s %5.2f s | largest turn %.2f deg/frame | largest colour step %.4f | "
+                        "at the sun/moon switch %.4f | ends %s | %s\n",
+                        name, frames / 60.0f, largestTurn, largestColorStep, colorAtSwitch, clock.timeText().c_str(),
+                        verdict(passed));
+        };
+        for (int index = 0; index < DayNight::presetCount; ++index)
+        {
+            const TimePreset& preset = DayNight::presets()[static_cast<std::size_t>(index)];
+            const TimePreset& next = DayNight::presets()[static_cast<std::size_t>((index + 1) % DayNight::presetCount)];
+            const std::string name = std::string("O ") + preset.name + " -> " + next.name;
+            glide(name.c_str(), preset.hours, [](DayNight& clock) { clock.nextPreset(); });
+        }
+        glide("[ 12:00 -> 11:00", 12.0f, [](DayNight& clock) { clock.stepHours(-1.0f); });
+        glide("] 18:30 -> 19:30", 18.5f, [](DayNight& clock) { clock.stepHours(1.0f); });
+        glide("click NOON at 22:00", 22.0f, [](DayNight& clock) { clock.glideToPreset(1); });
+
+        // 3. The automatic day at its own pace, one whole day at 60 Hz.
+        {
+            DayNight clock;
+            clock.setTime(0.0f);
+            clock.toggleAutomatic();
+            glm::vec3 lastColor = clock.lightColor();
+            bool lastMoon = clock.moonlit();
+            float largestColorStep = 0.0f;
+            float colorAtSwitch = 0.0f;
+            int switches = 0;
+            for (int frame = 0; frame < static_cast<int>(24.0f / 0.22f * 60.0f); ++frame)
+            {
+                clock.update(1.0f / 60.0f);
+                const glm::vec3 color = clock.lightColor();
+                if (clock.moonlit() != lastMoon)
+                {
+                    ++switches;
+                    colorAtSwitch = std::max({colorAtSwitch, glm::length(color), glm::length(lastColor)});
+                }
+                largestColorStep = std::max(largestColorStep, glm::length(color - lastColor));
+                lastColor = color;
+                lastMoon = clock.moonlit();
+            }
+            const bool passed = switches == 2 && largestColorStep <= 0.02f && colorAtSwitch <= 0.003f;
+            std::printf("automatic day: %d sun/moon switches, light %.4f at them, largest colour step %.4f a frame | %s\n",
+                        switches, colorAtSwitch, largestColorStep, verdict(passed));
+        }
+
+        // 4. The near shadow map follows the camera round a loop (walking,
+        // turning, rising and falling) with the noon sun. A fixed point on
+        // the ground must stay at exactly the same place within its texel
+        // whenever it is in the map, or its shadow edge would crawl.
+        {
+            DayNight clock;
+            clock.setTime(12.0f);
+            ShadowViews views;
+            const ShadowBounds bounds;
+            std::vector<glm::vec3> points;
+            for (int x = -40; x <= 40; x += 4)
+            {
+                for (int z = -40; z <= 40; z += 4)
+                    points.push_back({static_cast<float>(x) + 0.37f, 0.0f, static_cast<float>(z) + 0.61f});
+            }
+            std::vector<glm::vec2> reference(points.size(), glm::vec2(-1.0f));
+            float largestDrift = 0.0f;
+            std::size_t samples = 0;
+            for (int frame = 0; frame < 60 * 30; ++frame)
+            {
+                const float t = static_cast<float>(frame) / 60.0f;
+                const glm::vec3 camera {25.0f * std::cos(0.2f * t), 1.7f + 8.0f * std::max(0.0f, std::sin(0.13f * t)),
+                                        25.0f * std::sin(0.2f * t)};
+                const float yaw = 0.7f * t;
+                const glm::vec3 forward = glm::normalize(glm::vec3 {std::cos(yaw), -0.15f, std::sin(yaw)});
+                views.update(clock.lightDirection(), camera, forward, bounds);
+                const glm::mat4 lookup = views.nearLookup();
+                for (std::size_t index = 0; index < points.size(); ++index)
+                {
+                    const glm::vec4 uv = lookup * glm::vec4(points[index], 1.0f);
+                    if (uv.x < 0.0f || uv.x > 1.0f || uv.y < 0.0f || uv.y > 1.0f)
+                        continue;
+                    const glm::vec2 texel = glm::vec2(uv) * static_cast<float>(ShadowViews::nearSize);
+                    const glm::vec2 within = texel - glm::floor(texel);
+                    if (reference[index].x < 0.0f)
+                    {
+                        reference[index] = within;
+                        continue;
+                    }
+                    glm::vec2 drift = glm::abs(within - reference[index]);
+                    drift = glm::min(drift, 1.0f - drift);   // 0.999 and 0.001 are neighbours
+                    largestDrift = std::max({largestDrift, drift.x, drift.y});
+                    ++samples;
+                }
+            }
+            const bool passed = samples > 1000 && largestDrift < 0.01f;
+            std::printf("near shadow map on a moving camera: %zu samples, largest drift within a texel %.5f texel | %s\n",
+                        samples, largestDrift, verdict(passed));
+        }
+
+        std::printf("%s\n", allPassed ? "SUN TEST PASSED" : "SUN TEST FAILED");
         return allPassed ? EXIT_SUCCESS : EXIT_FAILURE;
     }
 
@@ -1319,6 +1559,8 @@ int main(int argc, char** argv)
             return runPlayerTest();
         if (std::strcmp(argv[index], "--walk-test") == 0)
             return runWalkTest();
+        if (std::strcmp(argv[index], "--sun-test") == 0)
+            return runSunTest();
     }
 
     for (int index = 1; index < argc; ++index)
@@ -1376,6 +1618,13 @@ int main(int argc, char** argv)
             capture.warmSeconds = std::max(0.0f, static_cast<float>(std::atof(argv[++index])));
         else if (argument == "--umbrellas")
             capture.umbrellas = true;
+        else if (argument == "--glide" && hasValue)
+            capture.glideTo = static_cast<float>(std::atof(argv[++index]));
+        else if (argument == "--shadows" && hasValue)
+        {
+            const std::string quality = argv[++index];
+            capture.shadows = quality == "off" ? ShadowQuality::Off : quality == "low" ? ShadowQuality::Low : ShadowQuality::High;
+        }
         else if (argument == "--fullscreen")
             startFullscreen = true;
     }
@@ -1486,6 +1735,7 @@ int main(int argc, char** argv)
         glfwSetFramebufferSizeCallback(window, framebufferCallback);
         glfwSetCursorPosCallback(window, cursorCallback);
         glfwSetKeyCallback(window, keyCallback);
+        glfwSetMouseButtonCallback(window, mouseButtonCallback);
         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
         const auto sceneStart = std::chrono::steady_clock::now();
@@ -1509,8 +1759,10 @@ int main(int argc, char** argv)
             state.shadingMode = capture.shading;
             state.showFrameGraph = capture.graph;
             state.fullRatePacing = capture.fullRate;
+            state.shadows = capture.shadows;
             scaler.setMode(capture.scale < 1.0f ? ResolutionMode::Reduced : ResolutionMode::Native);
         }
+        state.hudShown = !capture.hideHud;
 
         // The simulation advances in fixed 1/60 s steps, independent of the
         // frame rate, so traffic behaves identically on a slow or a fast GPU.
@@ -1575,6 +1827,10 @@ int main(int argc, char** argv)
                  : state == SignalState::Yellow ? glm::vec3{1.0f, 0.80f, 0.12f} : glm::vec3{1.0f, 0.22f, 0.16f};
         };
 
+        std::array<const char*, DayNight::presetCount> presetNames {};
+        for (std::size_t index = 0; index < presetNames.size(); ++index)
+            presetNames[index] = DayNight::presets()[index].name;
+
         // Everything one frame draws, from the current camera and poses.
         const auto renderFrame = [&](float alpha, double timeSeconds)
         {
@@ -1586,38 +1842,59 @@ int main(int argc, char** argv)
 
             frameStats.beginGpu();
 
-            // 1. Sky and scene into the multisampled HDR target.
+            const float aspect = static_cast<float>(outputWidth) / static_cast<float>(outputHeight);
+            SceneFrame frame;
+            frame.view = camera.viewMatrix();
+            frame.projection = camera.projectionMatrix(aspect);
+            frame.cameraPosition = camera.position();
+            frame.traffic = &traffic;
+            frame.vehicles = &poses;
+            frame.player = playerView;
+            frame.playerDrawMode = camera.mode() == CameraMode::PlayerSeat ? PlayerDrawMode::DriverSeat
+                                 : camera.mode() == CameraMode::OnFoot ? PlayerDrawMode::OwnEyes
+                                                                       : PlayerDrawMode::Outside;
+            frame.cameraOnPlayer = camera.onPlayer();
+            frame.pedestrians = &pedestrianPoses;
+            frame.looks = &pedestrians.looks();
+            frame.dayNight = &dayNight;
+            frame.shadingMode = state.shadingMode;
+            frame.driverView = camera.mode() == CameraMode::Driver;
+            frame.selectedVehicleIndex = camera.followedVehicleIndex();
+            frame.elapsedSeconds = static_cast<float>(timeSeconds);
+            frame.shadows = state.shadows;
+            Mesh::resetDrawCalls();
+
+            // 1. What the frame draws, and the city seen from the sun (or
+            //    the moon) into the shadow maps.
+            scene.prepare(frame);
+            if (scene.shadowMapsDrawn() > 0)
+            {
+                frameStats.beginShadows();
+                scene.renderShadows(frame);
+                frameStats.endShadows();
+            }
+            else
+            {
+                frameStats.noShadows();
+            }
+
+            // 2. Sky and scene into the multisampled HDR target.
             hdr.resize(renderWidth, renderHeight);
             hdr.bindForScene();
             glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-            const float aspect = static_cast<float>(outputWidth) / static_cast<float>(outputHeight);
-            const glm::mat4 view = camera.viewMatrix();
-            const glm::mat4 projection = camera.projectionMatrix(aspect);
-            Mesh::resetDrawCalls();
-            sky.render(view, projection, camera.position(), dayNight, static_cast<float>(timeSeconds));
-            const PlayerDrawMode playerDrawMode = camera.mode() == CameraMode::PlayerSeat ? PlayerDrawMode::DriverSeat
-                                                : camera.mode() == CameraMode::OnFoot ? PlayerDrawMode::OwnEyes
-                                                                                      : PlayerDrawMode::Outside;
-            scene.render(
-                view, projection, camera.position(),
-                traffic, poses, playerView, playerDrawMode,
-                pedestrianPoses, pedestrians.looks(),
-                dayNight, state.shadingMode,
-                camera.mode() == CameraMode::Driver,
-                camera.followedVehicleIndex(),
-                static_cast<float>(timeSeconds));
+            sky.render(frame.view, frame.projection, camera.position(), dayNight, static_cast<float>(timeSeconds));
+            scene.render(frame);
             const int sceneDrawCalls = Mesh::drawCalls();
 
-            // 2. Resolve the samples, then bloom and tone-map into the window,
+            // 3. Resolve the samples, then bloom and tone-map into the window,
             //    scaling up if the scene was rendered smaller.
             hdr.resolve();
             postProcess.render(
                 hdr.colorTexture(), renderWidth, renderHeight,
                 outputWidth, outputHeight, dayNight.exposure());
 
-            // 3. The HUD is drawn last, straight onto the tone-mapped image.
+            // 4. The HUD is drawn last, straight onto the tone-mapped image.
             if (!capture.hideHud)
             {
                 PerformanceInfo performance;
@@ -1684,6 +1961,16 @@ int main(int argc, char** argv)
                 extras.people = &mapPeople;
                 extras.peopleWaiting = pedestrians.waitingCount();
                 extras.peopleCrossing = pedestrians.crossingCount();
+                extras.period = dayNight.period();
+                extras.onPreset = dayNight.onPreset();
+                extras.periodName = dayNight.periodName();
+                extras.presetNames = presetNames.data();
+                extras.presetCount = DayNight::presetCount;
+                extras.shadowQuality = shadowQualityName(state.shadows);
+                extras.shadowMaps = scene.shadowMapsDrawn();
+                extras.shadowMs = frameStats.shadowMs();
+                extras.headlights = scene.headlightsLit();
+                extras.moonlight = dayNight.moonlit();
 
                 overlay.render(
                     outputWidth,
@@ -1717,6 +2004,8 @@ int main(int argc, char** argv)
         glfwShowWindow(window);
         if (maximise)
             glfwMaximizeWindow(window);
+        if (capture.enabled && capture.glideTo >= 0.0f)
+            dayNight.glideToTime(capture.glideTo);
         if (startFullscreen)
             toggleFullscreen(window, placement);
 
@@ -1773,6 +2062,25 @@ int main(int argc, char** argv)
             // The real frame time drives everything; only a long stall (a
             // dragged window, a breakpoint) is cut short so nothing jumps.
             const float dt = std::min(frameSeconds, 0.25f);
+
+            // The cursor: hidden while the mouse looks round (the free
+            // camera, your own eyes, the driver's seat), shown in the other
+            // views so the time buttons can be clicked. Alt shows it anywhere.
+            const CameraMode mode = camera.mode();
+            const bool mouseLooks = mode == CameraMode::Free || mode == CameraMode::OnFoot ||
+                                    mode == CameraMode::PlayerSeat;
+            const bool altHeld = glfwGetKey(window, GLFW_KEY_LEFT_ALT) == GLFW_PRESS ||
+                                 glfwGetKey(window, GLFW_KEY_RIGHT_ALT) == GLFW_PRESS;
+            const bool wantCursor = !capture.enabled && (!mouseLooks || altHeld);
+            if (wantCursor != state.cursorFree)
+            {
+                state.cursorFree = wantCursor;
+                glfwSetInputMode(window, GLFW_CURSOR, wantCursor ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
+                state.firstMouseEvent = true;
+            }
+
+            // The sun and moon glide on real time, even while paused.
+            dayNight.animate(dt);
             camera.processKeyboard(window, dt);
             const PlayerInput playerInput = readPlayerInput(window, camera);
             if (!state.paused)

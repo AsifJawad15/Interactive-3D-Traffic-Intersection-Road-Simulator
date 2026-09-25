@@ -8,6 +8,7 @@
 #include "Player.h"
 #include "PropRenderer.h"
 #include "RoadRenderer.h"
+#include "ShadowMap.h"
 #include "Shader.h"
 #include "Simulation.h"
 #include "Texture.h"
@@ -18,6 +19,7 @@
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 
+#include <array>
 #include <cstddef>
 #include <vector>
 
@@ -30,30 +32,54 @@ enum class PlayerDrawMode
     OwnEyes       // you are on foot and look through your own eyes
 };
 
+// Everything one frame of the city is drawn from.
+struct SceneFrame
+{
+    glm::mat4 view {1.0f};
+    glm::mat4 projection {1.0f};
+    glm::vec3 cameraPosition {0.0f};
+    const TrafficSystem* traffic = nullptr;
+    const std::vector<VehiclePose>* vehicles = nullptr;
+    PlayerView player;
+    PlayerDrawMode playerDrawMode = PlayerDrawMode::Outside;
+    bool cameraOnPlayer = false;
+    const std::vector<PedestrianPose>* pedestrians = nullptr;
+    const std::vector<WalkerLook>* looks = nullptr;
+    const DayNight* dayNight = nullptr;
+    int shadingMode = 2;
+    bool driverView = false;
+    std::size_t selectedVehicleIndex = 0;
+    float elapsedSeconds = 0.0f;
+    ShadowQuality shadows = ShadowQuality::High;
+};
+
 class Scene
 {
 public:
     Scene(const TrafficSystem& traffic, const World& world);
 
-    void render(
-        const glm::mat4& view,
-        const glm::mat4& projection,
-        const glm::vec3& cameraPosition,
-        const TrafficSystem& traffic,
-        const std::vector<VehiclePose>& vehicles,
-        const PlayerView& player,
-        PlayerDrawMode playerDrawMode,
-        const std::vector<PedestrianPose>& pedestrians,
-        const std::vector<WalkerLook>& looks,
-        const DayNight& dayNight,
-        int shadingMode,
-        bool driverView,
-        std::size_t selectedVehicleIndex,
-        float elapsedSeconds);
+    // Works out what this frame draws: the lights, and the vehicles and
+    // people in view or casting a shadow into it.
+    void prepare(const SceneFrame& frame);
+
+    // Draws the shadow maps (after prepare). It leaves its own framebuffer
+    // bound, so it comes before the frame's target is bound and cleared.
+    void renderShadows(const SceneFrame& frame);
+
+    // Draws the city into the bound target, lit and shadowed.
+    void render(const SceneFrame& frame);
+
+    // What the last frame used, for the HUD.
+    int shadowMapsDrawn() const { return shadowMapsInUse_; }
+    int headlightsLit() const { return lights_.activeSpotCount(); }
 
 private:
     const World& world_;
-    Shader shader_;
+    Shader sceneShader_;
+    // The depth-only shader of the shadow maps, and whichever of the two
+    // the drawing code below is feeding (they share the draw functions).
+    Shader shadowShader_;
+    const Shader* shader_ = &sceneShader_;
     Mesh cube_;
     Mesh beveledCube_;
     Mesh buildingMesh_;
@@ -129,17 +155,47 @@ private:
     Mesh lampBulbs_;
 
     // Every vehicle's body, lamps and wheels, and the parts of the ones in
-    // view this frame (kept, so a frame never allocates).
+    // view this frame (kept, so a frame never allocates). Each vehicle's
+    // parts are a group: drawn on screen, into the shadow maps, or both
+    // (a car just out of view can still cast its shadow into it).
+    struct PartGroup
+    {
+        std::size_t begin = 0;
+        std::size_t end = 0;
+        glm::vec3 centre {0.0f};
+        float radius = 0.0f;
+        bool seen = true;
+        bool casts = true;
+    };
     VehicleRenderer vehicleLooks_;
     std::vector<VehiclePart> vehicleParts_;
+    std::vector<PartGroup> partGroups_;
     std::vector<PointLight> movingLights_;
+    std::vector<SpotLight> headlights_;
     bool vehiclesWarmed_ = false;
+
+    // Shadows: the maps, the box everything that casts stands in, and the
+    // state of the pass being drawn.
+    ShadowMap shadowMap_;
+    ShadowBounds casterBounds_;
+    int shadowMapsInUse_ = 0;
+    bool shadowPass_ = false;
+    bool nearPass_ = false;
+    // Whether an object at `centre` belongs in what is being drawn: always
+    // on screen, and in the near shadow map only if it reaches into it.
+    bool casts(const glm::vec3& centre, float radius) const;
+    void drawCasters(const SceneFrame& frame);
+    void collectVehicles(const SceneFrame& frame, const glm::mat4& viewProjection, const glm::vec3& shadowStep);
+    void collectHeadlights(const SceneFrame& frame);
 
     // Buildings, shops, trees, paving and street furniture, baked.
     PropRenderer props_;
 
     // The people, and you on foot: one instanced draw per body shape.
     PedestrianRenderer people_;
+    // How many copies of each body shape are seen on screen: all but you,
+    // when you look through your own eyes (you still cast a shadow).
+    std::array<std::size_t, bodyShapeCount> peopleSeen_ {};
     // The walkers' lights: poles and housings baked, the lamps drawn as
     // instances in this frame's colours.
     Mesh walkSignalPoles_;
@@ -159,7 +215,7 @@ private:
     void buildSigns();
     void buildBusShelters();
     void drawBusShelters(bool illuminated);
-    void drawVehicleParts();
+    void drawVehicleParts(bool shadows);
     void drawRoads();
     void drawStreetLamps(bool illuminated);
     // The city dressing. `darkness` runs from 0 by day to 1 at night and
@@ -177,8 +233,8 @@ private:
     void drawNeonSigns(bool illuminated);
     void buildWalkSignals();
     void drawWalkSignals(const TrafficSystem& traffic);
-    void drawPeople(const std::vector<PedestrianPose>& pedestrians, const std::vector<WalkerLook>& looks,
-                    const PlayerView& player, bool drawPlayer, const glm::vec3& cameraPosition,
-                    const glm::mat4& viewProjection);
-    void drawInstances(const Mesh& mesh, const std::vector<InstanceData>& instances, float shininess, bool matte);
+    void collectPeople(const SceneFrame& frame, const glm::mat4& viewProjection, const glm::vec3& shadowStep);
+    void drawPeople();
+    void drawInstances(const Mesh& mesh, const std::vector<InstanceData>& instances, float shininess, bool matte,
+                       std::size_t count = static_cast<std::size_t>(-1));
 };

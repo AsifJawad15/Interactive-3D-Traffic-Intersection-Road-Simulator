@@ -5,6 +5,8 @@ in vec3 vNormal;
 in vec2 vTexCoord;
 in vec3 vGouraudDiffuse;
 in vec3 vGouraudSpecular;
+in vec3 vGouraudSun;
+in vec3 vGouraudSunSpecular;
 in vec4 vColor;
 flat in float vSeed;
 flat in float vGlow;
@@ -67,6 +69,7 @@ uniform float uShininess;
 uniform int uShadingMode;
 
 #include "atmosphere.glsl"
+#include "shadows.glsl"
 
 out vec4 fragmentColor;
 
@@ -125,12 +128,17 @@ vec3 illuminate(vec3 normal, vec3 albedo, vec3 specularMap)
 
     float diffuse = max(dot(normal, lightDirection), 0.0);
     float specular = pow(max(dot(viewDirection, reflectionDirection), 0.0), uShininess);
+    // The sun (or the moon) reaches this point only where nothing stands
+    // between them: the shadow map says how much of it does.
+    float visible = lightVisibility(vWorldPosition, normal, lightDirection);
     vec3 ambient = mix(uAmbientGround, uAmbientSky, 0.5 + 0.5 * normal.y);
-    vec3 diffuseLighting = ambient + uLightColor * diffuse;
-    vec3 specularLighting = uLightColor * specular * 0.35;
+    vec3 diffuseLighting = ambient + uLightColor * diffuse * visible;
+    vec3 specularLighting = uLightColor * specular * 0.35 * visible;
 
-    // Street lamps (Lab 3 point lights), per fragment for Phong shading.
+    // Street lamps (Lab 3 point lights) and headlights, per fragment for
+    // Phong shading.
     addPointLights(vWorldPosition, normal, viewDirection, uShininess, diffuseLighting, specularLighting);
+    addSpotLights(vWorldPosition, normal, viewDirection, uShininess, diffuseLighting, specularLighting);
 
     // Spot light.
     {
@@ -177,16 +185,27 @@ void main()
 
     if (uShadingMode == 1)
     {
-        result = albedo * vGouraudDiffuse + specularMap * vGouraudSpecular;
+        // Lit at the vertices, but shadowed per pixel: a shadow edge
+        // across a large triangle is still sharp.
+        float visible = lightVisibility(vWorldPosition, normalize(vNormal), normalize(-uLightDirection));
+        result = albedo * (vGouraudDiffuse + vGouraudSun * visible) +
+                 specularMap * (vGouraudSpecular + vGouraudSunSpecular * visible);
     }
     else
     {
         vec3 normal = normalize(vNormal);
         if (uShadingMode == 0)
         {
-            normal = normalize(cross(dFdx(vWorldPosition), dFdy(vWorldPosition)));
-            if (dot(normal, vNormal) < 0.0)
-                normal = -normal;
+            // A sliver of a triangle (a leaf seen edge-on) can have no
+            // measurable face at all; it keeps its smooth normal instead of
+            // a normal of NaN, which would light it NaN and bloom white.
+            vec3 face = cross(dFdx(vWorldPosition), dFdy(vWorldPosition));
+            if (dot(face, face) > 1.0e-14)
+            {
+                normal = normalize(face);
+                if (dot(normal, vNormal) < 0.0)
+                    normal = -normal;
+            }
         }
         result = illuminate(normal, albedo, specularMap);
     }

@@ -3,9 +3,11 @@
 #include "RoadNetwork.h"
 
 #include <glm/geometric.hpp>
+#include <glm/trigonometric.hpp>
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <utility>
 
@@ -52,7 +54,8 @@ bool LightBudget::reachInView(const PointLight& light, const glm::mat4& viewProj
 }
 
 void LightBudget::choose(const std::vector<PointLight>& lights, const glm::vec3& cameraPosition,
-                         const glm::mat4& viewProjection, bool lampsOn, std::vector<Choice>& chosen)
+                         const glm::mat4& viewProjection, bool lampsOn, std::vector<Choice>& chosen,
+                         int maximum)
 {
     chosen.clear();
     candidates_.clear();
@@ -88,10 +91,11 @@ void LightBudget::choose(const std::vector<PointLight>& lights, const glm::vec3&
     // The chosen set ends at `cutoff`: the lighting distance, or closer when
     // more lights are in range than fit. The last fifth of that distance is
     // a fade, so a light leaving the set has already faded to nothing.
-    const std::size_t count = std::min<std::size_t>(candidates_.size(), maximumLights);
+    const std::size_t limit = static_cast<std::size_t>(std::max(maximum, 0));
+    const std::size_t count = std::min(candidates_.size(), limit);
     float cutoff = lightingDistance;
-    if (candidates_.size() > static_cast<std::size_t>(maximumLights))
-        cutoff = std::min(cutoff, candidates_[maximumLights].distance);
+    if (candidates_.size() > limit)
+        cutoff = std::min(cutoff, candidates_[limit].distance);
     const float fadeStart = cutoff * 0.8f;
 
     for (std::size_t slot = 0; slot < count; ++slot)
@@ -117,12 +121,22 @@ LightManager::LightManager()
     glBindBuffer(GL_UNIFORM_BUFFER, 0);
     glBindBufferBase(GL_UNIFORM_BUFFER, bindingPoint, buffer_);
     chosen_.reserve(maximumLights);
+
+    glGenBuffers(1, &spotBuffer_);
+    glBindBuffer(GL_UNIFORM_BUFFER, spotBuffer_);
+    SpotBlock empty {};
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(SpotBlock), &empty, GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    glBindBufferBase(GL_UNIFORM_BUFFER, spotBindingPoint, spotBuffer_);
+    chosenSpots_.reserve(maximumSpots);
 }
 
 LightManager::~LightManager()
 {
     if (buffer_ != 0)
         glDeleteBuffers(1, &buffer_);
+    if (spotBuffer_ != 0)
+        glDeleteBuffers(1, &spotBuffer_);
 }
 
 void LightManager::attach(GLuint program)
@@ -130,6 +144,53 @@ void LightManager::attach(GLuint program)
     const GLuint index = glGetUniformBlockIndex(program, "PointLightBlock");
     if (index != GL_INVALID_INDEX)
         glUniformBlockBinding(program, index, bindingPoint);
+    const GLuint spotIndex = glGetUniformBlockIndex(program, "SpotLightBlock");
+    if (spotIndex != GL_INVALID_INDEX)
+        glUniformBlockBinding(program, spotIndex, spotBindingPoint);
+}
+
+void LightManager::updateSpots(const glm::vec3& cameraPosition, const glm::mat4& viewProjection,
+                               const std::vector<SpotLight>& spots)
+{
+    // Each cone is chosen by the sphere round it: centred part-way along the
+    // beam and wide enough to hold its far rim.
+    spotReach_.clear();
+    for (const SpotLight& spot : spots)
+    {
+        PointLight reach;
+        reach.position = spot.position + spot.direction * (0.5f * spot.range);
+        reach.range = 0.62f * spot.range;
+        reach.alwaysOn = spot.alwaysOn;
+        spotReach_.push_back(reach);
+    }
+    spotBudget_.choose(spotReach_, cameraPosition, viewProjection, !spots.empty(), chosenSpots_, maximumSpots);
+
+    SpotBlock block {};
+    int written = 0;
+    for (const LightBudget::Choice& choice : chosenSpots_)
+    {
+        const SpotLight& spot = spots[choice.light];
+        const glm::vec3 direction = glm::normalize(spot.direction);
+        block.positionRange[written][0] = spot.position.x;
+        block.positionRange[written][1] = spot.position.y;
+        block.positionRange[written][2] = spot.position.z;
+        block.positionRange[written][3] = spot.range;
+        block.directionOuter[written][0] = direction.x;
+        block.directionOuter[written][1] = direction.y;
+        block.directionOuter[written][2] = direction.z;
+        block.directionOuter[written][3] = std::cos(glm::radians(spot.outerDegrees));
+        block.colorInner[written][0] = spot.color.r * choice.fade;
+        block.colorInner[written][1] = spot.color.g * choice.fade;
+        block.colorInner[written][2] = spot.color.b * choice.fade;
+        block.colorInner[written][3] = std::cos(glm::radians(spot.innerDegrees));
+        ++written;
+    }
+    block.count[0] = written;
+    activeSpotCount_ = written;
+
+    glBindBuffer(GL_UNIFORM_BUFFER, spotBuffer_);
+    glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(SpotBlock), &block);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
 }
 
 void LightManager::update(const glm::vec3& cameraPosition, const glm::mat4& viewProjection, bool lampsOn,

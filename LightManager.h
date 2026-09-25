@@ -46,7 +46,8 @@ public:
     };
 
     void choose(const std::vector<PointLight>& lights, const glm::vec3& cameraPosition,
-                const glm::mat4& viewProjection, bool lampsOn, std::vector<Choice>& chosen);
+                const glm::mat4& viewProjection, bool lampsOn, std::vector<Choice>& chosen,
+                int maximum = maximumLights);
 
     // Whether any part of the light's reach is inside the view.
     static bool reachInView(const PointLight& light, const glm::mat4& viewProjection);
@@ -60,11 +61,25 @@ private:
     std::vector<Candidate> candidates_;
 };
 
+// A cone of light: a vehicle's headlights (both lamps as one cone).
+struct SpotLight
+{
+    glm::vec3 position {0.0f};
+    glm::vec3 direction {0.0f, 0.0f, 1.0f};   // the way it shines
+    glm::vec3 color {1.0f};
+    float range = 40.0f;
+    float innerDegrees = 12.0f;
+    float outerDegrees = 28.0f;
+    bool alwaysOn = false;   // chosen first (your own car)
+};
+
 class LightManager
 {
 public:
     static constexpr int maximumLights = LightBudget::maximumLights;
+    static constexpr int maximumSpots = 8;
     static constexpr GLuint bindingPoint = 0;
+    static constexpr GLuint spotBindingPoint = 1;
     using PointLight = ::PointLight;
 
     LightManager();
@@ -81,10 +96,16 @@ public:
     void update(const glm::vec3& cameraPosition, const glm::mat4& viewProjection, bool lampsOn,
                 const std::vector<PointLight>& moving = {});
 
-    // Connects a shader's "PointLightBlock" to this buffer.
+    // This frame's headlights: the 8 nearest whose light reaches into view,
+    // the farthest of them fading out as others come nearer.
+    void updateSpots(const glm::vec3& cameraPosition, const glm::mat4& viewProjection,
+                     const std::vector<SpotLight>& spots);
+
+    // Connects a shader's "PointLightBlock" and "SpotLightBlock" to these buffers.
     static void attach(GLuint program);
 
     int activeCount() const { return activeCount_; }
+    int activeSpotCount() const { return activeSpotCount_; }
     std::size_t totalCount() const { return fixed_.size(); }
 
 private:
@@ -95,8 +116,20 @@ private:
         float colorFade[maximumLights][4];
         int count[4];
     };
+    struct SpotBlock
+    {
+        float positionRange[maximumSpots][4];
+        float directionOuter[maximumSpots][4];
+        float colorInner[maximumSpots][4];
+        int count[4];
+    };
 
     GLuint buffer_ = 0;
+    GLuint spotBuffer_ = 0;
+    std::vector<PointLight> spotReach_;   // a sphere round each cone, for choosing
+    LightBudget spotBudget_;
+    std::vector<LightBudget::Choice> chosenSpots_;
+    int activeSpotCount_ = 0;
     std::vector<PointLight> fixed_;
     std::vector<PointLight> lights_;   // this frame's: the fixed ones, then the moving ones
     LightBudget budget_;

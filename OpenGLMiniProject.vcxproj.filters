@@ -36,6 +36,9 @@
     <ClCompile Include="Scene.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="ShadowMap.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="Shader.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -119,6 +122,7 @@
     <ClInclude Include="Overlay.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Route.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Scene.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="ShadowMap.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Shader.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Simulation.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Texture.h"><Filter>Header Files</Filter></ClInclude>
@@ -156,5 +160,9 @@
     <None Include="shaders\bloom_down.frag"><Filter>Resource Files</Filter></None>
     <None Include="shaders\post.vert"><Filter>Resource Files</Filter></None>
     <None Include="shaders\lights.glsl"><Filter>Resource Files</Filter></None>
+    <None Include="shaders\placement.glsl"><Filter>Resource Files</Filter></None>
+    <None Include="shaders\shadows.glsl"><Filter>Resource Files</Filter></None>
+    <None Include="shaders\shadow.vert"><Filter>Resource Files</Filter></None>
+    <None Include="shaders\shadow.frag"><Filter>Resource Files</Filter></None>
   </ItemGroup>
 </Project>

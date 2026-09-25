@@ -1,6 +1,7 @@
 ﻿# Enhancement Plan: OpenGLMiniProject → Open-World Smart City Traffic Simulator
 
-> Status: **Phases 0 to 7 complete and verified. Next: Phase 8 (sun, moon, time presets and shadows).** Written 2026-09-23.
+> Status: **Phases 0 to 8 complete and verified. Next: Phase 9 (weather: clouds and light rain).** Written 2026-09-23.
+> **Revised 2026-09-25 (Phase 8):** the shadows are two maps, a near one that follows the camera and one over the whole city (Low keeps only the city map), so `F2` cycles High, Low and Off. Long glides (night to noon) take up to 4.5 s instead of 3, and the cursor rules and clickable buttons came in now with the time buttons instead of in Phase 10.
 > **Revised 2026-09-25 (Phase 7):** the `G` key (advance every signal) is removed, as you asked. As agreed, the walking motion is authored as keyframed clips in code instead of BVH motion-capture files, and umbrellas are built but stay closed until Phase 9.
 > **Revised 2026-09-24 (Phase 6):** a seeded city generator lines every street with buildings in six styles (164 in all, more than the 30–40 first planned, so no stretch looks empty). Windows are drawn by the fragment shader. Trees and props are baked meshes with vertex colours rather than instanced.
 > **Revised 2026-09-24 (Phase 5):** 11 vehicle kinds with lofted Bezier bodies. Long vehicles swing through turns (the rear axle trails the front). The bus line is a loop of kerb-lane left turns round the X0–G–G2–X1 block with 4 stops. Trucks make wide right turns into the far lane and use roundabouts straight on only.
@@ -33,7 +34,101 @@
 | 5. Vehicle variety | ✅ Done and verified | 2026-09-24 | `enhancement/phase-5-vehicles` |
 | 6. City dressing | ✅ Done and verified | 2026-09-24 | `enhancement/phase-6-city` |
 | 7. Pedestrians | ✅ Done and verified | 2026-09-25 | `enhancement/phase-7-pedestrians` |
-| 8 to 11 | Not started | | |
+| 8. Sun, moon, time presets and shadows | ✅ Done and verified | 2026-09-25 | `enhancement/phase-8-sun-shadows` |
+| 9 to 11 | Not started | | |
+
+### ✅ Checkpoint 8: sun, moon, time presets and shadows (2026-09-25)
+
+**What changed**
+- **The sky's path (`DayNight.*`):** the sun's position comes from its hour angle and declination, for a city at 40° north in late spring (declination +10°, clocks half an hour ahead of the sun).
+  - It rises in the east, stands 59° up in the south at noon, and sets in the west just before 19:00.
+  - The moon is full and runs the opposite arc: 25° up in the south-east at 22:00, 40° in the south at half past midnight.
+  - World axes follow the map labels: +x is east, +z is north.
+- **Presets:** Morning 07:00, Noon 12:00, Afternoon 15:30, Evening 18:30, Night 22:00.
+  - Keys: `O` steps forwards through them; `[` and `]` move the time back or on by an hour.
+  - Buttons: the five presets are clickable in a panel in the top-right corner. The part of the day it is now is lit, brightly when the clock stands on that preset.
+  - HUD: the status line shows the part of the day and the clock (`AFTERNOON 15:30`).
+  - `Y` and `N` still jump at once to 12:00 and 22:00, and `T` still runs the automatic day through all five presets.
+- **The glide:** a new time is reached in 3 s, eased in and out (1.2 s for an hour; up to 4.5 s for a very long jump such as night to noon).
+  - Each clock minute counts by how far the sun moves in it plus how much the light changes in it. So the glide slows over sunrise and sunset instead of flashing through them.
+  - Without this, a click from 22:00 to NOON brightened the light by 22 % of full sun in a single frame.
+  - It runs on real time, so it also works while paused.
+- **One light, sun or moon:** the directional light is the sun by day and the moon by night.
+  - Sunlight is dim and warm while the sun is low, and black at the horizon. Moonlight (faint blue) starts only after the sun is well down.
+  - The switch comes where both are black, so it cannot be seen.
+  - Street lamps and neon come on below about 7°, so the Evening preset has them lit.
+- **Shadow maps (`ShadowMap.*`, `shaders/shadow.vert/.frag`, `shaders/shadows.glsl`):** the city is drawn from the light into two depth maps each frame.
+  - Near: 2048² over a 64 m square round the camera (3 cm a texel). It moves only in whole texels, so edges never crawl.
+  - City: 4096² over everything that casts (about 12 cm a texel). It changes only when the light moves, and covers the top view.
+  - Points blend from the near map to the city map across the near map's edge.
+  - Filtering: 16 hardware depth-compare taps on a grid fixed in the map (2.2 times wider in moonlight).
+  - Bias: a normal-offset push of 1 to 3 texels plus a small slope-scaled offset in the shadow pass.
+- **What casts:** everything that stands up.
+  - The ground, roads, paving, water and paint only receive shadows, so they cannot shadow themselves. The hazy skyline is left out.
+  - Leaf cards are alpha-tested in the shadow pass (dappled shadows).
+  - Tree sway, fountain ripples and instanced people are placed by the same code in both passes (`shaders/placement.glsl`, shared by `scene.vert` and `shadow.vert`), so shadows move with what casts them.
+  - Vehicles and people just out of view are still drawn into the maps when their shadow falls into view.
+  - You cast a shadow when looking through your own eyes, and your whole car does in the driver view.
+  - Signals, signs, crates, billboards and shelters outside the near square are skipped in the near pass.
+- **Shading modes:** shadows work in Flat, Gouraud and Phong. Gouraud now carries the sun separately from the rest of its per-vertex lighting (`vGouraudSun`), so it is shadowed per pixel.
+- **`F2`:** High (both maps), Low (the city map only), Off. The HUD has a `SHADOWS` line with the maps in use, sun or moon, the pass's GPU time (two timestamp queries, `FrameStats`), and how many headlights are lit.
+- **Headlights (`LightManager`, `shaders/lights.glsl`):** after dusk each vehicle's headlights are one cone of light (range 42 m, 10°/26° cones, aimed 3° down).
+  - A second budget of 8 cones works like the lamps: nearest first among those whose light reaches into view, the farthest fading out as others come nearer. Your own car comes first when you drive it.
+  - The cones are a second uniform buffer next to the lamps. The Lab 3 spot light is unchanged.
+- **The cursor:** free in the views that do not look with the mouse (top, follow, chase, the AI driver's seat, following a person). In the free camera, on foot and in your driver's seat, holding `Alt` frees it. Clicks are hit-tested in framebuffer pixels (DPI-aware). The plan had this in Phase 10; the time buttons needed it now.
+- **`Scene`:** split into `prepare` (lights and what to draw), `renderShadows`, and `render`, all from one `SceneFrame`.
+- **Help panel:** related keys share a line (22 lines), so the panel fits a 720p window again with the new keys.
+- **Fix found on the way:** in Flat shading the trees blew out to white once shadows were in. The face normal of a sliver triangle (a leaf seen edge-on) came out NaN, and bloom spread it. Such fragments now keep their smooth normal, and the shadow lookup treats a NaN as "facing away".
+
+**New files:** `ShadowMap.h/.cpp`, `shaders/shadow.vert`, `shaders/shadow.frag`, `shaders/shadows.glsl`, `shaders/placement.glsl`.
+**Edited:** `DayNight.*`, `Scene.*`, `LightManager.*`, `PedestrianRenderer.*`, `FrameStats.*`, `Overlay.*`, `main.cpp`, `shaders/scene.vert`, `shaders/scene.frag`, `shaders/lights.glsl`, `README.md` and both project files. `Sky.*` and `sky.frag` needed no change: the sky already draws the sun and moon from `DayNight`'s vectors.
+
+**Verification**
+- **Build:** Release x64, no errors, no warnings.
+- **`--sun-test` (new):** PASS.
+
+  | Preset | Light | Shadows point to (bearing) | Length per metre of height | Lamps |
+  |---|---|---|---|---|
+  | Morning 07:00 | sun 12.1° up, in the east (87°) | 267° (west) | 4.65 m | off |
+  | Noon 12:00 | sun 59.3° up, in the south (165°) | 345° (north) | 0.59 m | off |
+  | Afternoon 15:30 | sun 40.2° up, south-west (246°) | 66° (north-east) | 1.18 m | off |
+  | Evening 18:30 | sun 6.4° up, in the west (278°) | 98° (east) | 8.90 m | on |
+  | Night 22:00 | moon 24.9° up, south-east (130°) | 310° | 2.15 m | on |
+
+  - Glides are replayed at 60 Hz: `O` from every preset, `[` and `]`, and a click from 22:00 to NOON. The largest turn of the light is 0.3–2.5° a frame, the largest colour step 0.013–0.025, and the light is 0.0024 or less where it passes from moon to sun. The limits are 3°, 0.03 and 0.003.
+  - One whole automatic day: 2 sun/moon switches, both at a light of 0.0000; largest colour step 0.011 a frame.
+  - The near map on a camera that walks, turns, rises and falls for 30 s: 302,326 samples of fixed ground points, the largest drift within their texel 0.00024 of a texel (limit 0.01).
+- **30-minute soaks, seeds 1 to 16:** 16 of 16 pass, with results identical to Checkpoint 7: 0 overlaps, 0 vehicle-person touches, longest stop 54.1 s, longest wait 80.4 s. The simulation was not touched.
+- **`--self-test`, `--light-test`, `--motion-test`, `--walk-test`, `--player-test`:** all PASS with the same figures as Checkpoint 7 (light test largest change 0.011; judder 0.0007 / 0.0013 / 0.0010).
+- **Captures:**
+  - The five presets from views 4 and 1: long morning shadows with the street in the shade of its east side, short noon shadows, clear afternoon shadows to the north-east, and very long evening shadows with lamps and neon lit. At night, faint soft moon shadows.
+  - Up close (views 18, 20, 25 at 15:30), with no acne and no shadow lifted off its caster: dappled leaf shadows on the road and a crossing, the walk light's pole and head, a building shading the sidewalk.
+  - The whole city from the top view.
+  - A glide from 15:30 to 18:30 in the park, captured at 16:40, 17:30, 18:02 and 18:30: the palm's shadow lengthens and turns across the plaza, and the lamps come on at the end.
+  - Flat and Gouraud with shadows.
+  - Headlight pools in front of the bus and cars at night.
+- **1080p, 80 people, city run for 60 s first, 370 measured frames per view:**
+
+  | View | FPS | 99th percentile | Worst | GPU |
+  |---|---|---|---|---|
+  | Whole city, noon | 72 | 15.1 ms | 20.2 ms | 5.1 ms |
+  | Whole city, night | 72 | 14.7 ms | 14.9 ms | 5.2 ms |
+  | Whole city, morning | 72 | 14.9 ms | 18.1 ms | 5.3 ms |
+  | Shopping street, night | 72 | 14.6 ms | 14.9 ms | 4.8 ms |
+  | Chase view, night | 72 | 14.9 ms | 29.3 ms | 6.4 ms |
+  | The park, afternoon | 72 | 14.7 ms | 30.3 ms | 4.3 ms |
+  | Street level, noon | 72 | 14.9 ms | 30.6 ms | 4.4 ms |
+  | X0 at eye level, noon | 72 | 15.2 ms | 20.9 ms | 4.4 ms |
+  | On foot, dusk | 72 | 15.6 ms | 18.5 ms | 6.3 ms |
+  | G and ST, evening | 72 | 15.3 ms | 30.4 ms | 7.4 ms |
+
+  - What the shadows cost, the same view with `--shadows off` and `high`: street level at noon 3.2 → 4.2 ms, the park 3.3 → 4.3 ms, the chase view by moonlight 4.5 → 6.5 ms, and the long evening shadows 4.9 → 7.3 ms. GPU time is up from Checkpoint 7's 2.3–4.7 ms to 4.3–7.4 ms, still under 8 ms of the 13.9 ms frame.
+  - Single slow frames: 5 of the 10 runs had one frame of 26–30 ms, all of it waiting in the buffer swap. The same happens with shadows off (2 of 4 runs against 3 of 4 with them on), so shadows are not shown to cause it. Checkpoint 7 saw it in 2 of 8 runs.
+  - The one-time stall after launch is now 66–101 ms, 1.4–2.5 s after launch (Checkpoint 7: 170–450 ms).
+
+**Still to note**
+- Shadows are the largest single cost in the frame now: about 1 ms by day and up to 2.4 ms with the long evening shadows. Phase 10's Enhanced mode adds up to 3 ms more, which still fits the 13.9 ms frame at 72 FPS.
+- A glide from night to noon takes 4.5 s, not 3, so the sunrise never flashes.
 
 ### ✅ Checkpoint 7: pedestrians (2026-09-25)
 
@@ -827,7 +922,7 @@ Four projects were reviewed as references. What each offers, and whether it can 
     | Night | 22:00 | Moon up, stars, street lamps, neon and lit windows |
 
   - **HUD:** it shows the preset name and the clock, for example `Afternoon 15:30`.
-  - **Sun path:** today the sun moves on a circle straight through the zenith ([DayNight.cpp:79](DayNight.cpp#L79)), so at noon it is directly overhead and shadows vanish. The new path is tilted like a real mid-latitude sky. The sun rises in the east, peaks at about **60° elevation to the south**, and sets in the west, so noon still has visible short shadows.
+  - **Sun path:** before Phase 8 the sun moved on a circle straight through the zenith, so at noon it was directly overhead and shadows vanished. The path is now tilted like a real mid-latitude sky (built in Phase 8). The sun rises in the east, peaks at about **60° elevation to the south**, and sets in the west, so noon still has visible short shadows.
   - **Moon:** it follows the opposite arc and gives faint blue moonlight with soft shadows at night.
   - **Changing preset:** the sun and moon **glide** to the new position over about 3 s instead of snapping, so shadows sweep smoothly across the city.
   - **Shadow map:** it always follows the current sun, or the moon at night.
@@ -873,7 +968,7 @@ Four projects were reviewed as references. What each offers, and whether it can 
 | **`K`** | Cycle weather: Clear → Cloudy → Rain |
 | **`F3`** or **corner button** | Enhanced mode on or off |
 | **`Left Alt` (hold)** | Show the cursor in Free-cam mode so the corner buttons can be clicked |
-| `F2` | Shadows on or off |
+| `F2` | Shadows: High (both maps) / Low (the city map only) / Off (built in Phase 8) |
 | `F5` / `F6` | Debug overlay (conflict zones, claims, collision count, **frame-time graph**) / quality preset (Low, Medium, High). Phase 2 built the graph and a resolution cycle (Auto, Native, 720p) on `F6`. |
 | **`F7`** | Frame pacing: steady (every second refresh on 120 Hz+ screens) or full rate (added in Phase 2) |
 | **`F11`** | Fullscreen on or off |
@@ -1017,7 +1112,8 @@ Each new `.cpp`, `.h` and shader file is registered in `OpenGLMiniProject.vcxpro
 - **Files:** new `Pedestrians.*`, `PedestrianRenderer.*`.
 - **Check:** soak shows 0 vehicle-pedestrian overlaps on crossings and no pedestrian stuck for more than 90 s. You can see people waiting for WALK and then crossing.
 
-### Phase 8: Sun, moon, time presets and shadows
+### Phase 8: Sun, moon, time presets and shadows ✅ DONE (see Checkpoint 8)
+- **As built (2026-09-25):** everything below. The shadows are a near map that follows the camera and a map of the whole city; Low keeps only the city map. `Sky.*` and `sky.frag` needed no change. The cursor rules and clickable buttons came in with the time buttons.
 - **Sky motion:** the tilted sun path, the moon's opposite arc, and the five presets with the 3 s glide. `O`, `[`, `]` and the corner time buttons (the Enhanced button comes in Phase 10).
 - **Shadows:** a stable shadow map (1 cascade, 2 on High) with PCF and alpha-tested leaf shadows. It follows the sun, or the moon at night.
 - **Night lighting:** faint blue moonlight shadows, and headlights as spot lights in the light budget. Also neon spill lights and night lighting polish.

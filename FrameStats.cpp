@@ -18,11 +18,13 @@ namespace
 FrameStats::FrameStats()
 {
     glGenQueries(static_cast<GLsizei>(queries_.size()), queries_.data());
+    glGenQueries(static_cast<GLsizei>(shadowQueries_.size()), shadowQueries_.data());
 }
 
 FrameStats::~FrameStats()
 {
     glDeleteQueries(static_cast<GLsizei>(queries_.size()), queries_.data());
+    glDeleteQueries(static_cast<GLsizei>(shadowQueries_.size()), shadowQueries_.data());
 }
 
 void FrameStats::beginGpu()
@@ -50,6 +52,33 @@ void FrameStats::endGpu()
     glEndQuery(GL_TIME_ELAPSED);
     pending_[querySlot_] = true;
     querySlot_ = (querySlot_ + 1) % queries_.size();
+}
+
+void FrameStats::beginShadows()
+{
+    if (shadowPending_[shadowSlot_])
+    {
+        GLint available = GL_FALSE;
+        glGetQueryObjectiv(shadowQueries_[shadowSlot_ * 2 + 1], GL_QUERY_RESULT_AVAILABLE, &available);
+        if (available == GL_TRUE)
+        {
+            GLuint64 start = 0;
+            GLuint64 end = 0;
+            glGetQueryObjectui64v(shadowQueries_[shadowSlot_ * 2], GL_QUERY_RESULT, &start);
+            glGetQueryObjectui64v(shadowQueries_[shadowSlot_ * 2 + 1], GL_QUERY_RESULT, &end);
+            const float milliseconds = static_cast<float>(static_cast<double>(end - start) * 1.0e-6);
+            smoothedShadowMs_ = smoothTowards(smoothedShadowMs_, milliseconds, smoothedFrameMs_ * 0.001f);
+        }
+        shadowPending_[shadowSlot_] = false;
+    }
+    glQueryCounter(shadowQueries_[shadowSlot_ * 2], GL_TIMESTAMP);
+}
+
+void FrameStats::endShadows()
+{
+    glQueryCounter(shadowQueries_[shadowSlot_ * 2 + 1], GL_TIMESTAMP);
+    shadowPending_[shadowSlot_] = true;
+    shadowSlot_ = (shadowSlot_ + 1) % shadowPending_.size();
 }
 
 void FrameStats::recordFrame(float frameSeconds)

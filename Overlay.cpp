@@ -66,7 +66,7 @@ void Overlay::render(
 
     // The key list folds away with H so it does not cover the scene during a
     // demonstration; the status lines always stay.
-    const float panelHeight = showHelp ? 702.0f : 194.0f;
+    const float panelHeight = showHelp ? 704.0f : 215.0f;
     drawRectangle(14.0f, 14.0f, 470.0f, panelHeight, {0.015f, 0.025f, 0.045f, 0.90f}, width, height);
     drawRectangle(14.0f, 14.0f, 470.0f, 34.0f, {0.02f, 0.08f, 0.12f, 0.97f}, width, height);
 
@@ -91,8 +91,8 @@ void Overlay::render(
     drawText(left, y, 1.12f, line.data(), {0.55f, 0.95f, 0.80f, 1.0f}, width, height);
     y += 21.0f;
 
-    std::snprintf(line.data(), line.size(), "TIME: %s %s   LAMPS: %s   SHADE: %s",
-                  timeText.c_str(), automaticDayNight ? "AUTO" : "MANUAL", lampsOn ? "ON" : "OFF",
+    std::snprintf(line.data(), line.size(), "TIME: %s %s %s   LAMPS: %s   SHADE: %s",
+                  extras.periodName, timeText.c_str(), automaticDayNight ? "AUTO" : "MANUAL", lampsOn ? "ON" : "OFF",
                   shadingMode.c_str());
     drawText(left, y, 1.12f, line.data(), {0.82f, 0.70f, 1.0f, 1.0f}, width, height);
     y += 21.0f;
@@ -101,6 +101,16 @@ void Overlay::render(
                   performance.renderWidth, performance.renderHeight, performance.scalePercent,
                   performance.resolutionMode, performance.pacingHz,
                   performance.fullRatePacing ? "FULL" : "STEADY", performance.gpuMs, performance.drawCalls);
+    drawText(left, y, 1.08f, line.data(), {0.70f, 0.88f, 0.80f, 1.0f}, width, height);
+    y += 21.0f;
+
+    if (extras.shadowMaps > 0)
+        std::snprintf(line.data(), line.size(), "SHADOWS: %s (%d MAP%s, %s) %.1f MS   HEADLIGHTS LIT: %d",
+                      extras.shadowQuality, extras.shadowMaps, extras.shadowMaps > 1 ? "S" : "",
+                      extras.moonlight ? "MOON" : "SUN", extras.shadowMs, extras.headlights);
+    else
+        std::snprintf(line.data(), line.size(), "SHADOWS: %s   HEADLIGHTS LIT: %d", extras.shadowQuality,
+                      extras.headlights);
     drawText(left, y, 1.08f, line.data(), {0.70f, 0.88f, 0.80f, 1.0f}, width, height);
     y += 21.0f;
 
@@ -114,26 +124,25 @@ void Overlay::render(
         drawText(left, y, 1.28f, "INTERACTION OPTIONS", {1.0f, 0.82f, 0.08f, 1.0f}, width, height);
         y += 24.0f;
 
-        static constexpr std::array<const char*, 23> controls = {
+        static constexpr std::array<const char*, 22> controls = {
             "W A S D   MOVE FREE CAMERA (SHIFT X4)",
             "Q / E     MOVE DOWN / UP",
-            "MOUSE     LOOK AROUND",
+            "MOUSE     LOOK (HOLD ALT FOR A CURSOR)",
             "C         FOLLOW YOUR CAR / LEAVE IT",
             "ARROWS    DRIVE OR WALK (OR W A S D)",
-            "SPACE     HANDBRAKE",
-            "SHIFT     BOOST / RUN",
+            "SPACE     HANDBRAKE   SHIFT: BOOST / RUN",
             "V         CHASE VIEW / DRIVER VIEW",
             "B         LOOK BACK (DRIVER VIEW)",
             "F         GET OUT / GET BACK IN",
             "M         TOP VIEW OF THE CITY",
             "TAB       FOLLOW AN AI CAR (V: ITS SEAT)",
             "SHIFT+TAB FOLLOW A PERSON (V: THEIR EYES)",
-            "P         PAUSE / RESUME",
+            "P / R     PAUSE / RESET EVERYTHING",
             "1 / 2 / 3 FLAT / GOURAUD / PHONG",
-            "T         TOGGLE AUTO DAY / NIGHT",
-            "Y / N     SET DAY / NIGHT",
+            "O  [  ]   NEXT TIME PRESET / HOUR -1, +1",
+            "T / Y / N AUTO DAY / SET DAY / SET NIGHT",
             "L         TOGGLE LIGHTS",
-            "R         RESET EVERYTHING",
+            "F2        SHADOWS HIGH / LOW / OFF",
             "F5 F6 F7  GRAPH / RESOLUTION / PACING",
             "F11       FULLSCREEN",
             "H         HIDE THIS PANEL",
@@ -158,6 +167,7 @@ void Overlay::render(
         drawFrameGraph(performance, width, height);
     drawMinimap(extras, width, height);
     drawPlayerPanel(extras, width, height);
+    drawTimePanel(extras, timeText, width, height);
 
     glDisable(GL_BLEND);
     glEnable(GL_DEPTH_TEST);
@@ -454,4 +464,39 @@ void Overlay::drawVertices(const glm::vec4& color, int screenWidth, int screenHe
         GL_DYNAMIC_DRAW);
     glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(vertices_.size()));
     glBindVertexArray(0);
+}
+
+void Overlay::drawTimePanel(const HudExtras& extras, const std::string& timeText, int screenWidth, int screenHeight)
+{
+    if (extras.presetNames == nullptr || extras.presetCount <= 0)
+        return;
+
+    // Top-right: a button per preset. The part of the day it is now is lit;
+    // brightly when the clock stands on that preset (or glides to it).
+    const int count = extras.presetCount;
+    const float x0 = TimeButtons::left(screenWidth, count);
+    const float y0 = TimeButtons::top + TimeButtons::header;
+    const float panelWidth = count * TimeButtons::buttonWidth + (count - 1) * TimeButtons::gap + 20.0f;
+    drawRectangle(x0 - 10.0f, TimeButtons::top, panelWidth, TimeButtons::header + TimeButtons::buttonHeight + 10.0f,
+                  {0.015f, 0.025f, 0.045f, 0.88f}, screenWidth, screenHeight);
+
+    std::array<char, 64> line {};
+    std::snprintf(line.data(), line.size(), "TIME OF DAY   %s %s", extras.periodName, timeText.c_str());
+    drawText(x0, TimeButtons::top + 8.0f, 1.1f, line.data(), {1.0f, 0.82f, 0.08f, 1.0f}, screenWidth, screenHeight);
+
+    for (int index = 0; index < count; ++index)
+    {
+        const float x = x0 + index * (TimeButtons::buttonWidth + TimeButtons::gap);
+        const bool current = index == extras.period;
+        const glm::vec4 fill = current ? (extras.onPreset ? glm::vec4{0.95f, 0.66f, 0.10f, 0.95f}
+                                                          : glm::vec4{0.45f, 0.33f, 0.08f, 0.95f})
+                                       : glm::vec4{0.10f, 0.16f, 0.24f, 0.95f};
+        drawRectangle(x, y0, TimeButtons::buttonWidth, TimeButtons::buttonHeight, fill, screenWidth, screenHeight);
+        const char* name = extras.presetNames[index];
+        const float scale = 1.15f;
+        const float textWidth = static_cast<float>(stb_easy_font_width(const_cast<char*>(name))) * scale;
+        drawText(x + 0.5f * (TimeButtons::buttonWidth - textWidth), y0 + 9.0f, scale, name,
+                 current && extras.onPreset ? glm::vec4{0.05f, 0.04f, 0.02f, 1.0f} : glm::vec4{0.92f, 0.94f, 0.98f, 1.0f},
+                 screenWidth, screenHeight);
+    }
 }

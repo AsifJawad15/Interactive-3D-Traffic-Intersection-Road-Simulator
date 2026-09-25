@@ -84,10 +84,12 @@ bool PedestrianRenderer::matte(std::size_t shape)
     return body != BodyShape::Foot && body != BodyShape::UmbrellaCanopy && body != BodyShape::UmbrellaShaft;
 }
 
-void PedestrianRenderer::begin(const glm::vec3& cameraPosition, const glm::mat4& viewProjection)
+void PedestrianRenderer::begin(const glm::vec3& cameraPosition, const glm::mat4& viewProjection,
+                               const glm::vec3& shadowReach)
 {
     cameraPosition_ = cameraPosition;
     viewProjection_ = viewProjection;
+    shadowReach_ = shadowReach;
     ++frame_;
     drawn_ = 0;
     for (std::vector<InstanceData>& list : instances_)
@@ -120,10 +122,12 @@ void PedestrianRenderer::addCrowd(const std::vector<PedestrianPose>& poses, cons
         const PedestrianPose& person = poses[index];
         const WalkerMotion& motion = person.motion;
 
-        // Nobody out of view is posed or drawn.
+        // Nobody is posed or drawn who is out of view and casts no shadow
+        // into it: the sphere holds the person and the ground their shadow
+        // falls on.
         PointLight reach;
-        reach.position = motion.position + glm::vec3 {0.0f, 0.9f, 0.0f};
-        reach.range = motion.umbrella > 0.01f ? 1.6f : 1.2f;
+        reach.position = motion.position + glm::vec3 {0.0f, 0.9f, 0.0f} + 0.5f * shadowReach_;
+        reach.range = (motion.umbrella > 0.01f ? 1.6f : 1.2f) + 0.5f * glm::length(shadowReach_);
         if (!LightBudget::reachInView(reach, viewProjection_))
             continue;
 

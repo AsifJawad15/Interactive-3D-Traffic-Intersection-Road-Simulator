@@ -27,7 +27,10 @@ beyond the fields. At night thousands of rooms light up behind the windows.
 
 A day–night cycle drives the sun, 194 street and park lamps, 47 neon signs,
 lit shop windows and eight billboards, and the shading model can be switched
-between flat, Gouraud and Phong while the simulation runs.
+between flat, Gouraud and Phong while the simulation runs. The sun follows a
+real mid-latitude path and the moon the opposite arc; five time presets
+(Morning, Noon, Afternoon, Evening, Night) are a key press or a click away, and
+the sun glides to them so that every shadow in the city sweeps round with it.
 
 The traffic is **collision-free by construction**: every place where two routes
 could touch is measured once at start-up, and a vehicle only enters a junction
@@ -76,16 +79,25 @@ that `shaders/` and `assets/` resolve. `--cars N` sets the number of cars
 | `Shift`+`Tab` | Walk behind the next person; `V` then looks through their eyes |
 | `P` | Pause / resume |
 | `1` `2` `3` | Flat / Gouraud / Phong shading |
+| **`O`** | **Next time preset: Morning 07:00, Noon 12:00, Afternoon 15:30, Evening 18:30, Night 22:00** (the sun glides there) |
+| **Click a time button** | The same presets, from the panel in the top-right corner |
+| **`[` / `]`** | **Time back / on by one hour** (the sun glides) |
 | `T` | Toggle the automatic day–night cycle |
-| `Y` / `N` | Force noon / midnight |
+| `Y` / `N` | Jump to noon / 22:00 |
 | `L` | Toggle the night lights (lamps, neon, billboards) |
 | `R` | Reset camera, traffic and time |
 | `H` | Show / hide the control panel |
+| **`F2`** | **Shadows: high (two maps) / low (the city map only) / off** |
+| `Alt` (hold) | Show the cursor while the mouse is looking round (free camera, on foot, driver view), to click the time buttons |
 | `F5` | Frame-time graph (last 240 frames) |
 | `F6` | Resolution: automatic / always native / always 720p inside the window |
 | `F7` | Frame pacing: steady (every second refresh on a 120 Hz+ screen) / full rate |
 | `F11` | Fullscreen |
 | `Esc` | Exit |
+
+The cursor is free in the views that do not look with the mouse (top, follow,
+chase, the AI driver's seat, following a person), so the time buttons can be
+clicked there directly.
 
 The window opens at 1920×1080, or maximised when the screen is only 1080p tall
 (`F11` then gives true fullscreen 1080p; `--fullscreen` starts that way). The old
@@ -100,7 +112,7 @@ The window opens at 1920×1080, or maximised when the screen is only 1080p tall
 | --- | --- | --- |
 | **1** | 2D primitives, 2D transformations | `Route::rotated` and `Route::translated` (`Route.cpp`) apply the 2D rotation and translation that place one authored northbound route onto every arm of every junction. Lane markings, zebras, arrows and stop lines in `RoadRenderer.cpp` are rectangles rotated onto the direction of their road. |
 | **2** | 3D drawing, camera, model / view / projection | `Mesh.cpp` builds indexed VAO/VBO/EBO geometry (with a colour per vertex) and `MeshBuilder` bakes the whole road network into six meshes and the whole city dressing into a few dozen; `Camera.cpp` provides seven camera modes (free, top, AI follow and driver, your chase view, driver view and your own eyes) using `glm::lookAt` and `glm::perspective`; `Scene::render` uploads `uModel`, `uView` and `uProjection` every frame. |
-| **3** | Illumination model and shading | `shaders/scene.frag` implements ambient + one directional sun + attenuated point lights (`k_c = 1`, `k_l = 0.09`, `k_q = 0.032`, the lab's constants) + **one spot light** with cosine cut-off angles: the lamp on an arm under the billboard at the central crossroads, which lights its picture at night. The four Lab 3 lamps at the central crossroads are always lit; the other street lamps, the neon spill and the billboard glow share a budget of 32 lights per frame (`LightManager.cpp`, `shaders/lights.glsl`). `uShadingMode` selects flat, Gouraud or Phong from one shader pair. |
+| **3** | Illumination model and shading | `shaders/scene.frag` implements ambient + one directional light (the sun by day, the moon by night), **shadowed through shadow maps** (`ShadowMap.cpp`, `shaders/shadows.glsl`) + attenuated point lights (`k_c = 1`, `k_l = 0.09`, `k_q = 0.032`, the lab's constants) + **one spot light** with cosine cut-off angles: the lamp on an arm under the billboard at the central crossroads, which lights its picture at night. The four Lab 3 lamps at the central crossroads are always lit; the other street lamps, the neon spill and the billboard glow share a budget of 32 lights per frame (`LightManager.cpp`, `shaders/lights.glsl`), and at night the headlights of the 8 vehicles that matter most are spot lights with the same cosine cut-offs. `uShadingMode` selects flat, Gouraud or Phong from one shader pair. |
 | **4** | Texture mapping | `Texture::fromFile(path, wrapS, wrapT, minFilter, magFilter)` mirrors the lab's `loadTexture` signature, so wrapping and filtering are explicit at every call site. The roadside crates carry the lab's own **diffuse + specular map pair** (`container2.png`, `container2_specular.png`), sampled as `uDiffuseTexture` and `uSpecularTexture`; grass and leaves use a dim one-texel specular map so they stay matte. The trees' leaf cards sample an **RGBA** leaf picture and are **alpha-tested** (`Texture::fromRgba` builds its mipmaps so the leaves keep their coverage with distance). |
 | **4b** | Texture sources | `assets/asphalt-photoreal.png` and the container pair are real image files. `assets/grass.png` and `assets/sidewalk.png` are optional: if present they are loaded, and if absent the matching procedural generator in `Texture.cpp` is used instead, so the project runs with no assets at all. The billboard pictures and the leaf picture are drawn at start-up; building windows are drawn by the fragment shader. |
 | **5** | Bezier curves and surfaces | `Mesh::makeBezierRevolution` (`Mesh.cpp`) ports `nCr` and the Bernstein evaluation from the Lab 5 curve program and sweeps the resulting profile about the Y axis. Control points are written in source (top of `Scene.cpp`) instead of picked with the mouse. It generates the **fountain basin and column, the street lamp posts and sign posts, the bins, bollards, planter shrubs and water-tank roofs, and the plaza's monument**. The tree trunks and branches are tubes swept along 3D Bezier curves (`TreeGenerator.cpp`, the same curve by de Casteljau's construction), and the vehicle bodies are lofted from Bezier profiles. |
@@ -359,6 +371,62 @@ over the last fifth of the lighting distance, so lights come and go without
 popping; `--light-test` measures this. Lamps too far away to light the ground
 still glow and bloom.
 
+### Sun, moon and shadows
+
+The sky is that of a city at 40° north in late spring (`DayNight.cpp`). The
+sun's position comes from its hour angle and declination: it rises in the
+east, climbs to 59° in the south at noon, and sets in the west just before
+19:00, so even noon has short shadows. The moon is full and runs the opposite
+arc, up all night.
+
+| Preset | Time | Sun or moon | Shadows |
+| --- | --- | --- | --- |
+| Morning | 07:00 | sun 12° up in the east | long, pointing west (4.7 m per metre of height) |
+| Noon | 12:00 | sun 59° up in the south | short, pointing north (0.6 m per metre) |
+| Afternoon | 15:30 | sun 40° up in the south-west | pointing north-east (1.2 m per metre) |
+| Evening | 18:30 | sun 6° up in the west; lamps and neon on | very long, pointing east (8.9 m per metre) |
+| Night | 22:00 | moon 25° up in the south-east | faint, soft, blue |
+
+Changing the time never jumps. The sun and moon glide to the new time over
+3 s (4.5 s at most for a jump from night to noon, 1.2 s for an hour), eased
+in and out, and each clock minute counts in the glide by how much it moves
+the sun *and* how much it changes the light, so the glide slows down over
+sunrise and sunset instead of flashing through them. Sunlight is warm and
+dim while the sun is low. It passes through black at the horizon, and the
+moon takes over as the light that casts shadows only below that. The two
+never shine at once, so the switch cannot be seen.
+
+**Shadow maps.** Each frame the city is drawn from the light into two depth
+maps (`ShadowMap.cpp`, `shaders/shadow.vert/.frag`):
+
+* **near**: 2048×2048 over a 64 m square round the camera, 3 cm a texel. It
+  follows the camera in steps of exactly one texel, so every texel always
+  covers the same patch of ground and shadow edges never crawl as you move;
+* **city**: 4096×4096 over the whole city, about 12 cm a texel. It only
+  changes when the light moves, and covers everything else, out to the top
+  view.
+
+A point uses the near map where it has one and fades to the city map across
+the near map's edge. Sixteen hardware depth-compare taps on a grid fixed in the
+map give a soft, stable edge (wider in moonlight). The point is pushed out
+along its normal by about a texel first, more where the light grazes it, which
+stops acne without lifting shadows off their casters. The ground, roads and
+paving are never drawn into the maps; they only receive shadows. Leaf cards
+are alpha-tested in the shadow pass too, so trees throw dappled shadows. The
+wind that sways them and the ripples on the fountain move the shadows as
+well, because both passes place every vertex with the same code
+(`shaders/placement.glsl`). A vehicle or person just out of view is still
+drawn into the maps when its shadow falls into view. You on foot cast a
+shadow even when looking through your own eyes, and so does your whole car
+in the driver view. Shadows work in all three shading modes. In Gouraud the
+sun is lit at the vertices but shadowed per pixel. `F2` switches between both
+maps, the city map only, and none. The HUD shows what they cost.
+
+**Headlights.** After dusk every vehicle's headlights are one cone of light,
+aimed just below level. The 8 cones nearest the camera that reach into view
+light the road (your own car first when you drive it); the farthest fade out
+as others come nearer, like the lamps.
+
 ---
 
 ## Your car, and you on foot
@@ -492,7 +560,18 @@ OpenGLMiniProject.exe --motion-test
 OpenGLMiniProject.exe --light-test
 OpenGLMiniProject.exe --player-test
 OpenGLMiniProject.exe --walk-test
+OpenGLMiniProject.exe --sun-test
 ```
+
+`--sun-test` checks the sky. At each preset the sun (or moon) must stand at
+the right height with shadows pointing the right way, and the lamps must be
+on or off as they should. Every glide (`O` from each preset, an hour each
+way, a click from night to noon) and one whole automatic day are replayed
+at 60 Hz. The light may turn at most 3° and its colour change at most 0.03
+in one frame, and it must be black where it passes from the sun to the moon.
+Last, a camera walks, turns, rises and falls for 30 s with the noon sun, and a
+grid of points on the ground must keep exactly their place within their texel
+of the near shadow map.
 
 `--walk-test` checks the walking figure: at speeds from a stroll to a jog, and
 stepping down and up a kerb, and speeding up from standing to jogging, a foot on
@@ -571,17 +650,23 @@ without judder.
 `--capture out.png` renders a fixed view and saves it, and reports frame timing:
 average, 99th percentile, worst frame, frames over 25 ms, GPU time, and for each
 slow frame whether the time went into our own work or into the buffer swap.
-Options: `--view 0..19 --time H --shading 0..2 --no-hud --frames N
---size 1920x1080 --fullscreen --scale 0.67 --full-rate --graph`. The views are
+Options: `--view 0..25 --time H --glide H --shadows high|low|off --shading 0..2
+--no-hud --frames N --size 1920x1080 --fullscreen --scale 0.67 --full-rate
+--graph --warm S --umbrellas`. `--glide H` starts the sun gliding to H with the
+first frame, and `--warm S` runs the city for S seconds before the first frame.
+The views are
 0 the central crossroads, 1 street level, 2 roundabout R1 and its fountain, 3 the
 whole city, 4 the T-junctions G and ST, 5 straight down, 6 roundabout R2,
 7 the ring road, 8 your car from the chase view, 9 the driver view over its
 bonnet, 10 on foot beside it, 11 and 13 a line-up of every vehicle kind from
 the front and from behind, 12 a bus at its stop with its doors open, 14 and
 15 the chase view and the driver's seat of the first line bus, 16 the park's
-plaza and pond, 17 the petrol station, 18 a shopping street and 19 houses and
-flats. At start-up the program prints how long the traffic, the city and the
-meshes took to build.
+plaza and pond, 17 the petrol station, 18 a shopping street, 19 houses and
+flats, 20 X0's south crossing and its far walk light, 21 the zebra over G's
+east arm, 22 the crossing of R1's west arm and its island, 23 following a
+person, 24 through their eyes and 25 people waiting at X0's north crossing.
+At start-up the program prints how long the traffic, the city and the meshes
+took to build.
 
 ---
 
@@ -608,8 +693,11 @@ meshes took to build.
    surface of revolution it generates.
 9. **Textures** — the road's `GL_REPEAT` tiling, the crates' diffuse map next
    to their specular map, and the alpha-tested leaf cards.
-10. **Day–night** (`T`, `Y`, `N`, `L`) — sun, street lamps, neon and billboards, and the
-   spot-light cone on the billboard at the central crossroads at night.
+10. **Day–night** (`O`, `[` `]`, the corner buttons, `T`, `L`) — step through the
+   five presets from the top view and at street level and watch the shadows
+   sweep round; street lamps, neon, billboards and headlights at night, and
+   the spot-light cone on the billboard at the central crossroads. `F2` turns
+   the shadows off and on again.
 11. **Shading comparison** (`1` / `2` / `3`) — flat, Gouraud and Phong, best seen on
    the curved fountain, the lamp posts and the tree trunks.
 
@@ -617,7 +705,7 @@ meshes took to build.
 
 ## Deliberately not included
 
-Weather and rain, shadow mapping, imported models and physics are not part of
-this version; `ENHANCEMENT_PLAN.md` lists the phases that add them.
+Weather and rain, imported models and physics are not part of this version;
+`ENHANCEMENT_PLAN.md` lists the phases that add weather.
 The scene is authored geometry throughout: there is no model file anywhere in
 this project.

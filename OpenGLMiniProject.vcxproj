@@ -184,6 +184,7 @@
     <ClCompile Include="TreeGenerator.cpp" />
     <ClCompile Include="WorldCity.cpp" />
     <ClCompile Include="VehicleRenderer.cpp" />
+    <ClCompile Include="ShadowMap.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Camera.h" />
@@ -215,6 +216,7 @@
     <ClInclude Include="PedestrianRenderer.h" />
     <ClInclude Include="TreeGenerator.h" />
     <ClInclude Include="VehicleRenderer.h" />
+    <ClInclude Include="ShadowMap.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="assets\asphalt-photoreal.png" />
@@ -228,6 +230,11 @@
     <None Include="shaders\bloom_up.frag" />
     <None Include="shaders\bloom_down.frag" />
     <None Include="shaders\post.vert" />
+    <None Include="shaders\lights.glsl" />
+    <None Include="shaders\placement.glsl" />
+    <None Include="shaders\shadows.glsl" />
+    <None Include="shaders\shadow.vert" />
+    <None Include="shaders\shadow.frag" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

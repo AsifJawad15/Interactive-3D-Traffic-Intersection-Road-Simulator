@@ -157,7 +157,8 @@ namespace
 
 Scene::Scene(const TrafficSystem& traffic, const World& world)
     : world_(world),
-      shader_("shaders/scene.vert", "shaders/scene.frag"),
+      sceneShader_("shaders/scene.vert", "shaders/scene.frag"),
+      shadowShader_("shaders/shadow.vert", "shaders/shadow.frag"),
       cube_(Mesh::makeCube()),
       beveledCube_(Mesh::makeBeveledCube(0.09f)),
       buildingMesh_(Mesh::makeBeveledCube(0.025f)),
@@ -195,10 +196,32 @@ Scene::Scene(const TrafficSystem& traffic, const World& world)
       roads_(traffic),
       props_(world, vehicleLooks_)
 {
-    shader_.use();
-    shader_.setInt("uDiffuseTexture", 0);
-    shader_.setInt("uSpecularTexture", 1);
-    LightManager::attach(shader_.id());
+    sceneShader_.use();
+    sceneShader_.setInt("uDiffuseTexture", 0);
+    sceneShader_.setInt("uSpecularTexture", 1);
+    sceneShader_.setInt("uShadowNear", 2);
+    sceneShader_.setInt("uShadowCity", 3);
+    LightManager::attach(sceneShader_.id());
+    shadowShader_.use();
+    shadowShader_.setInt("uDiffuseTexture", 0);
+
+    // The box that holds everything that can cast a shadow: the buildings
+    // (not the far skyline, which lies in the haze), the trees, and the ring
+    // road's lamps and signs.
+    glm::vec2 low {-215.0f};
+    glm::vec2 high {215.0f};
+    float top = 30.0f;
+    for (const Building& building : world.buildings())
+    {
+        if (building.style == BuildingStyle::Skyline)
+            continue;
+        const float reach = 0.5f * std::max(building.size.x, building.size.z) + 2.0f;
+        low = glm::min(low, glm::vec2 {building.position.x, building.position.z} - reach);
+        high = glm::max(high, glm::vec2 {building.position.x, building.position.z} + reach);
+        top = std::max(top, building.position.y + 0.5f * building.size.y + 12.0f);
+    }
+    casterBounds_.low = {low.x, -1.5f, low.y};
+    casterBounds_.high = {high.x, top, high.y};
     buildStreetLamps(traffic.network());
     buildSigns();
     buildBusShelters();
@@ -281,41 +304,11 @@ void Scene::buildStreetLamps(const RoadNetwork& network)
     lights_.setLights(std::move(lights));
 }
 
-void Scene::render(
-    const glm::mat4& view,
-    const glm::mat4& projection,
-    const glm::vec3& cameraPosition,
-    const TrafficSystem& traffic,
-    const std::vector<VehiclePose>& vehicles,
-    const PlayerView& player,
-    PlayerDrawMode playerDrawMode,
-    const std::vector<PedestrianPose>& pedestrians,
-    const std::vector<WalkerLook>& looks,
-    const DayNight& dayNight,
-    int shadingMode,
-    bool driverView,
-    std::size_t selectedVehicleIndex,
-    float elapsedSeconds)
+void Scene::prepare(const SceneFrame& frame)
 {
-    elapsedSeconds_ = elapsedSeconds;
-
-    shader_.use();
-    shader_.setFloat("uTime", elapsedSeconds);
-    shader_.setMat4("uView", view);
-    shader_.setMat4("uProjection", projection);
-    shader_.setVec3("uViewPosition", cameraPosition);
-    shader_.setVec3("uAmbientSky", dayNight.skyAmbient());
-    shader_.setVec3("uAmbientGround", dayNight.groundAmbient());
-    shader_.setFloat("uEmissiveStrength", 3.0f);
-    applyAtmosphereUniforms(shader_, dayNight);
-    shader_.setVec3("uLightDirection", dayNight.sunDirection());
-    shader_.setVec3("uLightColor", dayNight.sunColor());
-    shader_.setInt("uShadingMode", shadingMode);
-    shader_.setVec4("uFacade", glm::vec4{0.0f});
-    shader_.setFloat("uAlphaCutoff", 0.0f);
-    shader_.setFloat("uSway", 0.0f);
-    shader_.setFloat("uHaze", 0.0f);
-    shader_.setFloat("uInstanced", 0.0f);
+    elapsedSeconds_ = frame.elapsedSeconds;
+    const DayNight& dayNight = *frame.dayNight;
+    const glm::mat4 viewProjection = frame.projection * frame.view;
 
     // This frame's lights: the 32 that matter most of the street lamps, the
     // neon spill and the billboard glow, with the four Lab 3 lamps of the
@@ -326,25 +319,155 @@ void Scene::render(
     movingLights_.clear();
     if (night)
     {
-        for (const VehiclePose& pose : vehicles)
+        for (const VehiclePose& pose : *frame.vehicles)
         {
             PointLight light;
-            if (pose.active && vehicleLooks_.lightBarLight(pose, elapsedSeconds, light) && light.color != glm::vec3(0.0f))
+            if (pose.active && vehicleLooks_.lightBarLight(pose, frame.elapsedSeconds, light) && light.color != glm::vec3(0.0f))
                 movingLights_.push_back(light);
         }
     }
-    lights_.update(cameraPosition, projection * view, night, movingLights_);
+    lights_.update(frame.cameraPosition, viewProjection, night, movingLights_);
+    collectHeadlights(frame);
+    lights_.updateSpots(frame.cameraPosition, viewProjection, headlights_);
+
+    // Shadows, when there is a light to cast them: both maps on High, the
+    // city map alone on Low. `shadowStep` is how far, over the ground, the
+    // shadow of a point one metre up falls from the point; it lets things
+    // just out of view still cast their shadows into it.
+    const glm::vec3 lightColor = dayNight.lightColor();
+    const bool lit = std::max({lightColor.r, lightColor.g, lightColor.b}) > 0.002f;
+    shadowMapsInUse_ = !lit ? 0 : frame.shadows == ShadowQuality::High ? 2 : frame.shadows == ShadowQuality::Low ? 1 : 0;
+    const glm::vec3 lightDirection = dayNight.lightDirection();
+    glm::vec3 shadowStep {0.0f};
+    if (shadowMapsInUse_ > 0)
+    {
+        shadowStep = glm::vec3 {lightDirection.x, 0.0f, lightDirection.z} / std::max(-lightDirection.y, 0.05f);
+        // Beyond this the shadow of anything person- or car-sized is too
+        // faint and too stretched to matter.
+        const float longest = glm::length(shadowStep);
+        if (longest > 8.0f)
+            shadowStep *= 8.0f / longest;
+    }
+
+    collectVehicles(frame, viewProjection, shadowStep);
+    collectPeople(frame, viewProjection, shadowStep);
+}
+
+void Scene::renderShadows(const SceneFrame& frame)
+{
+    if (shadowMapsInUse_ == 0)
+        return;
+    const glm::vec3 lightDirection = frame.dayNight->lightDirection();
+
+    // The shadow maps: the city seen from the light, depth only. A slope-
+    // scaled offset keeps surfaces the light grazes from shadowing
+    // themselves; the scene shader adds a push along the normal on top.
+    const glm::vec3 forward = -glm::vec3(frame.view[0][2], frame.view[1][2], frame.view[2][2]);
+    shadowMap_.update(lightDirection, frame.cameraPosition, forward, casterBounds_);
+    shader_ = &shadowShader_;
+    shadowPass_ = true;
+    shader_->use();
+    shader_->setFloat("uTime", frame.elapsedSeconds);
+    shader_->setFloat("uAlphaCutoff", 0.0f);
+    shader_->setFloat("uSway", 0.0f);
+    shader_->setFloat("uInstanced", 0.0f);
+    glEnable(GL_POLYGON_OFFSET_FILL);
+    glPolygonOffset(1.1f, 2.0f);
+    if (shadowMapsInUse_ > 1)
+    {
+        nearPass_ = true;
+        shader_->setMat4("uLightViewProjection", shadowMap_.beginNear());
+        drawCasters(frame);
+    }
+    nearPass_ = false;
+    shader_->setMat4("uLightViewProjection", shadowMap_.beginCity());
+    drawCasters(frame);
+    glDisable(GL_POLYGON_OFFSET_FILL);
+    shadowPass_ = false;
+    shader_ = &sceneShader_;
+}
+
+bool Scene::casts(const glm::vec3& centre, float radius) const
+{
+    if (!shadowPass_ || !nearPass_)
+        return true;
+    return shadowMap_.nearReaches(centre, radius);
+}
+
+void Scene::drawCasters(const SceneFrame& frame)
+{
+    // Everything that stands up from the ground. The ground itself, the
+    // roads, the paving and the paint lie flat: they only receive shadows,
+    // and leaving them out means they can never shadow themselves.
+    const RoadNetwork& network = frame.traffic->network();
+    for (const Junction& junction : network.junctions())
+    {
+        if (junction.fountain && casts({junction.centre.x, 1.5f, junction.centre.y}, 4.0f))
+            drawFountain(junction.centre);
+    }
+    drawCity(false, 0.0f);
+    drawStreetFurniture();
+    drawBusShelters(false);
+    drawStreetLamps(false);
+    drawBillboards(false);
+    drawNeonSigns(false);
+    drawSignals(*frame.traffic);
+    drawWalkSignals(*frame.traffic);
+    drawGiveWaySigns();
+    drawVehicleParts(true);
+    drawPeople();
+}
+
+void Scene::render(const SceneFrame& frame)
+{
+    const DayNight& dayNight = *frame.dayNight;
+    const TrafficSystem& traffic = *frame.traffic;
+
+    shader_->use();
+    shader_->setFloat("uTime", frame.elapsedSeconds);
+    shader_->setMat4("uView", frame.view);
+    shader_->setMat4("uProjection", frame.projection);
+    shader_->setVec3("uViewPosition", frame.cameraPosition);
+    shader_->setVec3("uAmbientSky", dayNight.skyAmbient());
+    shader_->setVec3("uAmbientGround", dayNight.groundAmbient());
+    shader_->setFloat("uEmissiveStrength", 3.0f);
+    applyAtmosphereUniforms(*shader_, dayNight);
+    shader_->setVec3("uLightDirection", dayNight.lightDirection());
+    shader_->setVec3("uLightColor", dayNight.lightColor());
+    shader_->setInt("uShadingMode", frame.shadingMode);
+    shader_->setVec4("uFacade", glm::vec4{0.0f});
+    shader_->setFloat("uAlphaCutoff", 0.0f);
+    shader_->setFloat("uSway", 0.0f);
+    shader_->setFloat("uHaze", 0.0f);
+    shader_->setFloat("uInstanced", 0.0f);
+
+    // The shadow maps on texture units 2 and 3 (bound even when shadows are
+    // off, since the shader's depth-test samplers must always have a depth
+    // texture behind them). Moonlight shadows are softer.
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, shadowMap_.nearTexture());
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_2D, shadowMap_.cityTexture());
+    glActiveTexture(GL_TEXTURE0);
+    shader_->setMat4("uShadowNearMatrix", shadowMap_.nearLookup());
+    shader_->setMat4("uShadowCityMatrix", shadowMap_.cityLookup());
+    shader_->setVec4("uShadowTexel", {shadowMap_.nearTexelMetres(), shadowMap_.cityTexelMetres(),
+                                      1.0f / static_cast<float>(ShadowMap::nearSize),
+                                      1.0f / static_cast<float>(ShadowMap::citySize)});
+    shader_->setVec4("uShadowSettings", {static_cast<float>(shadowMapsInUse_), dayNight.moonlit() ? 2.2f : 1.0f,
+                                         1.0f, 0.0f});
 
     // The Lab 3 spot light: the small lamp on the arm of the billboard at the
     // central crossroads, aimed at the middle of the picture. Its cut-off
     // angles are uploaded as cosines so the shader can test the cone with a
     // dot product.
+    const bool night = dayNight.streetLampsOn();
     const SpotLamp& spot = world_.spotLamp();
-    shader_.setVec3("uSpotPosition", spot.position);
-    shader_.setVec3("uSpotDirection", glm::normalize(spot.target - spot.position));
-    shader_.setVec3("uSpotColor", night ? glm::vec3{2.4f, 2.2f, 1.8f} : glm::vec3{0.0f});
-    shader_.setFloat("uSpotCutOff", std::cos(glm::radians(spot.innerDegrees)));
-    shader_.setFloat("uSpotOuterCutOff", std::cos(glm::radians(spot.outerDegrees)));
+    shader_->setVec3("uSpotPosition", spot.position);
+    shader_->setVec3("uSpotDirection", glm::normalize(spot.target - spot.position));
+    shader_->setVec3("uSpotColor", night ? glm::vec3{2.4f, 2.2f, 1.8f} : glm::vec3{0.0f});
+    shader_->setFloat("uSpotCutOff", std::cos(glm::radians(spot.innerDegrees)));
+    shader_->setFloat("uSpotOuterCutOff", std::cos(glm::radians(spot.outerDegrees)));
 
     // The ground runs out to two kilometres so it reaches the fog and the
     // horizon. The city and the lawn round it out to 900 m lie on top, so the
@@ -373,12 +496,66 @@ void Scene::render(
     drawSignals(traffic);
     drawWalkSignals(traffic);
     drawGiveWaySigns();
+    drawVehicleParts(false);
+    drawPeople();
+}
 
-    // Every vehicle in view. A vehicle whose whole body is outside the view
-    // is skipped; the one you ride in shows only what its driver sees.
-    const VehicleLamps lamps {night, elapsedSeconds};
-    const glm::mat4 viewProjection = projection * view;
+void Scene::collectHeadlights(const SceneFrame& frame)
+{
+    // After dusk every vehicle's headlights are one cone of light each (both
+    // lamps together), a little below level, from the front of the body.
+    // The budget then lights the road with the eight that matter most.
+    headlights_.clear();
+    if (!frame.dayNight->streetLampsOn())
+        return;
+    const auto add = [this](VehicleKind kind, const glm::vec3& position, float yawDegrees, bool yours)
+    {
+        const VehicleSpec& spec = vehicleSpec(kind);
+        const float yaw = glm::radians(yawDegrees);
+        const glm::vec3 forward {std::sin(yaw), 0.0f, std::cos(yaw)};
+        SpotLight light;
+        light.position = position + forward * (0.5f * spec.length + 0.2f) +
+                         glm::vec3 {0.0f, std::min(0.42f * spec.height, 1.0f), 0.0f};
+        light.direction = glm::normalize(forward - glm::vec3 {0.0f, 0.055f, 0.0f});
+        light.color = kind == VehicleKind::Motorbike ? glm::vec3 {0.75f, 0.72f, 0.62f} : glm::vec3 {1.25f, 1.18f, 1.0f};
+        light.range = 42.0f;
+        light.innerDegrees = 10.0f;
+        light.outerDegrees = 26.0f;
+        light.alwaysOn = yours;
+        headlights_.push_back(light);
+    };
+    for (const VehiclePose& pose : *frame.vehicles)
+    {
+        if (pose.active)
+            add(pose.kind, pose.position, pose.yawDegrees, false);
+    }
+    const PlayerView& player = frame.player;
+    add(VehicleKind::Hatchback, player.carPosition, player.carYawDegrees, frame.cameraOnPlayer && !player.walking);
+}
+
+void Scene::collectVehicles(const SceneFrame& frame, const glm::mat4& viewProjection, const glm::vec3& shadowStep)
+{
+    // Every vehicle in view, and (with shadows on) every one whose shadow
+    // reaches into it. A vehicle whose whole body is outside the view is
+    // only drawn into the shadow maps; the one you ride in shows only what
+    // its driver sees, but its whole body still casts a shadow.
+    const bool night = frame.dayNight->streetLampsOn();
+    const VehicleLamps lamps {night, frame.elapsedSeconds};
     vehicleParts_.clear();
+    partGroups_.clear();
+    const auto group = [this](const glm::vec3& centre, float radius, bool seen, bool castsShadow, auto&& fill)
+    {
+        PartGroup part;
+        part.begin = vehicleParts_.size();
+        fill();
+        part.end = vehicleParts_.size();
+        part.centre = centre;
+        part.radius = radius;
+        part.seen = seen;
+        part.casts = castsShadow;
+        partGroups_.push_back(part);
+    };
+    const bool shadows = shadowMapsInUse_ > 0;
 
     // The first frame (the hidden warm-up frame) also draws every part of
     // every kind once, far below the ground where nothing is seen, so the
@@ -387,62 +564,123 @@ void Scene::render(
     if (!vehiclesWarmed_)
     {
         vehiclesWarmed_ = true;
-        for (std::size_t kind = 0; kind < vehicleKindCount; ++kind)
+        group({0.0f, -500.0f, 0.0f}, 20.0f, true, false, [this]
         {
-            VehiclePose hidden;
-            hidden.kind = static_cast<VehicleKind>(kind);
-            hidden.position = {0.0f, -500.0f, 0.0f};
-            hidden.doorOpen = 1.0f;
-            vehicleLooks_.collect(hidden, {true, 0.0f}, vehicleParts_);
-            vehicleLooks_.collectDriverView(hidden.kind, hidden.position, 0.0f, glm::vec3(1.0f), true, vehicleParts_);
-        }
+            for (std::size_t kind = 0; kind < vehicleKindCount; ++kind)
+            {
+                VehiclePose hidden;
+                hidden.kind = static_cast<VehicleKind>(kind);
+                hidden.position = {0.0f, -500.0f, 0.0f};
+                hidden.doorOpen = 1.0f;
+                vehicleLooks_.collect(hidden, {true, 0.0f}, vehicleParts_);
+                vehicleLooks_.collectDriverView(hidden.kind, hidden.position, 0.0f, glm::vec3(1.0f), true, vehicleParts_);
+            }
+        });
     }
+
+    const std::vector<VehiclePose>& vehicles = *frame.vehicles;
     for (std::size_t index = 0; index < vehicles.size(); ++index)
     {
         const VehiclePose& pose = vehicles[index];
-        if (!pose.active || (driverView && index == selectedVehicleIndex))
+        if (!pose.active)
             continue;
+        const VehicleSpec& spec = vehicleSpec(pose.kind);
+        const bool ridden = frame.driverView && index == frame.selectedVehicleIndex;
         PointLight reach;
         reach.position = pose.position;
-        reach.range = 0.5f * vehicleSpec(pose.kind).length + 1.5f;
-        if (LightBudget::reachInView(reach, viewProjection))
-            vehicleLooks_.collect(pose, lamps, vehicleParts_);
+        reach.range = 0.5f * spec.length + 1.5f;
+        const bool seen = !ridden && LightBudget::reachInView(reach, viewProjection);
+        bool castsIntoView = false;
+        if (shadows)
+        {
+            // The body and the ground its shadow falls on, as one sphere.
+            const glm::vec3 fall = shadowStep * spec.height;
+            reach.position = pose.position + 0.5f * fall;
+            reach.range += 0.5f * glm::length(fall);
+            castsIntoView = LightBudget::reachInView(reach, viewProjection);
+        }
+        if (seen || castsIntoView)
+        {
+            group(pose.position, 0.5f * spec.length + 1.0f, seen, shadows,
+                  [&] { vehicleLooks_.collect(pose, lamps, vehicleParts_); });
+        }
     }
-    if (driverView && !vehicles.empty())
+    if (frame.driverView && !vehicles.empty())
     {
-        const VehiclePose& ridden = vehicles[selectedVehicleIndex % vehicles.size()];
-        vehicleLooks_.collectDriverView(ridden.kind, ridden.position, ridden.yawDegrees, ridden.color, true, vehicleParts_);
+        const VehiclePose& ridden = vehicles[frame.selectedVehicleIndex % vehicles.size()];
+        group(ridden.position, 4.0f, true, false, [&]
+        {
+            vehicleLooks_.collectDriverView(ridden.kind, ridden.position, ridden.yawDegrees, ridden.color, true,
+                                            vehicleParts_);
+        });
     }
 
     // Your car, a yellow hatchback: from outside, or just its bonnet in the
-    // driver view. You on foot are drawn unless you are looking through your
-    // own eyes.
+    // driver view (its whole body still casts its shadow).
+    const PlayerView& player = frame.player;
     const glm::vec3 playerColor {0.98f, 0.80f, 0.06f};
-    if (playerDrawMode == PlayerDrawMode::DriverSeat)
+    VehiclePose car;
+    car.active = true;
+    car.kind = VehicleKind::Hatchback;
+    car.position = player.carPosition;
+    car.yawDegrees = player.carYawDegrees;
+    car.wheelAngleDegrees = player.carWheelDegrees;
+    car.steerAngleDegrees = player.carSteerDegrees;
+    car.color = playerColor;
+    // Brake lights while you brake, and while you sit in it standing still.
+    car.braking = !player.walking && (std::abs(player.carSpeed) < 0.2f ||
+                                      (player.carSpeed > 0.3f && player.longitudinalAcceleration < -1.0f));
+    const bool driverSeat = frame.playerDrawMode == PlayerDrawMode::DriverSeat;
+    group(car.position, 3.0f, !driverSeat, shadows, [&] { vehicleLooks_.collect(car, lamps, vehicleParts_); });
+    if (driverSeat)
     {
-        vehicleLooks_.collectDriverView(VehicleKind::Hatchback, player.carPosition, player.carYawDegrees, playerColor,
-                                        false, vehicleParts_);
+        group(car.position, 3.0f, true, false, [&]
+        {
+            vehicleLooks_.collectDriverView(VehicleKind::Hatchback, player.carPosition, player.carYawDegrees,
+                                            playerColor, false, vehicleParts_);
+        });
     }
-    else
-    {
-        VehiclePose car;
-        car.active = true;
-        car.kind = VehicleKind::Hatchback;
-        car.position = player.carPosition;
-        car.yawDegrees = player.carYawDegrees;
-        car.wheelAngleDegrees = player.carWheelDegrees;
-        car.steerAngleDegrees = player.carSteerDegrees;
-        car.color = playerColor;
-        // Brake lights while you brake, and while you sit in it standing still.
-        car.braking = !player.walking && (std::abs(player.carSpeed) < 0.2f ||
-                                          (player.carSpeed > 0.3f && player.longitudinalAcceleration < -1.0f));
-        vehicleLooks_.collect(car, lamps, vehicleParts_);
-    }
-    drawVehicleParts();
+}
 
+void Scene::collectPeople(const SceneFrame& frame, const glm::mat4& viewProjection, const glm::vec3& shadowStep)
+{
     // The people, and you on foot unless you look through your own eyes.
-    drawPeople(pedestrians, looks, player, player.walking && playerDrawMode != PlayerDrawMode::OwnEyes,
-               cameraPosition, viewProjection);
+    // Someone just out of view whose shadow falls into it is posed too.
+    people_.begin(frame.cameraPosition, viewProjection, shadowStep * 1.8f);
+    people_.addCrowd(*frame.pedestrians, *frame.looks);
+    const PlayerView& player = frame.player;
+    for (std::size_t shape = 0; shape < bodyShapeCount; ++shape)
+        peopleSeen_[shape] = people_.instances(shape).size();
+    if (!player.walking)
+        return;
+    // You: the same figure as everyone else, in a teal jacket.
+    static const WalkerLook you = []
+    {
+        WalkerLook look;
+        look.height = Player::playerHeight;
+        look.skin = {0.86f, 0.66f, 0.52f};
+        look.hair = {0.10f, 0.07f, 0.05f};
+        look.top = {0.08f, 0.55f, 0.72f};
+        look.trousers = {0.10f, 0.12f, 0.20f};
+        look.shoes = {0.90f, 0.90f, 0.88f};
+        return look;
+    }();
+    WalkerMotion motion;
+    motion.position = player.walkerPosition;
+    motion.yawDegrees = player.walkerYawDegrees;
+    motion.speed = player.walkerSpeed;
+    motion.phase = player.walkerPhase;
+    motion.clock = frame.elapsedSeconds;
+    motion.lock[0] = player.walkerFeet[0];
+    motion.lock[1] = player.walkerFeet[1];
+    const World& world = world_;
+    people_.addPerson(you, motion, [&world](glm::vec2 point) { return world.surfaceHeight(point); });
+    // Through your own eyes you do not see yourself, but your shadow is there.
+    if (frame.playerDrawMode != PlayerDrawMode::OwnEyes)
+    {
+        for (std::size_t shape = 0; shape < bodyShapeCount; ++shape)
+            peopleSeen_[shape] = people_.instances(shape).size();
+    }
 }
 
 void Scene::drawMesh(
@@ -455,14 +693,24 @@ void Scene::drawMesh(
     const glm::vec3& emissive,
     const Texture* specularMap)
 {
-    shader_.setMat4("uModel", model);
-    shader_.setMat3("uNormalMatrix", glm::inverseTranspose(glm::mat3(model)));
-    shader_.setVec3("uBaseColor", color);
-    shader_.setVec3("uEmissiveColor", emissive);
-    shader_.setVec2("uUvScale", uvScale);
-    shader_.setFloat("uShininess", shininess);
-    shader_.setFloat("uWaveAmplitude", waveAmplitude_);
-    shader_.setFloat("uEmissiveTextured", emissiveTextured_);
+    if (shadowPass_)
+    {
+        // Depth only: where it is, and its texture for leaf cut-outs.
+        shader_->setMat4("uModel", model);
+        shader_->setVec2("uUvScale", uvScale);
+        shader_->setFloat("uWaveAmplitude", waveAmplitude_);
+        texture.bind(0);
+        mesh.draw();
+        return;
+    }
+    shader_->setMat4("uModel", model);
+    shader_->setMat3("uNormalMatrix", glm::inverseTranspose(glm::mat3(model)));
+    shader_->setVec3("uBaseColor", color);
+    shader_->setVec3("uEmissiveColor", emissive);
+    shader_->setVec2("uUvScale", uvScale);
+    shader_->setFloat("uShininess", shininess);
+    shader_->setFloat("uWaveAmplitude", waveAmplitude_);
+    shader_->setFloat("uEmissiveTextured", emissiveTextured_);
 
     // Texture unit 0 is the diffuse map and unit 1 the specular map, matching
     // the Lab 4 material. Objects with no specular map bind a white texture,
@@ -536,20 +784,24 @@ void Scene::drawCity(bool illuminated, float darkness)
     {
         const auto style = static_cast<BuildingStyle>(index);
         const Mesh& walls = props_.facade(style);
-        if (walls.empty())
+        // The far skyline stands in the haze, beyond every shadow map.
+        if (walls.empty() || (shadowPass_ && style == BuildingStyle::Skyline))
             continue;
         const FacadeLook& look = PropRenderer::facadeLook(style);
-        shader_.setVec4("uFacade", look.window);
-        shader_.setVec3("uFacadeGlass", look.glass);
-        shader_.setFloat("uWindowLight", look.litShare * darkness);
+        shader_->setVec4("uFacade", look.window);
+        shader_->setVec3("uFacadeGlass", look.glass);
+        shader_->setFloat("uWindowLight", look.litShare * darkness);
         // The far skyline melts into the haze.
-        shader_.setFloat("uHaze", style == BuildingStyle::Skyline ? 1.0f : 0.0f);
+        shader_->setFloat("uHaze", style == BuildingStyle::Skyline ? 1.0f : 0.0f);
         drawMesh(walls, identity, glm::vec3{1.0f}, white_, {1.0f, 1.0f}, look.shininess, glm::vec3{0.0f});
     }
-    shader_.setVec4("uFacade", glm::vec4{0.0f});
-    shader_.setFloat("uHaze", 1.0f);
-    drawMesh(props_.skylineRoofs(), identity, glm::vec3{1.0f}, white_, {1.0f, 1.0f}, 10.0f, glm::vec3{0.0f});
-    shader_.setFloat("uHaze", 0.0f);
+    shader_->setVec4("uFacade", glm::vec4{0.0f});
+    if (!shadowPass_)
+    {
+        shader_->setFloat("uHaze", 1.0f);
+        drawMesh(props_.skylineRoofs(), identity, glm::vec3{1.0f}, white_, {1.0f, 1.0f}, 10.0f, glm::vec3{0.0f});
+        shader_->setFloat("uHaze", 0.0f);
+    }
 
     drawMesh(props_.plainWalls(), identity, glm::vec3{1.0f}, white_, {1.0f, 1.0f}, 16.0f, glm::vec3{0.0f});
     drawMesh(props_.roofs(), identity, {0.40f, 0.41f, 0.43f}, sidewalk_, {1.0f, 1.0f}, 8.0f, glm::vec3{0.0f}, &matte_);
@@ -573,17 +825,20 @@ void Scene::drawCity(bool illuminated, float darkness)
     drawMesh(props_.concrete(), identity, {0.74f, 0.73f, 0.70f}, sidewalk_, {1.0f, 1.0f}, 10.0f, glm::vec3{0.0f});
     drawMesh(props_.shrubs(), identity, {0.26f, 0.46f, 0.22f}, grass_, {2.0f, 2.0f}, 6.0f, glm::vec3{0.0f}, &matte_);
     drawMesh(props_.bronze(), identity, {0.58f, 0.40f, 0.22f}, white_, {1.0f, 1.0f}, 70.0f, glm::vec3{0.0f});
-    drawMesh(props_.water(), identity, {0.16f, 0.30f, 0.38f}, white_, {1.0f, 1.0f}, 140.0f, glm::vec3{0.0f});
+    if (!shadowPass_)
+    {
+        drawMesh(props_.water(), identity, {0.16f, 0.30f, 0.38f}, white_, {1.0f, 1.0f}, 140.0f, glm::vec3{0.0f});
 
-    // Paving and asphalt lie 1 cm above the lawn, the car park's paint 1.5 cm
-    // above that; polygon offset keeps each on top from far away.
-    glEnable(GL_POLYGON_OFFSET_FILL);
-    glPolygonOffset(-1.0f, -2.0f);
-    drawMesh(props_.paving(), identity, {0.88f, 0.87f, 0.84f}, sidewalk_, {1.0f, 1.0f}, 12.0f, glm::vec3{0.0f});
-    drawMesh(props_.asphalt(), identity, {1.2f, 1.2f, 1.22f}, asphalt_, {1.0f, 1.0f}, 8.0f, glm::vec3{0.0f});
-    glPolygonOffset(-2.0f, -4.0f);
-    drawMesh(props_.bayPaint(), identity, {0.96f, 0.96f, 0.90f}, white_, {1.0f, 1.0f}, 4.0f, glm::vec3{0.0f});
-    glDisable(GL_POLYGON_OFFSET_FILL);
+        // Paving and asphalt lie 1 cm above the lawn, the car park's paint
+        // 1.5 cm above that; polygon offset keeps each on top from far away.
+        glEnable(GL_POLYGON_OFFSET_FILL);
+        glPolygonOffset(-1.0f, -2.0f);
+        drawMesh(props_.paving(), identity, {0.88f, 0.87f, 0.84f}, sidewalk_, {1.0f, 1.0f}, 12.0f, glm::vec3{0.0f});
+        drawMesh(props_.asphalt(), identity, {1.2f, 1.2f, 1.22f}, asphalt_, {1.0f, 1.0f}, 8.0f, glm::vec3{0.0f});
+        glPolygonOffset(-2.0f, -4.0f);
+        drawMesh(props_.bayPaint(), identity, {0.96f, 0.96f, 0.90f}, white_, {1.0f, 1.0f}, 4.0f, glm::vec3{0.0f});
+        glDisable(GL_POLYGON_OFFSET_FILL);
+    }
 
     // The parked cars, baked: their colours are in the vertex colour.
     drawMesh(props_.parkedBodies(), identity, glm::vec3{1.0f}, white_, {1.0f, 1.0f}, 70.0f, glm::vec3{0.0f});
@@ -592,12 +847,12 @@ void Scene::drawCity(bool illuminated, float darkness)
     drawMesh(props_.parkedLenses(), identity, glm::vec3{1.0f}, white_, {1.0f, 1.0f}, 80.0f, glm::vec3{0.0f}, &matte_);
 
     // Trees, swaying in the wind: bark, then the alpha-tested leaf cards.
-    shader_.setFloat("uSway", 1.0f);
+    shader_->setFloat("uSway", 1.0f);
     drawMesh(props_.bark(), identity, glm::vec3{1.0f}, white_, {1.0f, 1.0f}, 10.0f, glm::vec3{0.0f}, &matte_);
-    shader_.setFloat("uAlphaCutoff", 0.5f);
+    shader_->setFloat("uAlphaCutoff", 0.5f);
     drawMesh(props_.leaves(), identity, glm::vec3{1.0f}, props_.leafAtlas(), {1.0f, 1.0f}, 10.0f, glm::vec3{0.0f}, &matte_);
-    shader_.setFloat("uAlphaCutoff", 0.0f);
-    shader_.setFloat("uSway", 0.0f);
+    shader_->setFloat("uAlphaCutoff", 0.0f);
+    shader_->setFloat("uSway", 0.0f);
 }
 
 void Scene::drawIsland(const glm::vec2& centre)
@@ -637,6 +892,9 @@ void Scene::drawFountain(const glm::vec2& centre)
 
     drawMesh(fountainColumn_, glm::translate(glm::mat4(1.0f), origin + glm::vec3(0.0f, 0.55f, 0.0f)),
              {0.90f, 0.88f, 0.82f}, sidewalk_, {2.0f, 2.0f}, 58.0f, glm::vec3{0.0f});
+
+    if (shadowPass_)
+        return;
 
     // The water surface in the basin. Its vertices ripple in the vertex shader,
     // so the animation costs one uniform rather than a mesh rebuild.
@@ -697,6 +955,8 @@ void Scene::drawStreetFurniture()
     // while the banding picks up the sun and the street lamps.
     for (const Crate& placed : world_.crates())
     {
+        if (!casts(placed.position, 1.5f))
+            continue;
         glm::mat4 crate = glm::translate(glm::mat4(1.0f), placed.position);
         crate = glm::rotate(crate, glm::radians(placed.yawDegrees), {0.0f, 1.0f, 0.0f});
         crate = glm::scale(crate, {1.05f, 1.05f, 1.05f});
@@ -707,6 +967,8 @@ void Scene::drawStreetFurniture()
     // Road signs: a Bezier post carrying a plate that faces oncoming traffic.
     for (const RoadSign& sign : world_.roadSigns())
     {
+        if (!casts(sign.position + glm::vec3 {0.0f, 1.2f, 0.0f}, 1.6f))
+            continue;
         glm::mat4 parent = glm::translate(glm::mat4(1.0f), sign.position);
         parent = glm::rotate(parent, glm::radians(sign.yawDegrees), {0.0f, 1.0f, 0.0f});
 
@@ -730,6 +992,8 @@ void Scene::drawBillboards(bool illuminated)
         // On the lawn, or up on a roof.
         const float base = billboard.baseY > 0.0f ? billboard.baseY : RoadNetwork::kerbTopY;
         const glm::vec3 ground {billboard.centre.x, base, billboard.centre.y};
+        if (!casts(ground + glm::vec3 {0.0f, 4.0f, 0.0f}, 0.6f * World::billboardWidth + 4.0f))
+            continue;
         const glm::mat4 frame = facingFrame(ground, billboard.facingDegrees);
         const float middle = World::billboardBottom + 0.5f * World::billboardHeight;
         const float top = World::billboardBottom + World::billboardHeight;
@@ -785,6 +1049,8 @@ void Scene::drawNeonSigns(bool illuminated)
     for (std::size_t index = 0; index < signs.size() && index < neonLetters_.size(); ++index)
     {
         const NeonSign& sign = signs[index];
+        if (!casts(sign.centre, sign.letterHeight * static_cast<float>(sign.text.size()) + 1.0f))
+            continue;
 
         // A dark rail behind the letters, fixed to the wall.
         const glm::mat4 frame = facingFrame(sign.centre, sign.facingDegrees);
@@ -826,6 +1092,8 @@ void Scene::drawSignals(const TrafficSystem& traffic)
     // junction, just behind the stop line, facing the oncoming cars.
     for (const SignalHead& head : world_.signalHeads())
     {
+        if (!casts({head.foot.x, 2.5f, head.foot.y}, 3.0f))
+            continue;
         drawTrafficSignal({head.foot.x, RoadNetwork::kerbTopY, head.foot.y}, head.yawDegrees,
                           traffic.signalFor(head.junction, head.arm),
                           traffic.leftArrowFor(head.junction, head.arm) == SignalState::Green, true);
@@ -838,6 +1106,8 @@ void Scene::drawGiveWaySigns()
     // the roundabouts and the side roads of the give-way T-junctions.
     for (const GiveWaySign& sign : world_.giveWaySigns())
     {
+        if (!casts({sign.foot.x, 1.5f, sign.foot.y}, 1.5f))
+            continue;
         glm::mat4 parent = glm::translate(glm::mat4(1.0f), {sign.foot.x, RoadNetwork::kerbTopY, sign.foot.y});
         parent = glm::rotate(parent, glm::radians(sign.yawDegrees), {0.0f, 1.0f, 0.0f});
         drawMesh(lampPost_, glm::scale(parent, {0.42f, 0.42f, 0.42f}),
@@ -913,11 +1183,19 @@ void Scene::drawTrafficSignal(
     }
 }
 
-void Scene::drawVehicleParts()
+void Scene::drawVehicleParts(bool shadows)
 {
-    for (const VehiclePart& part : vehicleParts_)
-        drawMesh(*part.mesh, part.model, part.color, white_, {1.0f, 1.0f}, part.shininess, part.emissive,
-                 part.matte ? &matte_ : nullptr);
+    for (const PartGroup& group : partGroups_)
+    {
+        if (shadows ? !group.casts || !casts(group.centre, group.radius) : !group.seen)
+            continue;
+        for (std::size_t index = group.begin; index < group.end; ++index)
+        {
+            const VehiclePart& part = vehicleParts_[index];
+            drawMesh(*part.mesh, part.model, part.color, white_, {1.0f, 1.0f}, part.shininess, part.emissive,
+                     part.matte ? &matte_ : nullptr);
+        }
+    }
 }
 
 void Scene::buildBusShelters()
@@ -1007,6 +1285,8 @@ void Scene::drawBusShelters(bool illuminated)
     for (const BusShelter& shelter : world_.busShelters())
     {
         const glm::mat4 frame = facingFrame({shelter.centre.x, RoadNetwork::kerbTopY, shelter.centre.y}, shelter.facingDegrees);
+        if (!casts({shelter.centre.x, 1.5f, shelter.centre.y}, 3.0f))
+            continue;
         for (float side : {-1.0f, 1.0f})
         {
             glm::mat4 face = glm::translate(frame, {halfLength + side * 0.075f, 1.35f, -0.1f});
@@ -1069,56 +1349,34 @@ void Scene::drawWalkSignals(const TrafficSystem& traffic)
     drawInstances(walkSignalLens_, walkLenses_, 60.0f, false);
 }
 
-void Scene::drawInstances(const Mesh& mesh, const std::vector<InstanceData>& instances, float shininess, bool matte)
+void Scene::drawInstances(const Mesh& mesh, const std::vector<InstanceData>& instances, float shininess, bool matte,
+                          std::size_t count)
 {
-    if (instances.empty())
+    count = std::min(count, instances.size());
+    if (count == 0)
         return;
     people_.buffer().upload(instances);
-    shader_.setFloat("uInstanced", 1.0f);
-    shader_.setVec3("uBaseColor", glm::vec3{1.0f});
-    shader_.setVec3("uEmissiveColor", glm::vec3{0.0f});
-    shader_.setVec2("uUvScale", {1.0f, 1.0f});
-    shader_.setFloat("uShininess", shininess);
-    shader_.setFloat("uWaveAmplitude", 0.0f);
-    shader_.setFloat("uEmissiveTextured", 0.0f);
+    shader_->setFloat("uInstanced", 1.0f);
+    shader_->setVec3("uBaseColor", glm::vec3{1.0f});
+    shader_->setVec3("uEmissiveColor", glm::vec3{0.0f});
+    shader_->setVec2("uUvScale", {1.0f, 1.0f});
+    shader_->setFloat("uShininess", shininess);
+    shader_->setFloat("uWaveAmplitude", 0.0f);
+    shader_->setFloat("uEmissiveTextured", 0.0f);
     white_.bind(0);
     (matte ? matte_ : white_).bind(1);
-    mesh.drawInstanced(people_.buffer(), instances.size());
-    shader_.setFloat("uInstanced", 0.0f);
+    mesh.drawInstanced(people_.buffer(), count);
+    shader_->setFloat("uInstanced", 0.0f);
 }
 
-void Scene::drawPeople(const std::vector<PedestrianPose>& pedestrians, const std::vector<WalkerLook>& looks,
-                       const PlayerView& player, bool drawPlayer, const glm::vec3& cameraPosition,
-                       const glm::mat4& viewProjection)
+void Scene::drawPeople()
 {
-    people_.begin(cameraPosition, viewProjection);
-    people_.addCrowd(pedestrians, looks);
-    if (drawPlayer)
-    {
-        // You: the same figure as everyone else, in a teal jacket.
-        static const WalkerLook you = []
-        {
-            WalkerLook look;
-            look.height = Player::playerHeight;
-            look.skin = {0.86f, 0.66f, 0.52f};
-            look.hair = {0.10f, 0.07f, 0.05f};
-            look.top = {0.08f, 0.55f, 0.72f};
-            look.trousers = {0.10f, 0.12f, 0.20f};
-            look.shoes = {0.90f, 0.90f, 0.88f};
-            return look;
-        }();
-        WalkerMotion motion;
-        motion.position = player.walkerPosition;
-        motion.yawDegrees = player.walkerYawDegrees;
-        motion.speed = player.walkerSpeed;
-        motion.phase = player.walkerPhase;
-        motion.clock = elapsedSeconds_;
-        motion.lock[0] = player.walkerFeet[0];
-        motion.lock[1] = player.walkerFeet[1];
-        const World& world = world_;
-        people_.addPerson(you, motion, [&world](glm::vec2 point) { return world.surfaceHeight(point); });
-    }
+    // Everyone posed this frame into the shadow maps; on screen, all but
+    // you when you look through your own eyes.
     for (std::size_t shape = 0; shape < bodyShapeCount; ++shape)
+    {
+        const std::size_t count = shadowPass_ ? people_.instances(shape).size() : peopleSeen_[shape];
         drawInstances(people_.mesh(shape), people_.instances(shape), PedestrianRenderer::shininess(shape),
-                      PedestrianRenderer::matte(shape));
+                      PedestrianRenderer::matte(shape), count);
+    }
 }

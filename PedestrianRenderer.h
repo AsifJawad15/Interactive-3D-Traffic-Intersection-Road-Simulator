@@ -25,9 +25,11 @@ class PedestrianRenderer
 public:
     PedestrianRenderer();
 
-    // Starts a frame's list of parts.
-    void begin(const glm::vec3& cameraPosition, const glm::mat4& viewProjection);
-    // Everyone in view.
+    // Starts a frame's list of parts. `shadowReach` is where the shadow of
+    // a person's head falls, from their feet (zero without shadows).
+    void begin(const glm::vec3& cameraPosition, const glm::mat4& viewProjection,
+               const glm::vec3& shadowReach = glm::vec3(0.0f));
+    // Everyone in view, or whose shadow is.
     void addCrowd(const std::vector<PedestrianPose>& poses, const std::vector<WalkerLook>& looks);
     // One more person posed on the spot (you, on foot).
     void addPerson(const WalkerLook& look, const WalkerMotion& motion, const GroundHeight& ground);
@@ -55,6 +57,7 @@ private:
     MannequinPose scratch_;
     glm::vec3 cameraPosition_ {0.0f};
     glm::mat4 viewProjection_ {1.0f};
+    glm::vec3 shadowReach_ {0.0f};
     unsigned int frame_ = 0;
     std::size_t drawn_ = 0;
 
