@@ -1,6 +1,7 @@
 ﻿# Enhancement Plan: OpenGLMiniProject → Open-World Smart City Traffic Simulator
 
-> Status: **Phases 0 to 9 complete and verified. Next: Phase 10 (Enhanced mode and the corner button).** Written 2026-09-23.
+> Status: **Phases 0 to 10 complete and verified. Next: Phase 11 (delivery).** Written 2026-09-23.
+> **Revised 2026-09-25 (Phase 10):** Enhanced mode is presented as "ray tracing (partial)". As you asked, the button (and `F3`) opens a question in the middle of the screen, "RAY TRACING ON?", with Yes and No. The button sits in a third row under the weather's rather than above the time buttons. How much of each pixel is a mirror goes in the HDR colour's spare alpha channel, and normals come from the depth buffer, so there is no second render target. The soft shadows are two more scene programs, used only while it is on. It costs about 1 ms, not 3, so nothing had to be cut at Evening in the rain.
 > **Revised 2026-09-25 (Phase 9):** the weather buttons came with `K`. The "splashes" are rings drawn in the scene shader where drops land, on any upward surface near the camera, instead of sprites. The scene shader is built twice (dry, and with the weather), because the weather code slowed it even when unused. The rain soaks found a pedestrian starvation case at roundabout exits, fixed in `crossingBlocker`.
 > **Revised 2026-09-25 (Phase 8):** the shadows are two maps, a near one that follows the camera and one over the whole city (Low keeps only the city map), so `F2` cycles High, Low and Off. Long glides (night to noon) take up to 4.5 s instead of 3, and the cursor rules and clickable buttons came in now with the time buttons instead of in Phase 10.
 > **Revised 2026-09-25 (Phase 7):** the `G` key (advance every signal) is removed, as you asked. As agreed, the walking motion is authored as keyframed clips in code instead of BVH motion-capture files, and umbrellas are built but stay closed until Phase 9.
@@ -37,7 +38,50 @@
 | 7. Pedestrians | ✅ Done and verified | 2026-09-25 | `enhancement/phase-7-pedestrians` |
 | 8. Sun, moon, time presets and shadows | ✅ Done and verified | 2026-09-25 | `enhancement/phase-8-sun-shadows` |
 | 9. Weather: clouds and light rain | ✅ Done and verified | 2026-09-25 | `enhancement/phase-9-weather` |
-| 10 and 11 | Not started | | |
+| 10. Enhanced mode (partial ray tracing) | ✅ Done and verified | 2026-09-25 | `enhancement/phase-10-enhanced` |
+| 11. Delivery | Not started | | |
+
+### ✅ Checkpoint 10: ray tracing (Enhanced mode) and its question (2026-09-25)
+
+**What was built**
+- **The question:** the ray-tracing button (a third row in the corner panel, under the weather) or `F3` dims the screen and asks "RAY TRACING ON?" in the middle of it: what it adds, what it costs, and whether it is on now.
+  - *Yes* (click, `Y`, `Enter`) turns it on; *No* (click, `N`) turns it off. `Esc`, `F3` again or a click beside the box closes it with nothing changed.
+  - While it is open the cursor is free in every view, and YES / NO light up under it. Other keys keep working.
+- **Reflections** (`ssr.frag`, half resolution): 32 growing steps through the depth buffer, then five halvings. Where a ray hits, what it found replaces the sky the surface mirrored; off screen, back towards the camera or at the end of its reach, it fades and the sky stays. A wet road smears what it reflects up and down (streaks of lamps and neon); a puddle stays sharp.
+- **What is a mirror:** the scene shader writes it into the HDR colour's spare alpha channel (paint and glass a little, more at a grazing angle; window panes more; wet ground and puddles as much as they mirror the sky). Sky and rain write 0. Normals are rebuilt from depth (the nearer neighbour on each axis). No second render target.
+- **Ambient occlusion and contact shadows** (`ssao.frag` + `ssao_blur.frag`, half resolution): 12 points in the half ball; 10 steps up the sunbeam under a metre; a 5 × 5 depth-aware blur. Glowing pixels are left alone.
+- **Soft shadows (PCSS)** in the near map (`shadows.glsl`, `SOFT_SHADOWS`): a caster search (8 taps plus the centre; if it finds none, the plain filter decides), then a 16-tap filter as wide as the gap calls for. Two more programs (`scene_soft.frag`, `scene_wet_soft.frag`), used only while ray tracing is on and the sky is not overcast; the near map is read a second time as plain depth through a sampler object.
+- **Sun shafts** (`sunshafts_mask.frag` + `sunshafts.frag`, quarter resolution): bright open sky near a low sun, gathered along the line to the sun. Off when the sun is high, behind the camera, under an overcast sky or at night.
+- **Composite** (`enhance_composite.frag`, full resolution): depth-aware upsample of the half-resolution results, then occlusion, reflections and shafts. Bloom 35 % stronger.
+- **HUD:** the button, the passes' total in its header, and a line with each pass's GPU time (`GpuSections` in `FrameStats`), the scene pass's, and `PCSS` when the soft shadows are in use. Help line `F3 RAY TRACING ON / OFF (ASKS)`.
+- **Capture flags:** `--enhanced` (the report adds each pass's time) and `--confirm` (the question on screen).
+
+**Changes along the way**
+- **Grain:** the first occlusion had per-pixel noise with nothing to smooth it (visible on a van's rear panel at 1:1); the blur pass fixed it. The soft shadows' taps first turned per pixel and left speckles along soft edges; the pattern is now fixed.
+- **Low sun:** at Evening the soft shadows smeared the trees' leaf shadows into haze. Narrowing the edge (14 → 4 texels) did not help: at a sun 8 degrees up one map texel is seven times longer on the ground. The widest edge now follows the sun's height (2 texels low, 4.5 high), and the evening leaf shadows are crisper than with it off.
+- **Shafts** at first washed the whole frame in haze; tighter round the sun, a faster fall-off, half the strength.
+
+**New files:** `Enhanced.h/.cpp`, `shaders/enhanced.glsl`, `ssr.frag`, `ssao.frag`, `ssao_blur.frag`, `sunshafts_mask.frag`, `sunshafts.frag`, `enhance_composite.frag`, `scene_soft.frag`, `scene_wet_soft.frag`.
+**Edited:** `Scene.*`, `ShadowMap.*`, `FrameStats.*`, `PostProcess.*`, `Overlay.*`, `main.cpp`, `shaders/scene_body.glsl`, `shadows.glsl`, `sky.frag`, `rain.frag`, `README.md` and both project files.
+
+**Verification**
+- **Build:** Release x64, no errors, no warnings.
+- **`--self-test`, `--sun-test`, `--weather-test`, `--light-test`, `--motion-test`, `--walk-test`, `--player-test`:** all PASS with the same figures as Checkpoint 9. The simulation was not touched, so the soaks were not re-run.
+- **Captures, off and on:** the shopping street at Night in the rain (neon, shop windows, the bus's tail lights and the poster in the road and puddles); street level at Afternoon and Noon (contact shading under the van and along the kerbs, the lamp-post shadow sharp at its foot and soft at its tip); Evening facing the sun (the bus's shadow as a beam, crisp leaf shadows); Morning from above (beams across the lawn); the question on screen; the HUD with the passes' times.
+- **GPU time, 1080p fullscreen, 400 frames each:** 7 views × Evening and Night × clear and rain, off and on (56 runs). Every run 72 FPS. Ray tracing adds −0.9 to +1.3 ms (runs vary by ±0.6 ms); highest with it on 10.3 ms.
+- **The heaviest view** (G and ST at Evening, city run 60 s first, two runs each):
+
+  | Weather | Off | On | Passes | Scene pass off → on |
+  |---|---|---|---|---|
+  | Clear | 7.6–8.2 ms | 8.3–8.5 ms | 0.60 ms | 4.8 → 5.1 ms |
+  | Cloudy | 9.3–9.4 ms | 10.0–10.3 ms | 0.62 ms | 6.1 → 6.4 ms |
+
+  - Per pass: reflections 0.2 ms (0.3 at night in the rain), occlusion 0.23–0.36 ms, shafts 0.11–0.13 ms, composite 0.17–0.20 ms.
+  - Single slow frames of 21–39 ms appear with it off and on alike, as in Checkpoint 9.
+
+**Still to note**
+- Reflections can only show what is on screen: a building behind the camera never appears in a puddle, and reflections fade towards the screen's edges. That is the "partial" in partial ray tracing, and the README says so.
+- Phase 11 (delivery) is next: README lab mapping, help panel, final soaks, a performance pass and the viva script.
 
 ### ✅ Checkpoint 9: weather, clouds and light rain (2026-09-25)
 
@@ -1216,7 +1260,7 @@ Built in this order, each step checked with captures before the next:
 - **Can move earlier:** clouds depend only on the Phase 0 sky, so steps 1 and 2 can run straight after Phase 1 if you want them sooner.
 
 ### Phase 10: Enhanced mode and the corner button
-- **Button and input:** the corner panel button with mouse hit testing, the cursor rule (free outside Free-cam, `Left Alt` in Free-cam), and `F3`.
+- **Button and input:** the corner panel button with mouse hit testing, the cursor rule (free outside Free-cam, `Left Alt` in Free-cam), and `F3`. Both open a question in the middle of the screen, "RAY TRACING ON?", answered Yes or No (added 2026-09-25).
 - **Scene pass:** a second render target for normals and roughness, with a nearest-filter resolve.
 - **Effects:**
   - **SSR:** half resolution, Fresnel- and wetness-weighted, fading at screen edges.

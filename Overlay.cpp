@@ -66,7 +66,7 @@ void Overlay::render(
 
     // The key list folds away with H so it does not cover the scene during a
     // demonstration; the status lines always stay.
-    const float panelHeight = showHelp ? 704.0f : 215.0f;
+    const float panelHeight = showHelp ? 724.0f : 215.0f;
     drawRectangle(14.0f, 14.0f, 470.0f, panelHeight, {0.015f, 0.025f, 0.045f, 0.90f}, width, height);
     drawRectangle(14.0f, 14.0f, 470.0f, 34.0f, {0.02f, 0.08f, 0.12f, 0.97f}, width, height);
 
@@ -124,7 +124,7 @@ void Overlay::render(
         drawText(left, y, 1.28f, "INTERACTION OPTIONS", {1.0f, 0.82f, 0.08f, 1.0f}, width, height);
         y += 24.0f;
 
-        static constexpr std::array<const char*, 22> controls = {
+        static constexpr std::array<const char*, 23> controls = {
             "W A S D   MOVE FREE CAMERA (SHIFT X4)",
             "Q / E     MOVE DOWN / UP",
             "MOUSE     LOOK (HOLD ALT FOR A CURSOR)",
@@ -143,6 +143,7 @@ void Overlay::render(
             "T / Y / N AUTO DAY / SET DAY / SET NIGHT",
             "K / L     WEATHER / TOGGLE LIGHTS",
             "F2        SHADOWS HIGH / LOW / OFF",
+            "F3        RAY TRACING ON / OFF (ASKS)",
             "F5 F6 F7  GRAPH / RESOLUTION / PACING",
             "F11       FULLSCREEN",
             "H         HIDE THIS PANEL",
@@ -169,6 +170,9 @@ void Overlay::render(
     drawPlayerPanel(extras, width, height);
     drawTimePanel(extras, timeText, width, height);
     drawWeatherPanel(extras, width, height);
+    drawEnhancedPanel(extras, width, height);
+    if (extras.confirmOpen)
+        drawConfirmDialog(extras, width, height);
 
     glDisable(GL_BLEND);
     glEnable(GL_DEPTH_TEST);
@@ -538,4 +542,96 @@ void Overlay::drawWeatherPanel(const HudExtras& extras, int screenWidth, int scr
                  settled ? glm::vec4{0.02f, 0.04f, 0.07f, 1.0f} : glm::vec4{0.92f, 0.94f, 0.98f, 1.0f},
                  screenWidth, screenHeight);
     }
+}
+
+void Overlay::drawEnhancedPanel(const HudExtras& extras, int screenWidth, int screenHeight)
+{
+    if (extras.enhancedMs == nullptr)
+        return;
+
+    // Under the weather: the ray-tracing button, lit while it is on, and
+    // then the GPU time of each of its passes.
+    const float x0 = EnhancedButton::left(screenWidth);
+    const float y0 = EnhancedButton::top + TimeButtons::header;
+    const float panelHeight = TimeButtons::header + TimeButtons::buttonHeight + (extras.enhanced ? 34.0f : 10.0f);
+    drawRectangle(x0 - 10.0f, EnhancedButton::top, EnhancedButton::width + 20.0f, panelHeight,
+                  {0.015f, 0.025f, 0.045f, 0.88f}, screenWidth, screenHeight);
+
+    const float* ms = extras.enhancedMs;
+    const float passesMs = ms[0] + ms[1] + ms[2] + ms[3];
+    std::array<char, 96> line {};
+    if (extras.enhanced)
+        std::snprintf(line.data(), line.size(), "RAY TRACING (PARTIAL)   PASSES %.1f MS", passesMs);
+    else
+        std::snprintf(line.data(), line.size(), "RAY TRACING (PARTIAL)   F3");
+    drawText(x0, EnhancedButton::top + 8.0f, 1.1f, line.data(), {0.72f, 0.95f, 0.55f, 1.0f}, screenWidth, screenHeight);
+
+    drawRectangle(x0, y0, EnhancedButton::width, TimeButtons::buttonHeight,
+                  extras.enhanced ? glm::vec4{0.38f, 0.78f, 0.30f, 0.95f} : glm::vec4{0.10f, 0.16f, 0.24f, 0.95f},
+                  screenWidth, screenHeight);
+    const char* label = extras.enhanced ? "ON   REFLECTIONS  AO  SOFT SHADOWS  SUN SHAFTS"
+                                        : "OFF   CLICK TO TURN ON";
+    const float scale = 1.15f;
+    const float textWidth = static_cast<float>(stb_easy_font_width(const_cast<char*>(label))) * scale;
+    drawText(x0 + 0.5f * (EnhancedButton::width - textWidth), y0 + 9.0f, scale, label,
+             extras.enhanced ? glm::vec4{0.02f, 0.06f, 0.02f, 1.0f} : glm::vec4{0.92f, 0.94f, 0.98f, 1.0f},
+             screenWidth, screenHeight);
+
+    if (extras.enhanced)
+    {
+        std::array<char, 16> shafts {};
+        if (extras.sunShafts)
+            std::snprintf(shafts.data(), shafts.size(), "%.1f", ms[2]);
+        else
+            std::snprintf(shafts.data(), shafts.size(), "-");
+        std::snprintf(line.data(), line.size(), "SSR %.1f  AO %.1f  SHAFTS %s  MIX %.1f  SCENE %.1f MS%s",
+                      ms[0], ms[1], shafts.data(), ms[3], ms[4], extras.softShadows ? "  PCSS" : "");
+        drawText(x0, y0 + TimeButtons::buttonHeight + 9.0f, 1.0f, line.data(), {0.70f, 0.88f, 0.80f, 1.0f},
+                 screenWidth, screenHeight);
+    }
+}
+
+void Overlay::drawConfirmDialog(const HudExtras& extras, int screenWidth, int screenHeight)
+{
+    // The whole screen dims a little, and the question sits in the middle.
+    drawRectangle(0.0f, 0.0f, static_cast<float>(screenWidth), static_cast<float>(screenHeight),
+                  {0.0f, 0.0f, 0.0f, 0.45f}, screenWidth, screenHeight);
+    const float x0 = ConfirmDialog::left(screenWidth);
+    const float y0 = ConfirmDialog::top(screenHeight);
+    drawRectangle(x0, y0, ConfirmDialog::width, ConfirmDialog::height, {0.02f, 0.035f, 0.06f, 0.97f},
+                  screenWidth, screenHeight);
+    drawRectangle(x0, y0, ConfirmDialog::width, 4.0f, {0.72f, 0.95f, 0.55f, 1.0f}, screenWidth, screenHeight);
+
+    const float centreX = 0.5f * static_cast<float>(screenWidth);
+    const auto centred = [&](float y, float scale, const char* text, const glm::vec4& color)
+    {
+        const float textWidth = static_cast<float>(stb_easy_font_width(const_cast<char*>(text))) * scale;
+        drawText(centreX - 0.5f * textWidth, y, scale, text, color, screenWidth, screenHeight);
+    };
+    centred(y0 + 26.0f, 2.6f, "RAY TRACING ON?", {1.0f, 0.82f, 0.08f, 1.0f});
+    centred(y0 + 70.0f, 1.2f, extras.enhanced ? "IT IS ON NOW" : "IT IS OFF NOW", {0.72f, 0.95f, 0.55f, 1.0f});
+
+    const glm::vec4 body {0.88f, 0.91f, 0.96f, 1.0f};
+    const glm::vec4 note {0.58f, 0.70f, 0.78f, 1.0f};
+    centred(y0 + 100.0f, 1.15f, "PARTIAL RAY TRACING: RAYS ARE TRACED THROUGH THE DEPTH BUFFER", body);
+    centred(y0 + 120.0f, 1.15f, "REFLECTIONS IN WET ROADS, PUDDLES, PAINT AND GLASS", body);
+    centred(y0 + 140.0f, 1.15f, "AMBIENT OCCLUSION, CONTACT SHADOWS, SOFT SHADOWS, SUN SHAFTS", body);
+    centred(y0 + 166.0f, 1.05f, "ABOUT 1 MS MORE GPU TIME A FRAME (3 MS AT MOST)", note);
+
+    static constexpr std::array<const char*, 2> labels = {"YES   (Y)", "NO   (N)"};
+    for (int button = 0; button < 2; ++button)
+    {
+        const float bx = ConfirmDialog::buttonLeft(screenWidth, button);
+        const float by = ConfirmDialog::buttonTop(screenHeight);
+        const bool hovered = extras.confirmHover == button;
+        const glm::vec4 fill = button == 0 ? (hovered ? glm::vec4{0.50f, 0.92f, 0.40f, 1.0f} : glm::vec4{0.30f, 0.66f, 0.24f, 1.0f})
+                                           : (hovered ? glm::vec4{0.95f, 0.38f, 0.30f, 1.0f} : glm::vec4{0.55f, 0.18f, 0.15f, 1.0f});
+        drawRectangle(bx, by, ConfirmDialog::buttonWidth, ConfirmDialog::buttonHeight, fill, screenWidth, screenHeight);
+        const float scale = 1.6f;
+        const float textWidth = static_cast<float>(stb_easy_font_width(const_cast<char*>(labels[button]))) * scale;
+        drawText(bx + 0.5f * (ConfirmDialog::buttonWidth - textWidth), by + 13.0f, scale, labels[button],
+                 {0.02f, 0.03f, 0.04f, 1.0f}, screenWidth, screenHeight);
+    }
+    centred(ConfirmDialog::buttonTop(screenHeight) + ConfirmDialog::buttonHeight + 12.0f, 1.0f,
+            "ENTER: YES    ESC: CLOSE WITHOUT CHANGING", note);
 }

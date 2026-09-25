@@ -34,7 +34,11 @@ the sun glides to them so that every shadow in the city sweeps round with it.
 The weather is Clear, Cloudy or Rain (`K`, or a click): clouds drift over the
 sky and their shadows over the streets, and in the rain the streets get wet,
 puddles fill, people put up umbrellas and drivers slow down with their
-headlights on.
+headlights on. A **ray-tracing button** (or `F3`) asks "RAY TRACING ON?" in
+the middle of the screen; *Yes* turns on partial ray tracing: rays marched
+through the depth buffer give reflections in the wet streets, puddles, paint
+and glass, ambient occlusion and contact shadows, soft sun shadows and sun
+shafts.
 
 The traffic is **collision-free by construction**: every place where two routes
 could touch is measured once at start-up, and a vehicle only enters a junction
@@ -94,7 +98,8 @@ that `shaders/` and `assets/` resolve. `--cars N` sets the number of cars
 | `R` | Reset camera, traffic, time and weather |
 | `H` | Show / hide the control panel |
 | **`F2`** | **Shadows: high (two maps) / low (the city map only) / off** |
-| `Alt` (hold) | Show the cursor while the mouse is looking round (free camera, on foot, driver view), to click the time and weather buttons |
+| **`F3`** or **click the ray-tracing button** | **Asks "RAY TRACING ON?" in the middle of the screen: `Y` / `Enter` / *Yes* turns it on, `N` / *No* turns it off, `Esc` (or a click beside it) closes it unchanged** |
+| `Alt` (hold) | Show the cursor while the mouse is looking round (free camera, on foot, driver view), to click the time, weather and ray-tracing buttons |
 | `F5` | Frame-time graph (last 240 frames) |
 | `F6` | Resolution: automatic / always native / always 720p inside the window |
 | `F7` | Frame pacing: steady (every second refresh on a 120 Hz+ screen) / full rate |
@@ -102,8 +107,9 @@ that `shaders/` and `assets/` resolve. `--cars N` sets the number of cars
 | `Esc` | Exit |
 
 The cursor is free in the views that do not look with the mouse (top, follow,
-chase, the AI driver's seat, following a person), so the time and weather
-buttons can be clicked there directly.
+chase, the AI driver's seat, following a person), so the time, weather and
+ray-tracing buttons can be clicked there directly. While the ray-tracing
+question is open the cursor is free in every view.
 
 The window opens at 1920×1080, or maximised when the screen is only 1080p tall
 (`F11` then gives true fullscreen 1080p; `--fullscreen` starts that way). The old
@@ -496,6 +502,71 @@ the lower part of the view (the view sits at the top of the windscreen, so
 they sweep a pane just in front of the eyes, from pivots under the bonnet's
 rear edge).
 
+### Ray tracing (Enhanced mode): partial, through the depth buffer
+
+OpenGL 3.3 has no ray-tracing hardware, and tracing rays through the whole
+city in software would not hold 60 FPS. So this is *partial* ray tracing:
+after the city is drawn, rays are marched through its **depth buffer**, which
+holds the nearest surface under every pixel. What the screen shows, the rays
+can hit; what it does not (the back of a building, anything off screen),
+they cannot. `Enhanced.cpp` runs the passes; `F3` or the button under the
+weather asks first.
+
+**The question.** Clicking the button (or `F3`) dims the screen and asks
+"RAY TRACING ON?" in the middle of it, with what it adds and what it costs.
+*Yes* (`Y`, `Enter`) turns it on, *No* (`N`) turns it off, and `Esc` or a
+click beside the box closes it with nothing changed. While it is open the
+cursor is free in every view.
+
+| Effect | Shader | Resolution | How |
+| --- | --- | --- | --- |
+| Reflections | `ssr.frag` | half | A ray reflected off every surface that is partly a mirror, marched in 32 growing steps until it passes just behind the depth buffer, then refined by halving the last step five times. |
+| Ambient occlusion | `ssao.frag`, `ssao_blur.frag` | half | 12 points over the half ball above each surface; those behind the depth buffer are shut in. A 5 × 5 depth-aware blur smooths the grain. |
+| Contact shadows | `ssao.frag` | half | 10 steps up the sunbeam, under a metre: the thin shadows under tyres, feet and kerbs that the shadow map is too coarse to hold. |
+| Soft shadows (PCSS) | `shadows.glsl` (`SOFT_SHADOWS`) | full | A search in the near shadow map finds how far above a point its casters are; the edge is then filtered that wide, so a shadow is sharp where it touches its caster and softens away from it. |
+| Sun shafts | `sunshafts_mask.frag`, `sunshafts.frag` | quarter | The open sky near a low sun is gathered along the line from each pixel to the sun; buildings and trees in the way cast dark beams through it. |
+| Bloom | `PostProcess.cpp` | — | 35 % stronger, so neon and lamps glow a little more. |
+
+**What is a mirror.** The scene shader writes into the colour's spare alpha
+channel how much of each pixel is a mirror: polished paint and glass a
+little (more at a grazing angle, by Fresnel's law), window panes more, wet
+roads and puddles as much as they already mirror the sky. The reflection
+pass reads it, so no second render target is needed; the sky and the rain
+write 0. Where a ray hits, what it found replaces the sky the surface was
+reflecting; where it leaves the screen, turns back towards the camera or
+reaches its end, the reflection fades out and the sky stays. On a wet road
+(a rough mirror) the reflection is smeared up and down, which gives the long
+streaks of lamps and neon on a wet street at night; a puddle stays sharp.
+
+**Normals from depth.** The passes rebuild each pixel's position and normal
+from the depth buffer alone. On each axis the neighbour nearer in depth is
+used, so at an object's edge the normal is the object's own.
+
+**Depth-aware upsampling.** The half-resolution results are brought up in the
+composite pass (`enhance_composite.frag`): of the four half-resolution pixels
+round a pixel, the ones at its own depth count, so the shade under a car never
+bleeds onto the road seen past it. Occlusion and contact shadows darken lit
+surfaces but not what glows, so neon in a corner stays as bright as it is.
+
+**Soft shadows and a low sun.** The PCSS taps lie in one fixed pattern
+(turning it per pixel left grain along every soft edge), and the widest edge
+follows the sun's height: at a low sun one shadow-map texel stretches up to
+seven times its length along the ground, so there the edge is kept as narrow
+as the plain filter's, or leaf shadows smear into haze. Under an overcast sky
+the shadows are faint and soft already, and the cheaper program is used. The
+soft shadows are two more programs (`scene_soft.frag`, `scene_wet_soft.frag`),
+used only while ray tracing is on, so the plain ones stay as small and fast as
+before.
+
+**Cost.** The corner panel shows each pass's GPU time while it is on.
+Measured at 1080p on the RTX 3050 laptop GPU, the passes take 0.6–0.9 ms in
+all (reflections 0.2–0.3, occlusion and contact shadows 0.2–0.35, sun shafts
+0.1 when shown, composite 0.2), and the soft shadows add 0.2–0.35 ms to the
+scene pass: about 1 ms, against a budget of 3. The heaviest view (the
+T-junctions G and ST at Evening under cloud, with its long shadows) goes from
+9.3–9.4 to 10.0–10.3 ms of the 13.9 ms frame, and every view tested, day and
+night, clear and rain, stays at a steady 72 FPS.
+
 ---
 
 ## Your car, and you on foot
@@ -737,11 +808,12 @@ slow frame whether the time went into our own work or into the buffer swap.
 Options: `--view 0..26 --time H --glide H --shadows high|low|off --shading 0..2
 --weather clear|cloudy|rain --wet W --weather-to clear|cloudy|rain
 --no-hud --frames N --size 1920x1080 --fullscreen --scale 0.67 --full-rate
---graph --warm S`. `--glide H` starts the sun gliding to H with the
+--graph --warm S --enhanced --confirm`. `--glide H` starts the sun gliding to H with the
 first frame, and `--warm S` runs the city for S seconds before the first frame.
 `--weather` sets the sky at once (rain: streets soaked, umbrellas up), `--wet W`
 sets how wet the streets are (0..1), and `--weather-to` starts a blend with the
-first frame.
+first frame. `--enhanced` turns ray tracing on (the report then adds each
+pass's GPU time), and `--confirm` shows the ray-tracing question on screen.
 The views are
 0 the central crossroads, 1 street level, 2 roundabout R1 and its fountain, 3 the
 whole city, 4 the T-junctions G and ST, 5 straight down, 6 roundabout R2,
@@ -792,14 +864,20 @@ took to build.
    then Rain (headlights on, umbrellas up, the road darkening, puddles filling
    and rings where drops land). Then Night in the rain: rain glittering under
    the lamps, lamps shining in the puddles, and the wipers from the driver view.
-12. **Shading comparison** (`1` / `2` / `3`) — flat, Gouraud and Phong, best seen on
+12. **Ray tracing** (the button or `F3`, then *Yes*) — at Night in the rain on
+   the shopping street (view 18): neon, shop windows and tail lights appear in
+   the wet road and the puddles. Then Afternoon: soft contact shading under
+   the cars and along the kerbs, and shadows sharp at their casters and softer
+   away from them. Then Evening facing the sun: shafts of light past the
+   buildings. Click again and answer *No* to compare.
+13. **Shading comparison** (`1` / `2` / `3`) — flat, Gouraud and Phong, best seen on
    the curved fountain, the lamp posts and the tree trunks.
 
 ---
 
 ## Deliberately not included
 
-Storms, fog, imported models and physics are not part of this version;
-`ENHANCEMENT_PLAN.md` lists what comes next (the Enhanced mode).
+Storms, fog, imported models, physics and full (hardware) ray tracing are not
+part of this version; `ENHANCEMENT_PLAN.md` lists what comes next (delivery).
 The scene is authored geometry throughout: there is no model file anywhere in
 this project.

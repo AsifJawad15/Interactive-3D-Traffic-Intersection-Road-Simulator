@@ -103,7 +103,8 @@ void main()
         }
     }
 
-    // Thick cloud hides the sun, the moon and the stars behind it.
+    // Thick cloud hides the sun, the moon and the stars behind it. Alpha 0:
+    // the sky is no mirror (see scene_body.glsl).
     float behind = exp(-7.0 * cloud);
-    fragmentColor = vec4(mix(color, cloudColor, cloud) + bodies * behind, 1.0);
+    fragmentColor = vec4(mix(color, cloudColor, cloud) + bodies * behind, 0.0);
 }

@@ -59,6 +59,8 @@ public:
     // One texel in metres.
     static float nearTexelMetres() { return 2.0f * nearRadius / static_cast<float>(nearSize); }
     float cityTexelMetres() const { return cityTexelMetres_; }
+    // Metres from depth 0 to depth 1 (both maps look through the same depth).
+    float nearDepthRange() const { return depthRange_; }
 
 private:
     glm::mat4 lightView_ {1.0f};
@@ -68,6 +70,7 @@ private:
     glm::vec2 cityLow_ {0.0f};       // the city map's square, in the light's view space
     glm::vec2 cityHigh_ {0.0f};
     float cityTexelMetres_ = 0.12f;
+    float depthRange_ = 100.0f;
 };
 
 // The sun's (or the moon's) view of the city, as depth maps. A point is in

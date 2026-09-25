@@ -85,6 +85,17 @@ struct HudExtras
     int weatherCount = 0;
     float wetness = 0.0f;
     float puddles = 0.0f;
+
+    // Enhanced mode (partial ray tracing): on or off, the question asked
+    // before switching (open, and the button under the cursor: 0 yes, 1 no,
+    // -1 neither), and the GPU time of each of its passes
+    // (Enhanced::reflectionsSection ...).
+    bool enhanced = false;
+    bool confirmOpen = false;
+    int confirmHover = -1;
+    const float* enhancedMs = nullptr;
+    bool softShadows = false;
+    bool sunShafts = false;
 };
 
 // The clickable time buttons in the top-right corner, as laid out on a
@@ -133,6 +144,55 @@ struct WeatherButtons
     }
 };
 
+// The ray-tracing (Enhanced mode) button: one wide button in a third panel
+// under the weather's, as wide as the rows of buttons above it.
+struct EnhancedButton
+{
+    static constexpr float top = WeatherButtons::top + TimeButtons::header + TimeButtons::buttonHeight + 18.0f;
+    static constexpr int columns = 5;   // as wide as the five time buttons
+    static constexpr float width = columns * TimeButtons::buttonWidth + (columns - 1) * TimeButtons::gap;
+    static float left(int screenWidth) { return TimeButtons::left(screenWidth, columns); }
+    static bool at(float x, float y, int screenWidth)
+    {
+        const float x0 = left(screenWidth);
+        const float y0 = top + TimeButtons::header;
+        return x >= x0 && x <= x0 + width && y >= y0 && y <= y0 + TimeButtons::buttonHeight;
+    }
+};
+
+// The question asked in the middle of the screen before ray tracing is
+// switched: "RAY TRACING ON?" with a YES and a NO button.
+struct ConfirmDialog
+{
+    static constexpr float width = 640.0f;
+    static constexpr float height = 290.0f;
+    static constexpr float buttonWidth = 170.0f;
+    static constexpr float buttonHeight = 44.0f;
+    static constexpr float buttonGap = 40.0f;
+    static float left(int screenWidth) { return 0.5f * (static_cast<float>(screenWidth) - width); }
+    static float top(int screenHeight) { return 0.5f * (static_cast<float>(screenHeight) - height); }
+    static float buttonLeft(int screenWidth, int button)
+    {
+        return 0.5f * static_cast<float>(screenWidth) - buttonWidth - 0.5f * buttonGap +
+               static_cast<float>(button) * (buttonWidth + buttonGap);
+    }
+    static float buttonTop(int screenHeight) { return top(screenHeight) + height - buttonHeight - 40.0f; }
+    // 0 on YES, 1 on NO, 2 elsewhere on the panel, -1 outside it.
+    static int at(float x, float y, int screenWidth, int screenHeight)
+    {
+        for (int button = 0; button < 2; ++button)
+        {
+            const float x0 = buttonLeft(screenWidth, button);
+            const float y0 = buttonTop(screenHeight);
+            if (x >= x0 && x <= x0 + buttonWidth && y >= y0 && y <= y0 + buttonHeight)
+                return button;
+        }
+        const float x0 = left(screenWidth);
+        const float y0 = top(screenHeight);
+        return x >= x0 && x <= x0 + width && y >= y0 && y <= y0 + height ? 2 : -1;
+    }
+};
+
 class Overlay
 {
 public:
@@ -174,6 +234,8 @@ private:
     void drawPlayerPanel(const HudExtras& extras, int screenWidth, int screenHeight);
     void drawTimePanel(const HudExtras& extras, const std::string& timeText, int screenWidth, int screenHeight);
     void drawWeatherPanel(const HudExtras& extras, int screenWidth, int screenHeight);
+    void drawEnhancedPanel(const HudExtras& extras, int screenWidth, int screenHeight);
+    void drawConfirmDialog(const HudExtras& extras, int screenWidth, int screenHeight);
     void appendRectangle(float x, float y, float width, float height);
     void drawVertices(const glm::vec4& color, int screenWidth, int screenHeight);
 };

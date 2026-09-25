@@ -160,6 +160,8 @@ Scene::Scene(const TrafficSystem& traffic, const World& world)
     : world_(world),
       sceneShader_("shaders/scene.vert", "shaders/scene.frag"),
       wetShader_("shaders/scene.vert", "shaders/scene_wet.frag"),
+      softShader_("shaders/scene.vert", "shaders/scene_soft.frag"),
+      wetSoftShader_("shaders/scene.vert", "shaders/scene_wet_soft.frag"),
       shadowShader_("shaders/shadow.vert", "shaders/shadow.frag"),
       cube_(Mesh::makeCube()),
       beveledCube_(Mesh::makeBeveledCube(0.09f)),
@@ -198,15 +200,24 @@ Scene::Scene(const TrafficSystem& traffic, const World& world)
       roads_(traffic),
       props_(world, vehicleLooks_)
 {
-    for (const Shader* shader : {&sceneShader_, &wetShader_})
+    for (const Shader* shader : {&sceneShader_, &wetShader_, &softShader_, &wetSoftShader_})
     {
         shader->use();
         shader->setInt("uDiffuseTexture", 0);
         shader->setInt("uSpecularTexture", 1);
         shader->setInt("uShadowNear", 2);
         shader->setInt("uShadowCity", 3);
+        shader->setInt("uShadowNearDepth", 4);
         LightManager::attach(shader->id());
     }
+    // The soft shadows' search reads the near map's depths themselves, not
+    // the depth test the map's texture is set up for.
+    glGenSamplers(1, &plainDepthSampler_);
+    glSamplerParameteri(plainDepthSampler_, GL_TEXTURE_COMPARE_MODE, GL_NONE);
+    glSamplerParameteri(plainDepthSampler_, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glSamplerParameteri(plainDepthSampler_, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glSamplerParameteri(plainDepthSampler_, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glSamplerParameteri(plainDepthSampler_, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     shadowShader_.use();
     shadowShader_.setInt("uDiffuseTexture", 0);
 
@@ -231,6 +242,12 @@ Scene::Scene(const TrafficSystem& traffic, const World& world)
     buildSigns();
     buildBusShelters();
     buildWalkSignals();
+}
+
+Scene::~Scene()
+{
+    if (plainDepthSampler_ != 0)
+        glDeleteSamplers(1, &plainDepthSampler_);
 }
 
 void Scene::buildSigns()
@@ -429,16 +446,27 @@ void Scene::render(const SceneFrame& frame)
     // shadows, or streets still wet. Both grow from nothing, so the change
     // of program is never seen. The hidden warm-up frame draws with both,
     // so neither is prepared by the driver in the middle of the run.
+    // Enhanced mode's soft shadows need the near map; under a grey sky the
+    // shadows are faint and soft already, so they keep the cheaper filter.
     const Weather* weather = frame.weather;
     const bool weatherShown = weather != nullptr &&
                               (weather->cloudShadow() > 0.0f || weather->wetness() > 0.0f || weather->puddles() > 0.0f);
+    const bool soft = frame.softShadows && shadowMapsInUse_ > 1 && frame.dayNight->overcast() < 0.5f;
+    softShadowsDrawn_ = soft;
+    const Shader& program = soft ? (weatherShown ? wetSoftShader_ : softShader_)
+                                 : (weatherShown ? wetShader_ : sceneShader_);
     if (!programsWarmed_)
     {
         programsWarmed_ = true;
-        renderCity(frame, weatherShown ? sceneShader_ : wetShader_);
+        for (const Shader* other : {&sceneShader_, &wetShader_, &softShader_, &wetSoftShader_})
+        {
+            if (other != &program)
+                renderCity(frame, *other);
+        }
     }
-    renderCity(frame, weatherShown ? wetShader_ : sceneShader_);
+    renderCity(frame, program);
     shader_ = &sceneShader_;
+    glBindSampler(4, 0);
 }
 
 void Scene::renderCity(const SceneFrame& frame, const Shader& program)
@@ -485,7 +513,16 @@ void Scene::renderCity(const SceneFrame& frame, const Shader& program)
     glBindTexture(GL_TEXTURE_2D, shadowMap_.nearTexture());
     glActiveTexture(GL_TEXTURE3);
     glBindTexture(GL_TEXTURE_2D, shadowMap_.cityTexture());
+    glActiveTexture(GL_TEXTURE4);
+    glBindTexture(GL_TEXTURE_2D, shadowMap_.nearTexture());
+    glBindSampler(4, plainDepthSampler_);
     glActiveTexture(GL_TEXTURE0);
+    // The soft edge: the sun is about half a degree across, drawn a little
+    // wider so the softening reads at a glance; the moon's light is softer.
+    shader_->setFloat("uShadowNearRange", shadowMap_.views().nearDepthRange());
+    shader_->setFloat("uSunSpread", dayNight.moonlit() ? 0.025f : 0.015f);
+    const float lightHeight = -dayNight.lightDirection().y;
+    shader_->setFloat("uSoftMaxTexels", 2.0f + 2.5f * glm::smoothstep(0.15f, 0.6f, lightHeight));
     shader_->setMat4("uShadowNearMatrix", shadowMap_.nearLookup());
     shader_->setMat4("uShadowCityMatrix", shadowMap_.cityLookup());
     shader_->setVec4("uShadowTexel", {shadowMap_.nearTexelMetres(), shadowMap_.cityTexelMetres(),

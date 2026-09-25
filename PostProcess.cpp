@@ -69,7 +69,7 @@ void PostProcess::render(GLuint hdrScene, int sceneWidth, int sceneHeight,
 
     tonemap_.use();
     tonemap_.setFloat("uExposure", exposure);
-    tonemap_.setFloat("uBloomStrength", bloomEnabled_ ? bloomStrength : 0.0f);
+    tonemap_.setFloat("uBloomStrength", bloomEnabled_ ? bloomStrength * bloomGain_ : 0.0f);
     tonemap_.setVec2("uSceneTexelSize",
         {1.0f / static_cast<float>(sceneWidth), 1.0f / static_cast<float>(sceneHeight)});
     tonemap_.setFloat("uSharpen", sceneWidth < outputWidth ? 0.35f : 0.0f);

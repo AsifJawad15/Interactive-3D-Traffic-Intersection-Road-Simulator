@@ -59,6 +59,34 @@ private:
     float smoothedGpuMs_ = 0.0f;
 };
 
+// GPU time of a few parts of the frame (Enhanced mode's passes), each
+// bracketed by two timestamps and read a few frames later, like the frame's
+// own time. A part that did not run this frame is skipped and reads zero.
+class GpuSections
+{
+public:
+    static constexpr std::size_t count = 5;
+
+    GpuSections();
+    ~GpuSections();
+
+    GpuSections(const GpuSections&) = delete;
+    GpuSections& operator=(const GpuSections&) = delete;
+
+    // `frameMs` sets how quickly the reading follows (about half a second).
+    void begin(std::size_t section, float frameMs);
+    void end(std::size_t section);
+    void skip(std::size_t section) { smoothed_[section] = 0.0f; }
+    float ms(std::size_t section) const { return smoothed_[section]; }
+
+private:
+    static constexpr std::size_t slots = 4;
+    std::array<GLuint, count * slots * 2> queries_ {};
+    std::array<bool, count * slots> pending_ {};
+    std::array<std::size_t, count> slot_ {};
+    std::array<float, count> smoothed_ {};
+};
+
 // Chooses the resolution the scene is rendered at. The window always shows
 // the full resolution; only the 3D image underneath may be rendered smaller
 // (0.67 = 720p inside a 1080p window) and scaled up, so the HUD stays sharp.

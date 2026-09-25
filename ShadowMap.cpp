@@ -103,6 +103,7 @@ void ShadowViews::update(const glm::vec3& lightDirection, const glm::vec3& camer
     }
     const float zNear = -high.z - depthMargin;
     const float zFar = -low.z + depthMargin;
+    depthRange_ = zFar - zNear;
 
     // The city map: the whole box.
     cityLow_ = {low.x, low.y};

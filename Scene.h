@@ -53,12 +53,17 @@ struct SceneFrame
     std::size_t selectedVehicleIndex = 0;
     float elapsedSeconds = 0.0f;
     ShadowQuality shadows = ShadowQuality::High;
+    bool softShadows = false;   // Enhanced mode: soft shadows (PCSS) in the near map
 };
 
 class Scene
 {
 public:
     Scene(const TrafficSystem& traffic, const World& world);
+    ~Scene();
+
+    Scene(const Scene&) = delete;
+    Scene& operator=(const Scene&) = delete;
 
     // Works out what this frame draws: the lights, and the vehicles and
     // people in view or casting a shadow into it.
@@ -74,6 +79,7 @@ public:
     // What the last frame used, for the HUD.
     int shadowMapsDrawn() const { return shadowMapsInUse_; }
     int headlightsLit() const { return lights_.activeSpotCount(); }
+    bool softShadowsDrawn() const { return softShadowsDrawn_; }
 
 private:
     const World& world_;
@@ -82,8 +88,14 @@ private:
     // whenever the weather has nothing to add.
     Shader sceneShader_;
     Shader wetShader_;
+    // The same two with Enhanced mode's soft shadows, which read the near
+    // map a second time as plain depth, through their own sampler.
+    Shader softShader_;
+    Shader wetSoftShader_;
+    GLuint plainDepthSampler_ = 0;
+    bool softShadowsDrawn_ = false;
     bool programsWarmed_ = false;
-    // Draws the city with one of the two programs.
+    // Draws the city with one of the programs.
     void renderCity(const SceneFrame& frame, const Shader& program);
     // The depth-only shader of the shadow maps, and whichever of the two
     // the drawing code below is feeding (they share the draw functions).

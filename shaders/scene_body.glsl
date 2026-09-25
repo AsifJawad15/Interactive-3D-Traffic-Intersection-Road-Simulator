@@ -4,6 +4,8 @@
 // puddles and the rings where drops land. The weather's code makes the
 // shader bigger, and a bigger shader runs slower even where its branches
 // are skipped, so the dry program leaves it out (Scene.cpp picks one).
+// Enhanced mode's soft shadows (SOFT_SHADOWS, shadows.glsl) make two more:
+// scene_soft.frag and scene_wet_soft.frag.
 
 in vec3 vWorldPosition;
 in vec3 vNormal;
@@ -93,7 +95,12 @@ uniform float uPuddleSurface;
 uniform vec3 uCloudTone;
 #endif
 
+// The colour, and in alpha how much of this point is a mirror: Enhanced
+// mode's reflections (ssr.frag) read it, and nothing else does.
 out vec4 fragmentColor;
+
+// How much of the pixel is window glass, set by facadeWindows().
+float windowGlass = 0.0;
 
 float hash12(vec2 p)
 {
@@ -133,6 +140,7 @@ vec3 facadeWindows(inout vec3 albedo, inout vec3 specularMap)
     vec3 glass = pow(max(uFacadeGlass, vec3(0.0)), vec3(2.2)) * (0.65 + 0.7 * tone);
     albedo = mix(albedo, glass, window);
     specularMap = mix(specularMap * 0.25, vec3(1.0), window);
+    windowGlass = window;
 
     // At night some rooms are lit, mostly warm, a few cool (a television).
     float lit = mix(step(pick, uWindowLight), uWindowLight, blur);
@@ -337,6 +345,7 @@ void main()
     // The sky in the wet: a sheen on wet ground seen at a low angle, and a
     // near mirror in the puddles, rippled where drops land. The lamps' and
     // the sun's highlights stay on top: they are what a puddle mirrors most.
+    float mirror = 0.0;
 #ifdef WET_WORLD
     if (wet > 0.0)
     {
@@ -349,8 +358,8 @@ void main()
         // is rough water, so it mirrors much less than a puddle.
         float fresnel = 0.02 + 0.98 * pow(1.0 - facing, 5.0);
         vec3 reflection = skyReflection(reflect(-viewDirection, reflectNormal)) * 0.8;
-        float mirror = puddle * fresnel * 0.9 + (1.0 - puddle) * wet * gloss * fresnel * 0.2 *
-                       smoothstep(0.5, 0.95, surfaceNormal.y);
+        mirror = puddle * fresnel * 0.9 + (1.0 - puddle) * wet * gloss * fresnel * 0.2 *
+                 smoothstep(0.5, 0.95, surfaceNormal.y);
         mirror = clamp(mirror, 0.0, 0.9);
         result = mix(result, reflection, mirror) + highlights * mirror;
     }
@@ -366,5 +375,13 @@ void main()
         float haze = 1.0 - exp(-uHaze * length(ray) / 420.0);
         result = mix(result, atmosphereColor(normalize(ray)), haze);
     }
-    fragmentColor = vec4(result, 1.0);
+
+    // The mirror: polished paint and glass a little, more at a grazing
+    // angle (Fresnel again), window panes more, and wet ground as much as it
+    // mirrors the sky above. The far skyline, lost in the haze, none.
+    float grazing = pow(1.0 - max(dot(surfaceNormal, viewDirection), 0.0), 5.0);
+    float polish = smoothstep(40.0, 120.0, uShininess) * gloss;
+    float reflectivity = max(polish * (0.06 + 0.5 * grazing), windowGlass * (0.10 + 0.6 * grazing));
+    reflectivity = uHaze > 0.0 ? 0.0 : max(reflectivity, mirror);
+    fragmentColor = vec4(result, reflectivity);
 }

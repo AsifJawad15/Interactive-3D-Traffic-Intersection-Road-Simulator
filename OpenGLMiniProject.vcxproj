@@ -187,6 +187,7 @@
     <ClCompile Include="ShadowMap.cpp" />
     <ClCompile Include="Weather.cpp" />
     <ClCompile Include="Rain.cpp" />
+    <ClCompile Include="Enhanced.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Camera.h" />
@@ -221,6 +222,7 @@
     <ClInclude Include="ShadowMap.h" />
     <ClInclude Include="Weather.h" />
     <ClInclude Include="Rain.h" />
+    <ClInclude Include="Enhanced.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="assets\asphalt-photoreal.png" />
@@ -244,6 +246,15 @@
     <None Include="shaders\scene_wet.frag" />
     <None Include="shaders\rain.vert" />
     <None Include="shaders\rain.frag" />
+    <None Include="shaders\scene_soft.frag" />
+    <None Include="shaders\scene_wet_soft.frag" />
+    <None Include="shaders\enhanced.glsl" />
+    <None Include="shaders\ssao.frag" />
+    <None Include="shaders\ssao_blur.frag" />
+    <None Include="shaders\ssr.frag" />
+    <None Include="shaders\sunshafts_mask.frag" />
+    <None Include="shaders\sunshafts.frag" />
+    <None Include="shaders\enhance_composite.frag" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

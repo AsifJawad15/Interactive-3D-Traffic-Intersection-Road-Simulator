@@ -91,6 +91,47 @@ void FrameStats::recordFrame(float frameSeconds)
 
 // ---------------------------------------------------------------------------
 
+GpuSections::GpuSections()
+{
+    glGenQueries(static_cast<GLsizei>(queries_.size()), queries_.data());
+}
+
+GpuSections::~GpuSections()
+{
+    glDeleteQueries(static_cast<GLsizei>(queries_.size()), queries_.data());
+}
+
+void GpuSections::begin(std::size_t section, float frameMs)
+{
+    const std::size_t index = section * slots + slot_[section];
+    if (pending_[index])
+    {
+        GLint available = GL_FALSE;
+        glGetQueryObjectiv(queries_[index * 2 + 1], GL_QUERY_RESULT_AVAILABLE, &available);
+        if (available == GL_TRUE)
+        {
+            GLuint64 start = 0;
+            GLuint64 end = 0;
+            glGetQueryObjectui64v(queries_[index * 2], GL_QUERY_RESULT, &start);
+            glGetQueryObjectui64v(queries_[index * 2 + 1], GL_QUERY_RESULT, &end);
+            const float milliseconds = static_cast<float>(static_cast<double>(end - start) * 1.0e-6);
+            smoothed_[section] = smoothTowards(smoothed_[section], milliseconds, frameMs * 0.001f);
+        }
+        pending_[index] = false;
+    }
+    glQueryCounter(queries_[index * 2], GL_TIMESTAMP);
+}
+
+void GpuSections::end(std::size_t section)
+{
+    const std::size_t index = section * slots + slot_[section];
+    glQueryCounter(queries_[index * 2 + 1], GL_TIMESTAMP);
+    pending_[index] = true;
+    slot_[section] = (slot_[section] + 1) % slots;
+}
+
+// ---------------------------------------------------------------------------
+
 void RenderScaler::update(float frameSeconds, float frameMs, float gpuMs)
 {
     if (mode_ != ResolutionMode::Automatic)

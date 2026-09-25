@@ -3,6 +3,7 @@
 
 #include "Camera.h"
 #include "DayNight.h"
+#include "Enhanced.h"
 #include "FrameStats.h"
 #include "Framebuffer.h"
 #include "LightManager.h"
@@ -66,6 +67,8 @@ namespace
         int weatherTo = -1;           // --weather-to clear|cloudy|rain: starts blending there with the first frame
         float glideTo = -1.0f;        // --glide H: the sun starts gliding to H with the first frame
         ShadowQuality shadows = ShadowQuality::High;   // --shadows high|low|off
+        bool enhanced = false;        // --enhanced: ray tracing (Enhanced mode) on
+        bool confirm = false;         // --confirm: the ray-tracing question open on screen
     };
 
     // Views 11 to 13 stage vehicles instead of showing the traffic. 11 and 13
@@ -233,6 +236,12 @@ namespace
         // mouse, and in the others while Alt is held.
         bool cursorFree = false;
         bool hudShown = true;
+        // Enhanced mode (partial ray tracing), and the question asked in
+        // the middle of the screen before it is switched: open or not, and
+        // the button under the cursor (0 yes, 1 no, -1 neither).
+        bool enhanced = false;
+        bool confirmOpen = false;
+        int confirmHover = -1;
         ShadowQuality shadows = ShadowQuality::High;
         double lastMouseX = 0.0;
         double lastMouseY = 0.0;
@@ -339,31 +348,57 @@ namespace
         state->camera->processMouse(xOffset, yOffset);
     }
 
-    // A click on one of the time or weather buttons in the top-right corner.
-    void mouseButtonCallback(GLFWwindow* window, int button, int action, int)
+    // The cursor in framebuffer pixels, where the HUD is laid out. GLFW gives
+    // it in window coordinates, which differ on a scaled (high-DPI) display.
+    glm::vec2 cursorInFramebuffer(GLFWwindow* window, const ApplicationState& state)
     {
-        ApplicationState* state = stateFrom(window);
-        if (state == nullptr || state->dayNight == nullptr || !state->cursorFree || !state->hudShown ||
-            button != GLFW_MOUSE_BUTTON_LEFT || action != GLFW_PRESS)
-            return;
-        // The cursor is in window coordinates; the HUD is laid out in
-        // framebuffer pixels, which differ on a scaled (high-DPI) display.
         double x = 0.0;
         double y = 0.0;
         glfwGetCursorPos(window, &x, &y);
         int windowWidth = 1;
         int windowHeight = 1;
         glfwGetWindowSize(window, &windowWidth, &windowHeight);
-        const float scaleX = static_cast<float>(state->framebufferWidth) / static_cast<float>(std::max(windowWidth, 1));
-        const float scaleY = static_cast<float>(state->framebufferHeight) / static_cast<float>(std::max(windowHeight, 1));
-        const int preset = TimeButtons::at(static_cast<float>(x) * scaleX, static_cast<float>(y) * scaleY,
-                                           state->framebufferWidth, DayNight::presetCount);
+        return {static_cast<float>(x) * static_cast<float>(state.framebufferWidth) / static_cast<float>(std::max(windowWidth, 1)),
+                static_cast<float>(y) * static_cast<float>(state.framebufferHeight) / static_cast<float>(std::max(windowHeight, 1))};
+    }
+
+    // The answer to "RAY TRACING ON?": yes switches it on, no switches it
+    // off, and either closes the question.
+    void answerConfirm(ApplicationState& state, bool yes)
+    {
+        state.enhanced = yes;
+        state.confirmOpen = false;
+        state.confirmHover = -1;
+    }
+
+    // A click on one of the time, weather or ray-tracing buttons in the
+    // top-right corner, or on the ray-tracing question's YES or NO. While
+    // the question is open only it takes clicks; a click beside it closes
+    // it and changes nothing.
+    void mouseButtonCallback(GLFWwindow* window, int button, int action, int)
+    {
+        ApplicationState* state = stateFrom(window);
+        if (state == nullptr || state->dayNight == nullptr || !state->cursorFree || !state->hudShown ||
+            button != GLFW_MOUSE_BUTTON_LEFT || action != GLFW_PRESS)
+            return;
+        const glm::vec2 cursor = cursorInFramebuffer(window, *state);
+        if (state->confirmOpen)
+        {
+            const int answer = ConfirmDialog::at(cursor.x, cursor.y, state->framebufferWidth, state->framebufferHeight);
+            if (answer == 0 || answer == 1)
+                answerConfirm(*state, answer == 0);
+            else if (answer < 0)
+                state->confirmOpen = false;
+            return;
+        }
+        const int preset = TimeButtons::at(cursor.x, cursor.y, state->framebufferWidth, DayNight::presetCount);
         if (preset >= 0)
             state->dayNight->glideToPreset(preset);
-        const int weather = WeatherButtons::at(static_cast<float>(x) * scaleX, static_cast<float>(y) * scaleY,
-                                               state->framebufferWidth, Weather::kindCount);
+        const int weather = WeatherButtons::at(cursor.x, cursor.y, state->framebufferWidth, Weather::kindCount);
         if (weather >= 0 && state->weather != nullptr)
             state->weather->blendTo(static_cast<WeatherKind>(weather));
+        if (EnhancedButton::at(cursor.x, cursor.y, state->framebufferWidth))
+            state->confirmOpen = true;
     }
 
     void keyCallback(GLFWwindow* window, int key, int, int action, int mods)
@@ -372,10 +407,28 @@ namespace
             return;
 
         ApplicationState* state = stateFrom(window);
+        // While the ray-tracing question is open, Y or Enter answers yes, N
+        // answers no, and Esc (or F3 again) closes it; every other key
+        // works as usual.
+        if (state != nullptr && state->confirmOpen)
+        {
+            if (key == GLFW_KEY_Y || key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER || key == GLFW_KEY_N)
+            {
+                answerConfirm(*state, key != GLFW_KEY_N);
+                return;
+            }
+            if (key == GLFW_KEY_ESCAPE || key == GLFW_KEY_F3)
+            {
+                state->confirmOpen = false;
+                return;
+            }
+        }
         if (key == GLFW_KEY_ESCAPE)
             glfwSetWindowShouldClose(window, GLFW_TRUE);
         else if (state == nullptr)
             return;
+        else if (key == GLFW_KEY_F3)
+            state->confirmOpen = true;
         else if (key == GLFW_KEY_C && state->camera != nullptr && state->player != nullptr)
             state->camera->togglePlayer(state->player->view(1.0f));
         else if (key == GLFW_KEY_V && state->camera != nullptr && state->traffic != nullptr)
@@ -1854,6 +1907,10 @@ int main(int argc, char** argv)
         }
         else if (argument == "--fullscreen")
             startFullscreen = true;
+        else if (argument == "--enhanced")
+            capture.enhanced = true;
+        else if (argument == "--confirm")
+            capture.confirm = true;
     }
 
     glfwSetErrorCallback(glfwErrorCallback);
@@ -1976,7 +2033,10 @@ int main(int argc, char** argv)
         Rain rain;
         HdrTarget hdr;
         PostProcess postProcess;
+        Enhanced enhanced;
         FrameStats frameStats;
+        GpuSections enhancedTimes;
+        std::array<float, GpuSections::count> enhancedMs {};
         WindowPlacement placement;
 
         if (capture.enabled)
@@ -1999,9 +2059,11 @@ int main(int argc, char** argv)
             state.showFrameGraph = capture.graph;
             state.fullRatePacing = capture.fullRate;
             state.shadows = capture.shadows;
+            state.confirmOpen = capture.confirm;
             scaler.setMode(capture.scale < 1.0f ? ResolutionMode::Reduced : ResolutionMode::Native);
         }
         state.hudShown = !capture.hideHud;
+        state.enhanced = capture.enhanced;
 
         // The simulation advances in fixed 1/60 s steps, independent of the
         // frame rate, so traffic behaves identically on a slow or a fast GPU.
@@ -2112,6 +2174,7 @@ int main(int argc, char** argv)
             frame.selectedVehicleIndex = camera.followedVehicleIndex();
             frame.elapsedSeconds = static_cast<float>(timeSeconds);
             frame.shadows = state.shadows;
+            frame.softShadows = state.enhanced;
             Mesh::resetDrawCalls();
 
             // 1. What the frame draws, and the city seen from the sun (or
@@ -2131,19 +2194,38 @@ int main(int argc, char** argv)
             // 2. Sky and scene into the multisampled HDR target.
             hdr.resize(renderWidth, renderHeight);
             hdr.bindForScene();
-            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+            glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             sky.render(frame.view, frame.projection, camera.position(), dayNight, weather, static_cast<float>(timeSeconds));
+            enhancedTimes.begin(Enhanced::sceneSection, frameStats.frameMs());
             scene.render(frame);
+            enhancedTimes.end(Enhanced::sceneSection);
             rain.render(frame.view, frame.projection, camera.position(), static_cast<float>(timeSeconds), weather,
                         dayNight, renderHeight);
             const int sceneDrawCalls = Mesh::drawCalls();
 
-            // 3. Resolve the samples, then bloom and tone-map into the window,
-            //    scaling up if the scene was rendered smaller.
+            // 3. Resolve the samples; with ray tracing on (Enhanced mode),
+            //    add its reflections, occlusion and sun shafts. Then bloom
+            //    and tone-map into the window, scaling up if the scene was
+            //    rendered smaller.
             hdr.resolve();
+            GLuint finished = hdr.colorTexture();
+            if (state.enhanced)
+            {
+                finished = enhanced.render(hdr, frame.view, frame.projection, dayNight, enhancedTimes,
+                                           frameStats.frameMs());
+            }
+            else
+            {
+                for (std::size_t section : {Enhanced::reflectionsSection, Enhanced::occlusionSection,
+                                            Enhanced::shaftsSection, Enhanced::compositeSection})
+                    enhancedTimes.skip(section);
+            }
+            for (std::size_t section = 0; section < enhancedMs.size(); ++section)
+                enhancedMs[section] = enhancedTimes.ms(section);
+            postProcess.setBloomGain(state.enhanced ? 1.35f : 1.0f);
             postProcess.render(
-                hdr.colorTexture(), renderWidth, renderHeight,
+                finished, renderWidth, renderHeight,
                 outputWidth, outputHeight, dayNight.exposure());
 
             // 4. The HUD is drawn last, straight onto the tone-mapped image.
@@ -2229,6 +2311,12 @@ int main(int argc, char** argv)
                 extras.weatherCount = Weather::kindCount;
                 extras.wetness = weather.wetness();
                 extras.puddles = weather.puddles();
+                extras.enhanced = state.enhanced;
+                extras.confirmOpen = state.confirmOpen;
+                extras.confirmHover = state.confirmHover;
+                extras.enhancedMs = enhancedMs.data();
+                extras.softShadows = state.enhanced && scene.softShadowsDrawn();
+                extras.sunShafts = state.enhanced && enhanced.shaftsShown();
 
                 overlay.render(
                     outputWidth,
@@ -2256,6 +2344,11 @@ int main(int argc, char** argv)
         if (capture.enabled)
             stageCaptureVehicles(capture.view, traffic, poses);
         camera.update(0.0f, poses, playerView, pedestrianPoses);
+        // Ray tracing's passes and programs too, whichever way it starts,
+        // so switching it on later costs no hitch.
+        state.enhanced = !state.enhanced;
+        renderFrame(0.0f, glfwGetTime());
+        state.enhanced = !state.enhanced;
         renderFrame(0.0f, glfwGetTime());
         glFinish();
 
@@ -2331,12 +2424,19 @@ int main(int argc, char** argv)
                                     mode == CameraMode::PlayerSeat;
             const bool altHeld = glfwGetKey(window, GLFW_KEY_LEFT_ALT) == GLFW_PRESS ||
                                  glfwGetKey(window, GLFW_KEY_RIGHT_ALT) == GLFW_PRESS;
-            const bool wantCursor = !capture.enabled && (!mouseLooks || altHeld);
+            const bool wantCursor = !capture.enabled && (!mouseLooks || altHeld || state.confirmOpen);
             if (wantCursor != state.cursorFree)
             {
                 state.cursorFree = wantCursor;
                 glfwSetInputMode(window, GLFW_CURSOR, wantCursor ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
                 state.firstMouseEvent = true;
+            }
+            state.confirmHover = -1;
+            if (state.confirmOpen && state.cursorFree)
+            {
+                const glm::vec2 cursor = cursorInFramebuffer(window, state);
+                const int over = ConfirmDialog::at(cursor.x, cursor.y, state.framebufferWidth, state.framebufferHeight);
+                state.confirmHover = over == 0 || over == 1 ? over : -1;
             }
 
             // The sun and moon glide on real time, even while paused, and so
@@ -2418,6 +2518,14 @@ int main(int argc, char** argv)
                             average, 1000.0f / average, p99, sorted.back(), overBudget,
                             captureGpuSamples > 0 ? captureGpuMsTotal / captureGpuSamples : 0.0);
                     }
+                    if (state.enhanced)
+                        std::printf("Ray tracing passes: reflections %.2f ms, occlusion %.2f ms, shafts %.2f ms, "
+                                    "composite %.2f ms (scene pass %.2f ms%s)\n",
+                                    enhancedMs[Enhanced::reflectionsSection], enhancedMs[Enhanced::occlusionSection],
+                                    enhancedMs[Enhanced::shaftsSection], enhancedMs[Enhanced::compositeSection],
+                                    enhancedMs[Enhanced::sceneSection], scene.softShadowsDrawn() ? ", soft shadows" : "");
+                    else
+                        std::printf("Scene pass %.2f ms\n", enhancedMs[Enhanced::sceneSection]);
                     for (const Hitch& hitch : hitches)
                         std::printf("  slow frame at %.2f s: %.1f ms (events %.1f, our work %.1f, swap %.1f)\n",
                                     hitch.atSeconds, hitch.frameMs, hitch.eventsMs, hitch.workMs, hitch.swapMs);

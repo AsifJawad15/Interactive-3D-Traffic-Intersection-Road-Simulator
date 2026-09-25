@@ -30,6 +30,9 @@ public:
     void setBloomEnabled(bool enabled) { bloomEnabled_ = enabled; }
     bool bloomEnabled() const { return bloomEnabled_; }
 
+    // Enhanced mode lets neon and lamps glow a little more.
+    void setBloomGain(float gain) { bloomGain_ = gain; }
+
 private:
     struct BloomLevel
     {
@@ -49,6 +52,7 @@ private:
     int levelsWidth_ = 0;
     int levelsHeight_ = 0;
     bool bloomEnabled_ = true;
+    float bloomGain_ = 1.0f;
 
     void resizeLevels(int width, int height);
     void releaseLevels();

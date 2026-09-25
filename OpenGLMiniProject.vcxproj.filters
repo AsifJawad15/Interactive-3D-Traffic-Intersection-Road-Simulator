@@ -45,6 +45,9 @@
     <ClCompile Include="Rain.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Enhanced.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="Shader.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -131,6 +134,7 @@
     <ClInclude Include="ShadowMap.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Weather.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Rain.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Enhanced.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Shader.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Simulation.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Texture.h"><Filter>Header Files</Filter></ClInclude>
@@ -177,5 +181,14 @@
     <None Include="shaders\scene_wet.frag"><Filter>Resource Files</Filter></None>
     <None Include="shaders\rain.vert"><Filter>Resource Files</Filter></None>
     <None Include="shaders\rain.frag"><Filter>Resource Files</Filter></None>
+    <None Include="shaders\scene_soft.frag"><Filter>Resource Files</Filter></None>
+    <None Include="shaders\scene_wet_soft.frag"><Filter>Resource Files</Filter></None>
+    <None Include="shaders\enhanced.glsl"><Filter>Resource Files</Filter></None>
+    <None Include="shaders\ssao.frag"><Filter>Resource Files</Filter></None>
+    <None Include="shaders\ssao_blur.frag"><Filter>Resource Files</Filter></None>
+    <None Include="shaders\ssr.frag"><Filter>Resource Files</Filter></None>
+    <None Include="shaders\sunshafts_mask.frag"><Filter>Resource Files</Filter></None>
+    <None Include="shaders\sunshafts.frag"><Filter>Resource Files</Filter></None>
+    <None Include="shaders\enhance_composite.frag"><Filter>Resource Files</Filter></None>
   </ItemGroup>
 </Project>
