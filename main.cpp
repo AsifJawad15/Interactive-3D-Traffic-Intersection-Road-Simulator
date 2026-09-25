@@ -198,7 +198,7 @@ namespace
         case 17: camera.setFreePose({125.0f, 3.5f, -4.0f}, -44.0f, -6.0f); break;    // the petrol station
         case 18: camera.setFreePose({-40.0f, 1.8f, -3.5f}, 180.0f, -2.0f); break;    // a shopping street west of X0
         case 19: camera.setFreePose({-103.5f, 2.0f, 25.0f}, 90.0f, -3.0f); break;    // houses and flats north of G
-        case 20: camera.setFreePose({-11.0f, 2.3f, -24.0f}, 36.0f, -7.0f); break;     // X0 south crossing, signals
+        case 20: camera.setFreePose({-12.5f, 1.8f, -9.5f}, -12.0f, -5.0f); break;     // X0 south crossing, its far walk light
         case 21: camera.setFreePose({-76.0f, 2.4f, -13.0f}, 128.0f, -8.0f); break;    // the zebra over G's east arm
         case 22: camera.setFreePose({64.0f, 2.8f, -14.0f}, 55.0f, -9.0f); break;      // R1 west arm, the island between
         case 25: camera.setFreePose({6.5f, 1.45f, 23.0f}, -127.0f, -4.0f); break;     // waiting at X0's north crossing
@@ -468,7 +468,7 @@ namespace
     // the junctions instead of piling up at one.
     //     OpenGLMiniProject.exe --soak 30 7 [--cars 25] [--pedestrians 80] [--trace [T]]
     int runSoak(float minutes, unsigned int seed, std::size_t cars, std::size_t people, float traceFrom,
-                float longestAllowedStop, bool tracePeople)
+                float longestAllowedStop, bool tracePeople, int traceCrossing, float crossingFrom, float crossingTo)
     {
         constexpr float step = 1.0f / 60.0f;
         constexpr double largestAllowedShare = 0.35;
@@ -504,6 +504,10 @@ namespace
                 overlapDumped = true;
                 std::printf("t = %.2f s: two vehicles touch\n%s", index * step, traffic.describe().c_str());
             }
+            // --trace-crossing C FROM TO: the crossing every half second.
+            const float now = index * step;
+            if (traceCrossing >= 0 && now >= crossingFrom && now <= crossingTo && index % 30 == 0)
+                std::printf("t = %6.1f  %s", now, traffic.crossingReport(static_cast<std::size_t>(traceCrossing)).c_str());
             if (peopleDumps > 0 && pedestrians.stats().longestWait > nextPeopleDump)
             {
                 std::printf("t = %.1f s: someone has waited %.0f s\n%s%s", index * step, pedestrians.stats().longestWait,
@@ -891,8 +895,10 @@ namespace
             float yaw;
             bool mustSlide;
         };
+        // The angled run starts 3 m further west than it did before Phase 7,
+        // so it passes clear of the walk light on the X0 south-west corner.
         for (const Crash& crash : {Crash{"head-on crash at boost speed", {-24.0f, 5.0f}, 180.0f, false},
-                                   Crash{"35 degree crash, slides along", {-10.0f, 2.0f}, 215.0f, true}})
+                                   Crash{"35 degree crash, slides along", {-13.0f, 2.0f}, 215.0f, true}})
         {
             Player player(world);
             player.placeCar(crash.start, crash.yaw);
@@ -923,8 +929,7 @@ namespace
             const bool passed = touched && deepest > -0.05f && (!crash.mustSlide || slid > 1.0f);
             allPassed = allPassed && passed;
             std::printf("%-32s | hit at %4.1f km/h | deepest %.3f m | slid %5.1f m after contact | %s\n",
-                        crash.name, impactSpeed * 3.6f, -deepest, slid, passed ? "PASS" : "FAIL");
-        }
+                        crash.name, impactSpeed * 3.6f, -deepest, slid, passed ? "PASS" : "FAIL");        }
 
         // ---- 2. Walking into a wall -----------------------------------------------
         {
@@ -1288,7 +1293,20 @@ int main(int argc, char** argv)
         bool tracePeople = false;
         for (int other = 1; other < argc; ++other)
             tracePeople = tracePeople || std::strcmp(argv[other], "--trace-people") == 0;
-        return runSoak(std::max(minutes, 0.1f), seed, vehicleCount, pedestrianCount, traceFrom, stopLimit, tracePeople);
+        int traceCrossing = -1;
+        float crossingFrom = 0.0f;
+        float crossingTo = 0.0f;
+        for (int other = 1; other + 3 < argc; ++other)
+        {
+            if (std::strcmp(argv[other], "--trace-crossing") == 0)
+            {
+                traceCrossing = std::atoi(argv[other + 1]);
+                crossingFrom = static_cast<float>(std::atof(argv[other + 2]));
+                crossingTo = static_cast<float>(std::atof(argv[other + 3]));
+            }
+        }
+        return runSoak(std::max(minutes, 0.1f), seed, vehicleCount, pedestrianCount, traceFrom, stopLimit, tracePeople,
+                       traceCrossing, crossingFrom, crossingTo);
     }
 
     for (int index = 1; index < argc; ++index)

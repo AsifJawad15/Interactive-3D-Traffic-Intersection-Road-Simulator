@@ -275,7 +275,8 @@ is drawn exactly there.
 A car approaching the junction **commits** only when, in one check:
 
 * its signal allows it (on yellow, only if it cannot stop comfortably — or if it
-  is a left-turner already waiting at the front, clearing the junction);
+  is a car or van already waiting at the front to turn, clearing the junction;
+  a truck or bus pulls away too slowly and waits for the next green);
 * the car in front of it in its lane has already committed (first in, first through);
 * there is room for it beyond the junction, so it never blocks the box;
 * nobody on a crossing route holds a claim on any zone on its way — unless the car
@@ -406,7 +407,9 @@ keeping to the right, and cross at the 54 zebra crossings (`Pedestrians.cpp`).
   join them into one network that reaches every block.
 * **Crossing:** at signalised junctions people wait for WALK (lights on poles at
   both ends: green figure, then the red one flashing while the last people are
-  still over). At zebras they go when the traffic lets them. Over a roundabout
+  still over). With traffic waiting across, WALK ends 8 s before the green can
+  run out, but only once nobody is still waiting to start, so the turning
+  traffic gets the end of the green and nobody misses their turn. At zebras they go when the traffic lets them. Over a roundabout
   arm they cross in two halves with a wait on the splitter island. They step
   out only when no vehicle is on the crossing or already turning onto it, and
   every vehicle heading for it can still stop comfortably. Once on it, they
@@ -414,8 +417,9 @@ keeping to the right, and cross at the 54 zebra crossings (`Pedestrians.cpp`).
 * **The traffic gives way:** a vehicle never enters a junction while people
   are on a crossing on its way through, or waiting at one it could stop for.
   On the approach to a zebra, drivers who can stop comfortably let waiting
-  people over. After a while a waiting driver stops giving way and the people
-  let it go first. Every route over a crossing has a place to wait on its
+  people over. After 7 s a waiting driver stops giving way and the people
+  let it go first. That patience only runs while the driver's own light would
+  let it go, so a car standing at red never keeps anyone from walking. Every route over a crossing has a place to wait on its
   approach lane, where the traffic behind can see it.
 * **The figure (`Mannequin.cpp`):** a mannequin of Bezier-revolution parts on a
   small skeleton. Its motion is authored as keyframed curves (idle, walk, jog,
@@ -483,6 +487,7 @@ These command-line modes run without opening a window:
 OpenGLMiniProject.exe --self-test
 OpenGLMiniProject.exe --plot
 OpenGLMiniProject.exe --soak 30 1 [--cars 36] [--pedestrians 80] [--stop-limit 60] [--trace [T]] [--trace-people]
+                      [--trace-crossing C FROM TO]
 OpenGLMiniProject.exe --motion-test
 OpenGLMiniProject.exe --light-test
 OpenGLMiniProject.exe --player-test
@@ -495,7 +500,7 @@ the ground must not slide (under 2 % of the distance walked), no sole may sink
 into the ground or float above it, the leg must always reach its foot, and no
 foot may jump from one frame to the next.
 
-`--self-test` checks the whole network (15228 checks), that every bus shelter
+`--self-test` checks the whole network (16282 checks), that every bus shelter
 stands on the sidewalk clear of everything else, and the city dressing: every
 building stands on the lawn, clear of the sidewalks and of every other
 building, and every tree, bench, parked car and post stands clear of the
@@ -540,6 +545,9 @@ checks nobody ever stepped out against the lights.
 `--trace` prints the junction state and why each waiting car is waiting;
 `--trace-people` prints everyone at a crossing, the lights, and which vehicle
 keeps it from being clear, when someone has waited a minute.
+`--trace-crossing C FROM TO` prints crossing C every half second between the
+two simulated times: its junction's phase, the walk light, who waits and who
+is on it, and which vehicle keeps it from being clear (and why).
 The HUD shows the same overlap count live.
 
 `--motion-test` replays the frame loop at 144, 60 and 75 Hz with realistically
@@ -609,8 +617,7 @@ meshes took to build.
 
 ## Deliberately not included
 
-AI pedestrians, weather and rain, shadow mapping, imported models and physics
-are not part of this version; `ENHANCEMENT_PLAN.md` lists the phases that add
-them (section 5.1 sets out how the pedestrians will be animated).
+Weather and rain, shadow mapping, imported models and physics are not part of
+this version; `ENHANCEMENT_PLAN.md` lists the phases that add them.
 The scene is authored geometry throughout: there is no model file anywhere in
 this project.

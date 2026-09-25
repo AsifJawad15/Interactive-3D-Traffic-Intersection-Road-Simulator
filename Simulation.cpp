@@ -72,6 +72,11 @@ namespace
     constexpr float pedestrianPatience = 7.0f;
     // A green holds at most this long past its end for people still crossing.
     constexpr float walkerHoldSeconds = 12.0f;
+    // With traffic waiting across, WALK ends this long before the green can
+    // run out, so the people already crossing are mostly over by then and
+    // the turning traffic gets the end of the green. It stays on while
+    // anyone is still waiting to start, so nobody misses their turn.
+    constexpr float walkClearanceSeconds = 8.0f;
     // How far ahead a driver looks for people waiting at a zebra.
     constexpr float zebraLookAhead = 40.0f;
 
@@ -430,6 +435,11 @@ void TrafficSystem::update(float dt)
             continue;
         SignalController& controller = signals_[junction];
         controller.elapsed += dt;
+        if (isGreen(controller.phase) && !controller.walkClosed &&
+            controller.elapsed >= maximumGreenSeconds - walkClearanceSeconds &&
+            !walkersWaiting(junction, phaseServesNorthSouth(controller.phase)) &&
+            signalDemand(junction, !phaseServesNorthSouth(controller.phase), false))
+            controller.walkClosed = true;
         if (!signalPhaseOver(junction))
             continue;
         // A green due to end first closes the walk (the walkers' lights
@@ -651,10 +661,17 @@ void TrafficSystem::update(float dt)
         vehicle.heldByPedestrians =
             (crossingLimit.present && crossingLimit.gap < 1.0f) ||
             (!vehicle.committed && stopFor(vehicle) - vehicle.distance < 1.0f && pedestriansHold(vehicle));
-        if (vehicle.currentSpeed < 0.05f && vehicle.heldByPedestrians)
-            vehicle.pedestrianWaitSeconds += dt;
-        else if (vehicle.currentSpeed > 0.5f)
-            vehicle.pedestrianWaitSeconds = 0.0f;
+        // Patience only runs while the lights would let it go: standing at
+        // red it neither grows nor runs out, and it never keeps people from
+        // walking while the vehicle could not go anyway.
+        const bool atSignal = !vehicle.committed && network_.junctions()[current.junction].isSignalised();
+        if (!atSignal || movementPermitted(vehicle))
+        {
+            if (vehicle.currentSpeed < 0.05f && vehicle.heldByPedestrians)
+                vehicle.pedestrianWaitSeconds += dt;
+            else if (vehicle.currentSpeed > 0.5f)
+                vehicle.pedestrianWaitSeconds = 0.0f;
+        }
 
         updateLights(vehicle);
     }
@@ -860,11 +877,15 @@ bool TrafficSystem::movementPermitted(const Vehicle& vehicle) const
     if (signal == SignalState::Red)
         return false;
 
-    // Yellow: a left-turner already waiting at the front of its lane clears
-    // the junction now, while oncoming traffic stops. Everyone else goes only
-    // when stopping would need harder braking than is safe.
+    // Yellow: a turner already waiting at the front of its lane (for a gap
+    // in the oncoming traffic, or for people on the crossing it turns over)
+    // clears the junction now. (Not a truck or a bus: pulling away slowly,
+    // it would still be in the junction well into the next green; it waits
+    // for the next one.) Everyone else goes only when stopping would need
+    // harder braking than is safe.
     const float toLine = stopFor(vehicle) - vehicle.distance;
-    if (info.turn == Turn::Left && toLine < 0.5f && vehicle.currentSpeed < 0.5f)
+    const bool quick = vehicle.sizeClass == SizeClass::Car || vehicle.sizeClass == SizeClass::Van;
+    if (info.turn != Turn::Straight && quick && toLine < 0.5f && vehicle.currentSpeed < 0.5f)
         return true;
     return vehicle.currentSpeed > 1.0f &&
            toLine < vehicle.currentSpeed * vehicle.currentSpeed / (2.0f * 4.0f);
@@ -1188,6 +1209,18 @@ WalkLight TrafficSystem::walkLight(std::size_t crossing) const
     return parallelGreen && controller.walkClosed ? WalkLight::Flashing : WalkLight::DontWalk;
 }
 
+bool TrafficSystem::walkersWaiting(std::size_t junction, bool northSouth) const
+{
+    const std::vector<Crossing>& crossings = network_.crossings();
+    for (std::size_t index = 0; index < crossings.size() && index < crossingStates_.size(); ++index)
+    {
+        if (crossings[index].junction == junction && crossings[index].walksWithNorthSouth == northSouth &&
+            crossingStates_[index].waiting > 0)
+            return true;
+    }
+    return false;
+}
+
 bool TrafficSystem::walkersClear(std::size_t junction, bool northSouth) const
 {
     // Anyone still crossing will be over within the yellow and the all-red,
@@ -1329,7 +1362,7 @@ const Vehicle* TrafficSystem::crossingBlocker(std::size_t crossing, const char**
                     const float firmStop = vehicle.currentSpeed * vehicle.currentSpeed / (2.6f * vehicle.comfortableBraking);
                     if (pass == 0 && toLine < firmStop && movementPermitted(vehicle))
                         return blocked(vehicle, "too close to its line to stop");
-                    if (longWait && toLine < 2.0f)
+                    if (pass == 0 && longWait && toLine < 2.0f && movementPermitted(vehicle))
                         return blocked(vehicle, "has waited its turn");
                     continue;
                 }
@@ -1345,6 +1378,34 @@ const Vehicle* TrafficSystem::crossingBlocker(std::size_t crossing, const char**
         }
     }
     return nullptr;
+}
+
+std::string TrafficSystem::crossingReport(std::size_t crossing) const
+{
+    static const char* lights[] = {"zebra", "WALK", "flashing", "dont-walk"};
+    const Crossing& info = network_.crossings()[crossing];
+    const CrossingState state = crossing < crossingStates_.size() ? crossingStates_[crossing] : CrossingState {};
+    const bool signalised = network_.junctions()[info.junction].isSignalised();
+    const char* reason = "";
+    const Vehicle* blocker = crossingBlocker(crossing, &reason);
+    char line[400];
+    std::snprintf(line, sizeof(line), "crossing %zu at %s: %s %4.1f s held %4.1f | %-9s | waiting %d on %d (%.1f s)",
+                  crossing, network_.junctions()[info.junction].name.c_str(),
+                  signalised ? phaseText(signals_[info.junction].phase) : "-",
+                  signalised ? signals_[info.junction].elapsed : 0.0f,
+                  signalised ? signals_[info.junction].heldSeconds : 0.0f,
+                  lights[static_cast<int>(walkLight(crossing))], state.waiting, state.onBand, state.clearSeconds);
+    std::string text = line;
+    if (blocker != nullptr)
+    {
+        const RouteInfo& route = routeFor(*blocker);
+        std::snprintf(line, sizeof(line), " | blocked by %s %zu %s->%s (%s), %.1f m to line, v %.2f, %s, patience %.1f",
+                      vehicleKindName(blocker->kind), blocker->id, armName(route.inArm), armName(route.outArm), reason,
+                      stopFor(*blocker) - blocker->distance, blocker->currentSpeed,
+                      blocker->committed ? "committed" : "waiting", blocker->pedestrianWaitSeconds);
+        text += line;
+    }
+    return text + "\n";
 }
 
 void TrafficSystem::bodies(std::vector<OrientedBox>& out) const
@@ -1402,16 +1463,8 @@ void TrafficSystem::measureBodies(float)
 bool TrafficSystem::signalDemand(std::size_t junction, bool northSouth, bool leftTurnsOnly) const
 {
     // People waiting to walk with this green (they pressed the button).
-    if (!leftTurnsOnly)
-    {
-        const std::vector<Crossing>& crossings = network_.crossings();
-        for (std::size_t index = 0; index < crossings.size() && index < crossingStates_.size(); ++index)
-        {
-            if (crossings[index].junction == junction && crossings[index].walksWithNorthSouth == northSouth &&
-                crossingStates_[index].waiting > 0)
-                return true;
-        }
-    }
+    if (!leftTurnsOnly && walkersWaiting(junction, northSouth))
+        return true;
 
     for (std::size_t index = 0; index < vehicles_.size(); ++index)
     {

@@ -254,6 +254,9 @@ public:
     bool crossingClear(std::size_t crossing) const { return crossingBlocker(crossing) == nullptr; }
     // The vehicle that keeps the crossing from being clear, and why.
     const Vehicle* crossingBlocker(std::size_t crossing, const char** reason = nullptr) const;
+    // One line on a crossing: its junction's phase, the walk light, who waits
+    // and crosses, and what keeps it from being clear (--trace-crossing).
+    std::string crossingReport(std::size_t crossing) const;
 
     // Geometry and rule checks that need no OpenGL context. Used by --self-test.
     bool selfTest(std::string& report) const;
@@ -534,6 +537,8 @@ private:
     // --- signals
     bool signalDemand(std::size_t junction, bool northSouth, bool leftTurnsOnly) const;
     bool signalPhaseOver(std::size_t junction) const;
+    // Somebody waits to walk with this road's green.
+    bool walkersWaiting(std::size_t junction, bool northSouth) const;
     // Everyone crossing with the ending green will be over before the
     // crossing traffic's green begins.
     bool walkersClear(std::size_t junction, bool northSouth) const;

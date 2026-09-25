@@ -1,6 +1,6 @@
 ﻿# Enhancement Plan: OpenGLMiniProject → Open-World Smart City Traffic Simulator
 
-> Status: **Phases 0 to 6 complete. Phase 7 (pedestrians) is in progress: built and mostly verified; see Checkpoint 7 for what still fails.** Written 2026-09-23.
+> Status: **Phases 0 to 7 complete and verified. Next: Phase 8 (sun, moon, time presets and shadows).** Written 2026-09-23.
 > **Revised 2026-09-25 (Phase 7):** the `G` key (advance every signal) is removed, as you asked. As agreed, the walking motion is authored as keyframed clips in code instead of BVH motion-capture files, and umbrellas are built but stay closed until Phase 9.
 > **Revised 2026-09-24 (Phase 6):** a seeded city generator lines every street with buildings in six styles (164 in all, more than the 30–40 first planned, so no stretch looks empty). Windows are drawn by the fragment shader. Trees and props are baked meshes with vertex colours rather than instanced.
 > **Revised 2026-09-24 (Phase 5):** 11 vehicle kinds with lofted Bezier bodies. Long vehicles swing through turns (the rear axle trails the front). The bus line is a loop of kerb-lane left turns round the X0–G–G2–X1 block with 4 stops. Trucks make wide right turns into the far lane and use roundabouts straight on only.
@@ -32,12 +32,12 @@
 | 4. Player car, driver view, on foot | ✅ Done and verified | 2026-09-24 | `enhancement/phase-4-player` |
 | 5. Vehicle variety | ✅ Done and verified | 2026-09-24 | `enhancement/phase-5-vehicles` |
 | 6. City dressing | ✅ Done and verified | 2026-09-24 | `enhancement/phase-6-city` |
-| 7. Pedestrians | In progress (see Checkpoint 7) | 2026-09-25 | `enhancement/phase-7-pedestrians` |
+| 7. Pedestrians | ✅ Done and verified | 2026-09-25 | `enhancement/phase-7-pedestrians` |
 | 8 to 11 | Not started | | |
 
-### ⏳ Checkpoint 7: pedestrians, in progress (2026-09-25)
+### ✅ Checkpoint 7: pedestrians (2026-09-25)
 
-Committed mid-phase, as you asked, because the context was running out. Everything below is built and compiles cleanly. Two soak criteria still fail on some seeds (see "Still failing").
+Phase 7 was committed mid-phase first (`c515a7f`), when the context ran out, with two soak criteria still failing on some seeds. Both now pass on 16 seeds; "Finishing the phase" below says how.
 
 **What changed**
 - **`G` removed:** the key, `TrafficSystem::advancePhase()`, the help line and the README row.
@@ -68,26 +68,67 @@ Committed mid-phase, as you asked, because the context was running out. Everythi
 - **Cameras and HUD:** `Shift+Tab` follows the next person over the shoulder, and `V` shows their eyes, which turn as they look both ways. The HUD has a PEOPLE / WAITING / CROSSING line, and the minimap shows people.
 - **Tools:**
   - `--walk-test` (new).
-  - The soak now includes the people and adds `--pedestrians`, `--trace-people`, and a dump at the first vehicle overlap.
+  - The soak now includes the people and adds `--pedestrians`, `--trace-people`, `--trace-crossing C FROM TO`, and a dump at the first vehicle overlap.
   - `--self-test` adds the sidewalk network and crossing checks.
   - Capture: `--warm S` (run the city first), `--umbrellas`, and views 20 to 25 (the X0, G and R1 crossings, following a person, their eyes, people waiting at X0).
+
+**Finishing the phase (after `c515a7f`)**
+
+`--trace-crossing` showed what went wrong at each long wait, second by second. Every fix below came out of a trace.
+- **People missed whole WALK phases because of a car standing at red.** A car's patience kept counting while its own light was red, and it never reset until the car moved. A bus that had waited for people on one crossing then stood at red and blocked another crossing for the whole of that crossing's WALK, twice in a row: 120 s. Now patience only runs while the vehicle's own light would let it go (at red it neither grows nor runs out), and a vehicle that "has waited its turn" only blocks walkers when its light would let it go now.
+  - Resetting patience at red instead was tried and dropped: it made cars give way all over again at each new green (80 s stops).
+- **WALK now ends inside the green.** With traffic waiting across, WALK ends 8 s before the green can run out, as real signals do. The people already on the crossing are then mostly over by the end of the green, the 12 s hold is rarely needed, and turning traffic gets the end of the green. WALK stays on while anybody is still waiting to start. Ending it strictly by the clock was tried first: the line bus turning slowly off its arrow sat on X0's west crossing for the first 8 s of WALK every cycle, and walker waits rose to 115 s.
+- **Turners clear on the yellow.** A car or van waiting at the front of its lane to turn may now clear the junction on the yellow, right turns as well as left. A right-turner used to wait out a slow walker who was over 0.2 s before the green ended, then miss the green and wait a whole cycle more. Trucks and buses no longer use the yellow even for left turns: a bus pulling away needed about 14 s to clear, which cost the next green 9 s and left a car standing 78 s.
+  - Holding the all-red while vehicles were still clearing was tried and dropped: it made every cycle longer (stops up to 81 s).
+- **`--player-test` was failing at `c515a7f`.** Checkpoint 7 did not mention it. The glancing crash now hit the new walk light on X0's south-west corner and stopped dead, instead of sliding along the hotel. The walk light stays; the test's run starts 3 m further west and meets the wall at 35° as before.
+- **Capture view 20** now stands on X0's south-west corner looking along the south crossing. The far walk light and the kerb where people wait face the camera; before, the view showed the backs of the near poles.
 
 **New files:** `Mannequin.h/.cpp`, `Pedestrians.h/.cpp`, `PedestrianRenderer.h/.cpp`.
 **Edited:** `RoadNetwork.*`, `Simulation.*`, `TrafficBuild.cpp`, `World.*`, `Scene.*`, `Mesh.*`, `Player.*`, `Camera.*`, `Overlay.*`, `shaders/scene.vert`, `shaders/scene.frag`, `main.cpp`, `README.md` and both project files.
 
-**Verification so far**
+**Verification**
 - **Build:** Release x64, no errors, no warnings.
 - **`--self-test`:** all 16282 traffic checks pass (54 crossings; every crossing is driven over, and no vehicle waiting at its line stands on one). The city check passes. All 575 sidewalk checks pass: 22 walking lines clear of everything solid and off the road, 640 waiting places clear, every sidewalk reachable over the crossings.
 - **`--walk-test`:** all 9 cases pass. Planted feet slide 0.5–1.1 % of the distance (0.9 % speeding up from standing to jogging, down from 9.7 % before foot locking). Nothing sinks or floats, the legs always reach, and no foot jumps at a kerb.
-- **30-minute soaks, seeds 1 to 8, 36 vehicles, 80 people:** 0 vehicle-vehicle overlaps and 0 vehicle-person touches on every seed (closest vehicle to a person 0.49–0.50 m). 0 hard stops at crossings, 0 starts against the lights, and 1070–1290 crossings made per run.
-- **The same soaks without people (`--pedestrians 0`):** 8 of 8 pass (0 overlaps, longest stop 31–58 s, 88–99 bus stops). These numbers differ slightly from Phase 6, because free-flowing turns over a crossing now wait at their line.
+- **30-minute soaks, seeds 1 to 16, 36 vehicles, 80 people: 16 of 16 pass.**
 
-**Still failing (next steps)**
-- **Longest wait of a person:** 53–120 s (limit 90 s); 4 of 8 seeds fail. The long waits are at the signalised crossroads X0 and X1 and at ST2. The traces (`--trace-people`) show a near-continuous flow of committed turning vehicles during WALK, and vehicles whose patience ran out.
-  - Next: stop turning vehicles committing as soon as people wait with WALK (not only those that can stop comfortably), and give walkers a protected start at the beginning of each green.
-- **Longest vehicle stop:** 61–72 s on 2 of 8 seeds (limit 60 s): turning vehicles held by people on top of a red.
-- **Not yet checked by eye:** no screenshots or FPS measurements with people yet (capture views 20 to 25 are ready).
-- **Soak speed:** 30 minutes now takes about 20 s (was 4–10 s).
+  | | Limit | Result |
+  |---|---|---|
+  | Vehicle-vehicle overlaps | 0 | 0 on every seed (closest gap 0.67–1.02 m) |
+  | Vehicle-person touches | 0 | 0 on every seed (closest 0.49–0.50 m) |
+  | Longest stop of a vehicle | 60 s | 35–54 s (was 37–72 s, 2 of 8 over) |
+  | Longest wait of a person | 90 s | 39–80 s (was 53–120 s, 4 of 8 over) |
+  | Hard stops at crossings | 0 | 0 |
+  | Starts against the lights | 0 | 0 |
+  | Crossings made | | 1068–1290 per run |
+  | Bus stops served | 30 per bus | 83–95 |
+
+  Seeds 9 to 16 were run as a check on seeds that were not used while tuning; they all pass.
+- **The same soaks without people (`--pedestrians 0`), seeds 1 to 8:** 8 of 8 pass (0 overlaps, longest stop 32–58 s, 88–98 bus stops).
+- **`--motion-test`:** judder 0.0007 (144 Hz), 0.0013 (60 Hz) and 0.0010 (75 Hz), all PASS.
+- **`--light-test`:** 236 lights, 109,008 frames, largest change of one light in one frame 0.011, no pops: PASS.
+- **`--player-test`:** both crashes 0.000 m into the wall (the glancing one slides 3.6 m), walking slides 7.2 m, and 1.5 laps of the ring with 0 AI into the player and judder 0.0003: all PASS.
+- **1080p, 80 people, city run for 60 s first, 370 measured frames per view:**
+
+  | View | FPS | 99th percentile | Worst | GPU |
+  |---|---|---|---|---|
+  | Whole city, noon | 72 | 14.8 ms | 21.2 ms | 2.7 ms |
+  | Whole city, night | 72 | 15.4 ms | 16.0 ms | 3.3 ms |
+  | Shopping street, night | 72 | 16.0 ms | 20.6 ms | 3.6 ms |
+  | Chase view, night | 72 | 15.7 ms | 23.5 ms | 4.7 ms |
+  | The park, afternoon | 72 | 14.8 ms | 27.6 ms | 3.6 ms |
+  | Street level, noon | 72 | 14.9 ms | 20.6 ms | 2.4 ms |
+  | X0 at eye level, noon | 72 | 15.0 ms | 20.6 ms | 2.3 ms |
+  | On foot, dusk | 72 | 14.7 ms | 27.5 ms | 4.0 ms |
+
+  Two of the eight runs had one frame of 27.5 ms. Run again, neither view had a frame over 25 ms. GPU time is no higher than in Phase 6's table (within 0.1 ms, or lower).
+- **One-time stall:** one frame of 170–450 ms, 3–7 s after launch. It is as long with `--pedestrians 0`, so the people do not cause it. It is within the 140–380 ms range seen since Phase 5, and a little longer with `--warm`.
+- **Screenshots checked (views 20 to 25, noon and 17:00):** a walker crossing X0's south crossing on the green figure with a turning SUV waiting short of the band, and the same light on the red figure later; the zebra over G's east arm; the R1 crossing split by its island; following a walker mid-stride; the view through their eyes. The walk lights show green and red from across the road.
+- **Soak speed:** a 30-minute soak takes about 15–20 s (was 4–10 s before people).
+
+**Still to note**
+- The margins are real but not wide. The longest vehicle stop (54 s) is 6 s under its limit, and the longest walker wait (80 s) is 10 s under.
+- Pedestrian umbrellas stay closed until the rain of Phase 9.
 
 ### ✅ Checkpoint 6: city dressing (2026-09-24)
 
@@ -971,7 +1012,7 @@ Each new `.cpp`, `.h` and shader file is registered in `OpenGLMiniProject.vcxpro
   - Neon glows through bloom at night.
   - The frame rate stays at 60 FPS or more at 1080p, and the HUD shows draw calls.
 
-### Phase 7: Pedestrians
+### Phase 7: Pedestrians ✅ DONE (see Checkpoint 7)
 - The sidewalk graph, crossings (signalised and zebra), the walker model and animation (section 5.1: mannequin, BVH clips, speed- and phase-synchronised blending, a small animation graph, leg IK on kerbs), instanced rendering, vehicles yielding, and umbrellas.
 - **Files:** new `Pedestrians.*`, `PedestrianRenderer.*`.
 - **Check:** soak shows 0 vehicle-pedestrian overlaps on crossings and no pedestrian stuck for more than 90 s. You can see people waiting for WALK and then crossing.
