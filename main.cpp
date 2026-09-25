@@ -11,10 +11,12 @@
 #include "Pedestrians.h"
 #include "Player.h"
 #include "PostProcess.h"
+#include "Rain.h"
 #include "Scene.h"
 #include "Sky.h"
 #include "Screenshot.h"
 #include "Simulation.h"
+#include "Weather.h"
 #include "World.h"
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -59,7 +61,9 @@ namespace
         bool graph = false;           // --graph shows the frame-time graph
         bool fullRate = false;        // --full-rate draws on every refresh
         float warmSeconds = 0.0f;     // --warm S runs the city S seconds before the first frame
-        bool umbrellas = false;       // --umbrellas: everyone's umbrella up (ready for the rain of Phase 9)
+        int weather = -1;             // --weather clear|cloudy|rain: that sky at once (rain: streets soaked, umbrellas up)
+        float wetness = -1.0f;        // --wet W: how wet the streets are, 0..1
+        int weatherTo = -1;           // --weather-to clear|cloudy|rain: starts blending there with the first frame
         float glideTo = -1.0f;        // --glide H: the sun starts gliding to H with the first frame
         ShadowQuality shadows = ShadowQuality::High;   // --shadows high|low|off
     };
@@ -204,6 +208,7 @@ namespace
         case 21: camera.setFreePose({-76.0f, 2.4f, -13.0f}, 128.0f, -8.0f); break;    // the zebra over G's east arm
         case 22: camera.setFreePose({64.0f, 2.8f, -14.0f}, 55.0f, -9.0f); break;      // R1 west arm, the island between
         case 25: camera.setFreePose({6.5f, 1.45f, 23.0f}, -127.0f, -4.0f); break;     // waiting at X0's north crossing
+        case 26: camera.setFreePose({3.5f, 2.0f, -150.0f}, 90.0f, 16.0f); break;      // the sky over the city, looking north
         default: camera.reset(); break;
         }
     }
@@ -215,6 +220,7 @@ namespace
         PedestrianSystem* pedestrians = nullptr;
         Player* player = nullptr;
         DayNight* dayNight = nullptr;
+        Weather* weather = nullptr;
         int framebufferWidth = 1280;
         int framebufferHeight = 720;
         bool paused = false;
@@ -333,7 +339,7 @@ namespace
         state->camera->processMouse(xOffset, yOffset);
     }
 
-    // A click on one of the time buttons in the top-right corner.
+    // A click on one of the time or weather buttons in the top-right corner.
     void mouseButtonCallback(GLFWwindow* window, int button, int action, int)
     {
         ApplicationState* state = stateFrom(window);
@@ -354,6 +360,10 @@ namespace
                                            state->framebufferWidth, DayNight::presetCount);
         if (preset >= 0)
             state->dayNight->glideToPreset(preset);
+        const int weather = WeatherButtons::at(static_cast<float>(x) * scaleX, static_cast<float>(y) * scaleY,
+                                               state->framebufferWidth, Weather::kindCount);
+        if (weather >= 0 && state->weather != nullptr)
+            state->weather->blendTo(static_cast<WeatherKind>(weather));
     }
 
     void keyCallback(GLFWwindow* window, int key, int, int action, int mods)
@@ -432,6 +442,8 @@ namespace
             state->dayNight->setNight();
         else if (key == GLFW_KEY_L && state->dayNight != nullptr)
             state->dayNight->toggleStreetLamps();
+        else if (key == GLFW_KEY_K && state->weather != nullptr)
+            state->weather->next();
         else if (key == GLFW_KEY_R && state->camera != nullptr && state->traffic != nullptr && state->dayNight != nullptr)
         {
             state->camera->reset();
@@ -441,6 +453,8 @@ namespace
             if (state->player != nullptr)
                 state->player->reset();
             state->dayNight->reset();
+            if (state->weather != nullptr)
+                state->weather->reset();
             state->paused = false;
             state->shadingMode = 2;
             state->firstMouseEvent = true;
@@ -509,9 +523,12 @@ namespace
     // bodies ever overlapped, that no vehicle ever touched a person, that
     // nobody (driver or walker) was stuck, and that the traffic spread over
     // the junctions instead of piling up at one.
-    //     OpenGLMiniProject.exe --soak 30 7 [--cars 25] [--pedestrians 80] [--trace [T]]
+    // With --weather rain it all happens in the rain: slower drivers with
+    // longer gaps, and people walking faster under umbrellas.
+    //     OpenGLMiniProject.exe --soak 30 7 [--cars 25] [--pedestrians 80] [--trace [T]] [--weather rain]
     int runSoak(float minutes, unsigned int seed, std::size_t cars, std::size_t people, float traceFrom,
-                float longestAllowedStop, bool tracePeople, int traceCrossing, float crossingFrom, float crossingTo)
+                float longestAllowedStop, bool tracePeople, int traceCrossing, float crossingFrom, float crossingTo,
+                float rain)
     {
         constexpr float step = 1.0f / 60.0f;
         constexpr double largestAllowedShare = 0.35;
@@ -522,6 +539,8 @@ namespace
         TrafficSystem traffic(cars, seed);
         const World world = World::make(traffic.network(), traffic.busStopSites());
         PedestrianSystem pedestrians(world, traffic, people, seed);
+        traffic.setRain(rain);
+        pedestrians.setRain(rain);
         // --trace [T] prints every vehicle every 2 s, twenty times, starting at
         // simulated second T, or by default from the moment some vehicle has
         // been standing still for too long.
@@ -895,6 +914,202 @@ namespace
 
         std::printf("%s\n", allPassed ? "SUN TEST PASSED" : "SUN TEST FAILED");
         return allPassed ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+
+    // Headless check of the weather (Phase 9): K steps Clear -> Cloudy ->
+    // Rain -> Clear; every change (and a K pressed half-way through one) is
+    // replayed at 60 Hz at Morning, Evening and Night, and nothing the eye
+    // sees (the light, the sky, the ambient, the exposure, the cloud cover,
+    // the rain) may jump from one frame to the next; the clouds gather before
+    // the rain starts and the rain stops before they clear; and in steady
+    // rain the streets get wet, then puddles fill, and after it they dry,
+    // the puddles last.
+    //     OpenGLMiniProject.exe --weather-test
+    int runWeatherTest()
+    {
+        bool allPassed = true;
+        const auto verdict = [&allPassed](bool passed)
+        {
+            allPassed = allPassed && passed;
+            return passed ? "PASS" : "FAIL";
+        };
+        constexpr float frame = 1.0f / 60.0f;
+
+        // 1. K runs through the three states in order and back to Clear.
+        {
+            Weather weather;
+            std::string order = weather.kindName();
+            for (int press = 0; press < Weather::kindCount; ++press)
+            {
+                weather.next();
+                order += std::string(" -> ") + weather.kindName();
+            }
+            const bool passed = order == "CLEAR -> CLOUDY -> RAIN -> CLEAR";
+            std::printf("K cycles %s | %s\n", order.c_str(), verdict(passed));
+        }
+
+        // 2. Every change at three times of day, frame by frame.
+        struct Change
+        {
+            const char* name;
+            WeatherKind from;
+            WeatherKind to;
+            float pressAgainAt;   // seconds; K again mid-blend, or < 0
+        };
+        const std::array<Change, 7> changes = {{
+            {"CLEAR -> CLOUDY", WeatherKind::Clear, WeatherKind::Cloudy, -1.0f},
+            {"CLOUDY -> RAIN", WeatherKind::Cloudy, WeatherKind::Rain, -1.0f},
+            {"RAIN -> CLEAR", WeatherKind::Rain, WeatherKind::Clear, -1.0f},
+            {"CLEAR -> RAIN", WeatherKind::Clear, WeatherKind::Rain, -1.0f},
+            {"RAIN -> CLOUDY", WeatherKind::Rain, WeatherKind::Cloudy, -1.0f},
+            {"CLOUDY -> CLEAR", WeatherKind::Cloudy, WeatherKind::Clear, -1.0f},
+            {"CLOUDY -> RAIN, K at 4 s", WeatherKind::Cloudy, WeatherKind::Rain, 4.0f},
+        }};
+        const std::array<float, 3> hours = {7.0f, 18.5f, 22.0f};
+        for (float hour : hours)
+        {
+            for (const Change& change : changes)
+            {
+                Weather weather;
+                weather.set(change.from, 0.0f);
+                DayNight clock;
+                clock.setTime(hour);
+                const auto apply = [&] { clock.setWeather(weather.overcast(), weather.rain()); };
+                apply();
+                glm::vec3 lastLight = clock.lightColor();
+                glm::vec3 lastAmbient = clock.skyAmbient();
+                glm::vec3 lastHorizon = clock.skyHorizonColor();
+                glm::vec3 lastZenith = clock.skyZenithColor();
+                float lastExposure = clock.exposure();
+                float lastCover = weather.cloudCover();
+                float lastRain = weather.rain();
+                float lightStep = 0.0f;
+                float skyStep = 0.0f;
+                float exposureStep = 0.0f;
+                float coverStep = 0.0f;
+                float rainStep = 0.0f;
+                float coverWhenRainStarts = -1.0f;
+                float coverWhenRainStops = -1.0f;
+                const float startCover = weather.cloudCover();
+                weather.blendTo(change.to);
+                int frames = 0;
+                bool pressed = false;
+                while (weather.blending() && frames < 60 * 30)
+                {
+                    if (!pressed && change.pressAgainAt >= 0.0f && frames * frame >= change.pressAgainAt)
+                    {
+                        weather.next();
+                        pressed = true;
+                    }
+                    weather.update(frame);
+                    apply();
+                    ++frames;
+                    lightStep = std::max(lightStep, glm::length(clock.lightColor() - lastLight));
+                    skyStep = std::max({skyStep, glm::length(clock.skyAmbient() - lastAmbient),
+                                        glm::length(clock.skyHorizonColor() - lastHorizon),
+                                        glm::length(clock.skyZenithColor() - lastZenith)});
+                    exposureStep = std::max(exposureStep, std::abs(clock.exposure() - lastExposure));
+                    coverStep = std::max(coverStep, std::abs(weather.cloudCover() - lastCover));
+                    rainStep = std::max(rainStep, std::abs(weather.rain() - lastRain));
+                    if (lastRain < 0.02f && weather.rain() >= 0.02f && coverWhenRainStarts < 0.0f)
+                        coverWhenRainStarts = weather.cloudCover();
+                    if (lastRain >= 0.02f && weather.rain() < 0.02f && coverWhenRainStops < 0.0f)
+                        coverWhenRainStops = weather.cloudCover();
+                    lastLight = clock.lightColor();
+                    lastAmbient = clock.skyAmbient();
+                    lastHorizon = clock.skyHorizonColor();
+                    lastZenith = clock.skyZenithColor();
+                    lastExposure = clock.exposure();
+                    lastCover = weather.cloudCover();
+                    lastRain = weather.rain();
+                }
+                const float seconds = frames * frame;
+                // The clouds have mostly gathered (60 % of the change) when
+                // the rain starts, and have mostly not yet cleared when it
+                // stops.
+                const float span = weather.cloudCover() - startCover;
+                const auto gathered = [&](float cover) { return std::abs(span) < 1e-4f ? 1.0f : (cover - startCover) / span; };
+                const bool order = (coverWhenRainStarts < 0.0f || gathered(coverWhenRainStarts) >= 0.6f) &&
+                                   (coverWhenRainStops < 0.0f || gathered(coverWhenRainStops) <= 0.4f);
+                const float expected = change.pressAgainAt >= 0.0f ? change.pressAgainAt + Weather::blendSeconds
+                                                                   : Weather::blendSeconds;
+                const bool passed = std::abs(seconds - expected) < 0.1f && lightStep <= 0.03f && skyStep <= 0.01f &&
+                                    exposureStep <= 0.005f && coverStep <= 0.01f && rainStep <= 0.01f && order;
+                char when[16] {};
+                std::snprintf(when, sizeof(when), "%05.2f", hour);
+                std::printf("%s %-25s %5.2f s | per frame: light %.4f sky %.4f exposure %.4f cover %.4f rain %.4f | "
+                            "cover as rain starts %s%.2f, stops %s%.2f | ends %s | %s\n",
+                            when, change.name, seconds, lightStep, skyStep, exposureStep, coverStep, rainStep,
+                            coverWhenRainStarts < 0.0f ? "-" : "", std::max(coverWhenRainStarts, 0.0f),
+                            coverWhenRainStops < 0.0f ? "-" : "", std::max(coverWhenRainStops, 0.0f),
+                            weather.kindName(), verdict(passed));
+            }
+        }
+
+        // 3. Overcast dims the sun and lifts the sky's soft light.
+        {
+            DayNight clock;
+            clock.setTime(12.0f);
+            const float clearSun = glm::length(clock.lightColor());
+            const float clearAmbient = glm::length(clock.skyAmbient());
+            Weather weather;
+            weather.set(WeatherKind::Rain, 0.0f);
+            clock.setWeather(weather.overcast(), weather.rain());
+            const float rainSun = glm::length(clock.lightColor());
+            const float rainAmbient = glm::length(clock.skyAmbient());
+            const bool passed = rainSun < 0.4f * clearSun && rainAmbient > clearAmbient;
+            std::printf("noon in the rain: sunlight %.2f of clear, sky light %.2f of clear | %s\n",
+                        rainSun / clearSun, rainAmbient / clearAmbient, verdict(passed));
+        }
+
+        // 4. Two minutes of rain, then six of clear sky.
+        {
+            Weather weather;
+            weather.set(WeatherKind::Cloudy, 0.0f);
+            weather.blendTo(WeatherKind::Rain);
+            float rainStarted = -1.0f;
+            float wet = -1.0f;
+            float puddles = -1.0f;
+            int step = 0;
+            for (; step < 60 * 120; ++step)
+            {
+                weather.update(frame);
+                const float now = step * frame;
+                if (rainStarted < 0.0f && weather.rain() > 0.02f)
+                    rainStarted = now;
+                if (wet < 0.0f && weather.wetness() >= 0.95f)
+                    wet = now - rainStarted;
+                if (puddles < 0.0f && weather.puddles() >= 0.9f)
+                    puddles = now - rainStarted;
+            }
+            weather.blendTo(WeatherKind::Clear);
+            float rainStopped = -1.0f;
+            float dry = -1.0f;
+            float puddlesGone = -1.0f;
+            for (int more = 0; more < 60 * 360; ++more, ++step)
+            {
+                weather.update(frame);
+                const float now = step * frame;
+                if (rainStopped < 0.0f && weather.rain() < 0.02f)
+                    rainStopped = now;
+                if (dry < 0.0f && weather.wetness() <= 0.0f)
+                    dry = now - rainStopped;
+                if (puddlesGone < 0.0f && weather.puddles() <= 0.0f)
+                    puddlesGone = now - rainStopped;
+            }
+            const bool passed = wet >= 30.0f && wet <= 70.0f && puddles > wet && puddles <= 110.0f &&
+                                dry >= 60.0f && puddlesGone > dry && puddlesGone <= 300.0f;
+            std::printf("in the rain: wet after %.0f s, puddles full after %.0f s | after it: dry after %.0f s, "
+                        "puddles gone after %.0f s | %s\n", wet, puddles, dry, puddlesGone, verdict(passed));
+        }
+
+        std::printf("%s\n", allPassed ? "WEATHER TEST PASSED" : "WEATHER TEST FAILED");
+        return allPassed ? EXIT_SUCCESS : EXIT_FAILURE;
+    }
+
+    WeatherKind weatherFromName(const std::string& name)
+    {
+        return name == "rain" ? WeatherKind::Rain : name == "cloudy" ? WeatherKind::Cloudy : WeatherKind::Clear;
     }
 
     // Headless check that the night lights (street lamps, neon spill and the
@@ -1545,8 +1760,14 @@ int main(int argc, char** argv)
                 crossingTo = static_cast<float>(std::atof(argv[other + 3]));
             }
         }
+        float rain = 0.0f;
+        for (int other = 1; other + 1 < argc; ++other)
+        {
+            if (std::strcmp(argv[other], "--weather") == 0)
+                rain = weatherFromName(argv[other + 1]) == WeatherKind::Rain ? 1.0f : 0.0f;
+        }
         return runSoak(std::max(minutes, 0.1f), seed, vehicleCount, pedestrianCount, traceFrom, stopLimit, tracePeople,
-                       traceCrossing, crossingFrom, crossingTo);
+                       traceCrossing, crossingFrom, crossingTo, rain);
     }
 
     for (int index = 1; index < argc; ++index)
@@ -1561,6 +1782,8 @@ int main(int argc, char** argv)
             return runWalkTest();
         if (std::strcmp(argv[index], "--sun-test") == 0)
             return runSunTest();
+        if (std::strcmp(argv[index], "--weather-test") == 0)
+            return runWeatherTest();
     }
 
     for (int index = 1; index < argc; ++index)
@@ -1616,8 +1839,12 @@ int main(int argc, char** argv)
             capture.graph = true;
         else if (argument == "--warm" && hasValue)
             capture.warmSeconds = std::max(0.0f, static_cast<float>(std::atof(argv[++index])));
-        else if (argument == "--umbrellas")
-            capture.umbrellas = true;
+        else if (argument == "--weather" && hasValue)
+            capture.weather = static_cast<int>(weatherFromName(argv[++index]));
+        else if (argument == "--wet" && hasValue)
+            capture.wetness = std::clamp(static_cast<float>(std::atof(argv[++index])), 0.0f, 1.0f);
+        else if (argument == "--weather-to" && hasValue)
+            capture.weatherTo = static_cast<int>(weatherFromName(argv[++index]));
         else if (argument == "--glide" && hasValue)
             capture.glideTo = static_cast<float>(std::atof(argv[++index]));
         else if (argument == "--shadows" && hasValue)
@@ -1723,6 +1950,7 @@ int main(int argc, char** argv)
         Player player(world);
         PedestrianSystem pedestrians(world, traffic, pedestrianCount);
         DayNight dayNight;
+        Weather weather;
         RenderScaler scaler;
         ApplicationState state;
         state.camera = &camera;
@@ -1730,6 +1958,7 @@ int main(int argc, char** argv)
         state.pedestrians = &pedestrians;
         state.player = &player;
         state.dayNight = &dayNight;
+        state.weather = &weather;
         state.scaler = &scaler;
         glfwSetWindowUserPointer(window, &state);
         glfwSetFramebufferSizeCallback(window, framebufferCallback);
@@ -1744,6 +1973,7 @@ int main(int argc, char** argv)
                     trafficSeconds, citySeconds, secondsSince(sceneStart));
         Overlay overlay;
         Sky sky;
+        Rain rain;
         HdrTarget hdr;
         PostProcess postProcess;
         FrameStats frameStats;
@@ -1755,6 +1985,15 @@ int main(int argc, char** argv)
             state.ignoreMouse = true;
             if (capture.hour >= 0.0f)
                 dayNight.setTime(capture.hour);
+            if (capture.weather >= 0)
+            {
+                const auto kind = static_cast<WeatherKind>(capture.weather);
+                weather.set(kind, capture.wetness >= 0.0f ? capture.wetness : (kind == WeatherKind::Rain ? 1.0f : 0.0f));
+            }
+            else if (capture.wetness >= 0.0f)
+            {
+                weather.set(WeatherKind::Clear, capture.wetness);
+            }
             state.showHelp = !capture.hideHud;
             state.shadingMode = capture.shading;
             state.showFrameGraph = capture.graph;
@@ -1792,7 +2031,15 @@ int main(int argc, char** argv)
                 pedestrians.update(simulationStep, traffic);
             }
         }
-        if (capture.enabled && capture.umbrellas)
+        // The weather's say in the light, the drivers and the people.
+        const auto applyWeather = [&]
+        {
+            dayNight.setWeather(weather.overcast(), weather.rain());
+            traffic.setRain(weather.rain());
+            pedestrians.setRain(weather.rain());
+        };
+        applyWeather();
+        if (capture.enabled && weather.rain() > 0.5f)
             pedestrians.openUmbrellasNow(1.0f);
 
         // The minimap's fixed parts: every road piece, the roundabouts, and
@@ -1827,6 +2074,8 @@ int main(int argc, char** argv)
                  : state == SignalState::Yellow ? glm::vec3{1.0f, 0.80f, 0.12f} : glm::vec3{1.0f, 0.22f, 0.16f};
         };
 
+        const std::array<const char*, Weather::kindCount> weatherNames = {
+            Weather::name(WeatherKind::Clear), Weather::name(WeatherKind::Cloudy), Weather::name(WeatherKind::Rain)};
         std::array<const char*, DayNight::presetCount> presetNames {};
         for (std::size_t index = 0; index < presetNames.size(); ++index)
             presetNames[index] = DayNight::presets()[index].name;
@@ -1857,6 +2106,7 @@ int main(int argc, char** argv)
             frame.pedestrians = &pedestrianPoses;
             frame.looks = &pedestrians.looks();
             frame.dayNight = &dayNight;
+            frame.weather = &weather;
             frame.shadingMode = state.shadingMode;
             frame.driverView = camera.mode() == CameraMode::Driver;
             frame.selectedVehicleIndex = camera.followedVehicleIndex();
@@ -1883,8 +2133,10 @@ int main(int argc, char** argv)
             hdr.bindForScene();
             glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-            sky.render(frame.view, frame.projection, camera.position(), dayNight, static_cast<float>(timeSeconds));
+            sky.render(frame.view, frame.projection, camera.position(), dayNight, weather, static_cast<float>(timeSeconds));
             scene.render(frame);
+            rain.render(frame.view, frame.projection, camera.position(), static_cast<float>(timeSeconds), weather,
+                        dayNight, renderHeight);
             const int sceneDrawCalls = Mesh::drawCalls();
 
             // 3. Resolve the samples, then bloom and tone-map into the window,
@@ -1971,6 +2223,12 @@ int main(int argc, char** argv)
                 extras.shadowMs = frameStats.shadowMs();
                 extras.headlights = scene.headlightsLit();
                 extras.moonlight = dayNight.moonlit();
+                extras.weather = static_cast<int>(weather.kind());
+                extras.weatherBlending = weather.blending();
+                extras.weatherNames = weatherNames.data();
+                extras.weatherCount = Weather::kindCount;
+                extras.wetness = weather.wetness();
+                extras.puddles = weather.puddles();
 
                 overlay.render(
                     outputWidth,
@@ -2006,6 +2264,8 @@ int main(int argc, char** argv)
             glfwMaximizeWindow(window);
         if (capture.enabled && capture.glideTo >= 0.0f)
             dayNight.glideToTime(capture.glideTo);
+        if (capture.enabled && capture.weatherTo >= 0)
+            weather.blendTo(static_cast<WeatherKind>(capture.weatherTo));
         if (startFullscreen)
             toggleFullscreen(window, placement);
 
@@ -2079,8 +2339,11 @@ int main(int argc, char** argv)
                 state.firstMouseEvent = true;
             }
 
-            // The sun and moon glide on real time, even while paused.
+            // The sun and moon glide on real time, even while paused, and so
+            // does the weather.
             dayNight.animate(dt);
+            weather.update(dt);
+            applyWeather();
             camera.processKeyboard(window, dt);
             const PlayerInput playerInput = readPlayerInput(window, camera);
             if (!state.paused)

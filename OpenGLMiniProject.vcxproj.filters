@@ -39,6 +39,12 @@
     <ClCompile Include="ShadowMap.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Weather.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Rain.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="Shader.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -123,6 +129,8 @@
     <ClInclude Include="Route.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Scene.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="ShadowMap.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Weather.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Rain.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Shader.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Simulation.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Texture.h"><Filter>Header Files</Filter></ClInclude>
@@ -164,5 +172,10 @@
     <None Include="shaders\shadows.glsl"><Filter>Resource Files</Filter></None>
     <None Include="shaders\shadow.vert"><Filter>Resource Files</Filter></None>
     <None Include="shaders\shadow.frag"><Filter>Resource Files</Filter></None>
+    <None Include="shaders\clouds.glsl"><Filter>Resource Files</Filter></None>
+    <None Include="shaders\scene_body.glsl"><Filter>Resource Files</Filter></None>
+    <None Include="shaders\scene_wet.frag"><Filter>Resource Files</Filter></None>
+    <None Include="shaders\rain.vert"><Filter>Resource Files</Filter></None>
+    <None Include="shaders\rain.frag"><Filter>Resource Files</Filter></None>
   </ItemGroup>
 </Project>

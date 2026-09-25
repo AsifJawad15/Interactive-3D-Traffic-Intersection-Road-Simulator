@@ -81,9 +81,9 @@ public:
     // Everyone's body, for the player's collisions.
     void bodies(std::vector<OrientedBox>& out) const;
 
-    // Rain: umbrellas go up (0..1). Nothing sets it before the weather of
-    // Phase 9, but the people are ready.
-    void setUmbrellas(float amount) { umbrellaTarget_ = amount; }
+    // Rain (0..1, from the weather): as it sets in, umbrellas go up one
+    // person after another, and everyone walks a little faster (up to 10 %).
+    void setRain(float amount);
     void openUmbrellasNow(float amount);
 
     const PedestrianStats& stats() const { return stats_; }
@@ -200,6 +200,8 @@ private:
     std::vector<WalkerLook> looks_;
     std::vector<Guest> guests_;
     float umbrellaTarget_ = 0.0f;
+    float rain_ = 0.0f;
+    float pace(const Walker& walker) const { return walker.preferredSpeed * (1.0f + 0.1f * rain_); }
     PedestrianStats stats_;
 
     // Everything solid people must walk round, bucketed on a 4 m grid, for
@@ -231,7 +233,8 @@ private:
     float alongLane(std::size_t crossing, int fromEnd) const;
 
     // --- decisions
-    bool mayStart(std::size_t crossing, const TrafficSystem& traffic);
+    // `waitedLong`: the walker asking has stood at the kerb a long time.
+    bool mayStart(std::size_t crossing, const TrafficSystem& traffic, bool waitedLong);
     bool guestOnCrossing(std::size_t crossing) const;
     void startApproach(Walker& walker, std::size_t crossing, int end);
     void arriveAcross(Walker& walker);

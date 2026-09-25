@@ -27,6 +27,10 @@ namespace
     constexpr float layoutClearance = 0.52f;
     constexpr float requiredClearance = 0.3f;
 
+    // After this long at the kerb, a car that has waited its turn only keeps
+    // someone back if it could really go now (TrafficSystem::crossingBlocker).
+    constexpr float longWaitSeconds = 45.0f;
+
     // Waiting at the kerb: two abreast, rows 0.65 m apart, three rows (on
     // an island, one behind the other).
     constexpr float slotRowSpacing = 0.6f;
@@ -526,6 +530,12 @@ void PedestrianSystem::resetStats()
         walker.stillSeconds = 0.0f;
 }
 
+void PedestrianSystem::setRain(float amount)
+{
+    rain_ = amount < 0.0f ? 0.0f : (amount > 1.0f ? 1.0f : amount);
+    umbrellaTarget_ = rain_ > 0.05f ? 1.0f : 0.0f;
+}
+
 void PedestrianSystem::openUmbrellasNow(float amount)
 {
     umbrellaTarget_ = amount;
@@ -605,8 +615,11 @@ bool PedestrianSystem::guestOnCrossing(std::size_t crossing) const
     return false;
 }
 
-bool PedestrianSystem::mayStart(std::size_t crossing, const TrafficSystem& traffic)
+bool PedestrianSystem::mayStart(std::size_t crossing, const TrafficSystem& traffic, bool waitedLong)
 {
+    // Someone who has waited a long time asks afresh (rarely: not cached).
+    if (waitedLong)
+        return traffic.walkAllowed(crossing) && !guestOnCrossing(crossing) && traffic.crossingClear(crossing, true);
     signed char& cached = clearCache_[crossing];
     if (cached < 0)
         cached = traffic.walkAllowed(crossing) && !guestOnCrossing(crossing) && traffic.crossingClear(crossing) ? 1 : 0;
@@ -765,7 +778,7 @@ void PedestrianSystem::update(float dt, TrafficSystem& traffic)
             gaps(index, ahead, behind);
             glm::vec2 direction {0.0f, 1.0f};
             lanePoint(lane, walker.s, &direction);
-            float wanted = walker.preferredSpeed;
+            float wanted = pace(walker);
             if (ahead < 4.0f)
                 wanted = std::min(wanted, std::max(0.0f, (ahead - followSpacing) * 1.6f));
             if (guestAhead(walker.position, direction))
@@ -823,7 +836,7 @@ void PedestrianSystem::update(float dt, TrafficSystem& traffic)
                 walker.state = State::Lane;
             break;
         case State::ToKerb:
-            if (moveToward(walker, walker.target, walker.preferredSpeed))
+            if (moveToward(walker, walker.target, pace(walker)))
             {
                 walker.state = State::Wait;
                 walker.reaction = 0.25f + 0.7f * random01();
@@ -837,7 +850,7 @@ void PedestrianSystem::update(float dt, TrafficSystem& traffic)
             moveToward(walker, walker.target, 0.8f);
             const Crossing& info = crossings[walker.crossing];
             facing = info.across * (walker.fromEnd == 0 ? 1.0f : -1.0f);
-            if (mayStart(walker.crossing, traffic))
+            if (mayStart(walker.crossing, traffic, walker.stillSeconds > longWaitSeconds))
             {
                 walker.reaction -= dt;
                 if (walker.reaction <= 0.0f)
@@ -855,7 +868,7 @@ void PedestrianSystem::update(float dt, TrafficSystem& traffic)
             // Never stopping; a little quicker than on the sidewalk, and
             // hurrying when the lights start to flash.
             const bool flashing = traffic.walkLight(walker.crossing) == WalkLight::Flashing;
-            const float wanted = walker.preferredSpeed * (flashing ? 1.35f : 1.1f);
+            const float wanted = pace(walker) * (flashing ? 1.35f : 1.1f);
             walker.speed = approach(walker.speed, wanted, 1.5f, 3.0f, dt);
             const glm::vec2 to = walker.target - walker.position;
             const float distance = glm::length(to);
@@ -869,7 +882,7 @@ void PedestrianSystem::update(float dt, TrafficSystem& traffic)
         }
         case State::FromKerb:
         {
-            const bool arrived = moveToward(walker, walker.target, walker.preferredSpeed);
+            const bool arrived = moveToward(walker, walker.target, pace(walker));
             facing = walker.target - walker.previousPosition;
             if (!arrived)
                 break;
@@ -957,9 +970,12 @@ void PedestrianSystem::update(float dt, TrafficSystem& traffic)
             walker.stillSeconds = 0.0f;
         }
 
-        // Umbrellas: most people carry one, and put it up a moment apart.
+        // Umbrellas: most people carry one, and put it up a moment apart:
+        // the first as the first drops fall, the last once it really rains.
+        // They come down in the same order when it stops.
+        const float feelsRain = 0.05f + 0.1f * walker.umbrellaDelay;
         const float wantUmbrella = (walker.id % 5u != 4u && umbrellaTarget_ > 0.0f &&
-                                    clock_ > walker.umbrellaDelay) ? umbrellaTarget_ : 0.0f;
+                                    clock_ > walker.umbrellaDelay && rain_ >= feelsRain) ? umbrellaTarget_ : 0.0f;
         walker.umbrella = approach(walker.umbrella, wantUmbrella, 1.2f, 1.2f, dt);
     }
 

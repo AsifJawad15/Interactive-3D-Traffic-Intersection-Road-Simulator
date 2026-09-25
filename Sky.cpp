@@ -18,6 +18,7 @@ void Sky::render(
     const glm::mat4& projection,
     const glm::vec3& cameraPosition,
     const DayNight& dayNight,
+    const Weather& weather,
     float elapsedSeconds)
 {
     shader_.use();
@@ -29,6 +30,11 @@ void Sky::render(
     shader_.setFloat("uStarVisibility", dayNight.starVisibility());
     shader_.setFloat("uTime", elapsedSeconds);
     applyAtmosphereUniforms(shader_, dayNight);
+    applyCloudUniforms(shader_, weather);
+    shader_.setVec3("uCloudLight", dayNight.cloudLight());
+    shader_.setVec3("uCloudLightVector", dayNight.cloudLightVector());
+    shader_.setVec3("uCloudAmbient", dayNight.skyAmbient());
+    shader_.setFloat("uCloudDarkness", weather.overcast());
 
     // The sky is the backdrop: it neither tests nor writes depth, so the
     // scene drawn afterwards always covers it.
@@ -49,4 +55,10 @@ void applyAtmosphereUniforms(const Shader& shader, const DayNight& dayNight)
     shader.setVec3("uSunGlow", dayNight.sunGlowColor());
     shader.setFloat("uFogDensity", dayNight.fogDensity());
     shader.setFloat("uFogFalloff", dayNight.fogFalloff());
+}
+
+void applyCloudUniforms(const Shader& shader, const Weather& weather)
+{
+    shader.setFloat("uCloudCover", weather.cloudCover());
+    shader.setVec2("uCloudOffset", weather.cloudOffset());
 }

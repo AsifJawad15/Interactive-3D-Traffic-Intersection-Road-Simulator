@@ -31,6 +31,10 @@ between flat, Gouraud and Phong while the simulation runs. The sun follows a
 real mid-latitude path and the moon the opposite arc; five time presets
 (Morning, Noon, Afternoon, Evening, Night) are a key press or a click away, and
 the sun glides to them so that every shadow in the city sweeps round with it.
+The weather is Clear, Cloudy or Rain (`K`, or a click): clouds drift over the
+sky and their shadows over the streets, and in the rain the streets get wet,
+puddles fill, people put up umbrellas and drivers slow down with their
+headlights on.
 
 The traffic is **collision-free by construction**: every place where two routes
 could touch is measured once at start-up, and a vehicle only enters a junction
@@ -85,10 +89,12 @@ that `shaders/` and `assets/` resolve. `--cars N` sets the number of cars
 | `T` | Toggle the automatic day–night cycle |
 | `Y` / `N` | Jump to noon / 22:00 |
 | `L` | Toggle the night lights (lamps, neon, billboards) |
-| `R` | Reset camera, traffic and time |
+| **`K`** | **Weather: Clear → Cloudy → Rain → Clear** (every change blends over 10 s) |
+| **Click a weather button** | The same, from the row under the time buttons |
+| `R` | Reset camera, traffic, time and weather |
 | `H` | Show / hide the control panel |
 | **`F2`** | **Shadows: high (two maps) / low (the city map only) / off** |
-| `Alt` (hold) | Show the cursor while the mouse is looking round (free camera, on foot, driver view), to click the time buttons |
+| `Alt` (hold) | Show the cursor while the mouse is looking round (free camera, on foot, driver view), to click the time and weather buttons |
 | `F5` | Frame-time graph (last 240 frames) |
 | `F6` | Resolution: automatic / always native / always 720p inside the window |
 | `F7` | Frame pacing: steady (every second refresh on a 120 Hz+ screen) / full rate |
@@ -96,8 +102,8 @@ that `shaders/` and `assets/` resolve. `--cars N` sets the number of cars
 | `Esc` | Exit |
 
 The cursor is free in the views that do not look with the mouse (top, follow,
-chase, the AI driver's seat, following a person), so the time buttons can be
-clicked there directly.
+chase, the AI driver's seat, following a person), so the time and weather
+buttons can be clicked there directly.
 
 The window opens at 1920×1080, or maximised when the screen is only 1080p tall
 (`F11` then gives true fullscreen 1080p; `--fullscreen` starts that way). The old
@@ -422,10 +428,73 @@ in the driver view. Shadows work in all three shading modes. In Gouraud the
 sun is lit at the vertices but shadowed per pixel. `F2` switches between both
 maps, the city map only, and none. The HUD shows what they cost.
 
-**Headlights.** After dusk every vehicle's headlights are one cone of light,
-aimed just below level. The 8 cones nearest the camera that reach into view
+**Headlights.** After dusk, and in the rain even by day, every vehicle's
+headlights are one cone of light, aimed just below level. The 8 cones nearest the camera that reach into view
 light the road (your own car first when you drive it); the farthest fade out
 as others come nearer, like the lamps.
+
+### Weather: clouds and light rain
+
+`Weather.cpp` holds the state (Clear, Cloudy or Rain) and blends every value
+to a new one over 10 s, eased, so the sky never snaps. Going towards rain the
+clouds gather first and the rain starts once they have; going away from it
+the rain stops first. There is no storm and no fog.
+
+| | Clear | Cloudy | Rain |
+| --- | --- | --- | --- |
+| Cloud cover | a few wisps | broken cloud | overcast |
+| Sunlight | full | full between the clouds | a fifth of it, everywhere |
+| Cloud shadows | none | drifting patches | none (all grey) |
+| Rain | — | — | 5,000 streaks, wet streets, puddles |
+
+**Clouds (`shaders/clouds.glsl`, `sky.frag`).** The clouds are a flat sheet
+1.5 km up. For each sky pixel the view ray meets the sheet, and fractal noise
+(six octaves of value noise, fewer far away) there gives the cloud's
+thickness; the cover lowers the threshold the noise must pass. The wind
+carries the sheet slowly east-north-east. A second sample, taken 220 m
+towards the sun, says how much cloud the light passes through: edges facing
+the sun are bright, thick middles dark underneath, and thin edges near the
+sun get a silver lining. The light on them is the sun's, which reaches them a
+little after sunset for the street (pink and orange at Evening), or the
+moon's, which turns them blue-grey at night. They hide the sun, the moon and
+the stars behind them, and far away they thin into the horizon haze.
+
+**Cloud shadows.** Every lit surface looks up at the same sheet along the
+light and dims by the cloud it finds there, so a cloud's shadow lies exactly
+under the cloud as seen from the sun and drifts with it. Under an overcast
+sky the sun is dimmed everywhere instead, the sky's soft light rises and
+greys, shadows soften, and the horizon haze thickens a little in the rain
+(`DayNight::setWeather`).
+
+**Rain (`Rain.cpp`, `shaders/rain.vert/.frag`).** Up to 5,000 streaks, one
+instanced draw call, in a 36 m box that follows the camera. Each drop's place
+is fixed in the world and only wraps round the box, so moving through the
+rain passes the drops instead of carrying them along. A streak is stretched
+along its fall and leans with the wind. It is lit by the sky and, per drop,
+by the lamps, neon and headlights in the light budget, so rain glitters under
+a street lamp and in a headlight beam. Streaks are added onto the scene and
+tested against its depth.
+
+**The wet world (`shaders/scene_body.glsl`).** Wetness builds over about
+40 s of rain and dries over two minutes after it; puddles fill over about a
+minute and a half and are the last to go (four minutes). Wet surfaces are
+darker and glossier, the more so the more they face the sky, and only as far
+as their material allows (grass and leaves stay dull). Puddles lie in the
+dips of the roads and paving (a noise mask): nearly black, flat, and
+mirroring the sky and the cloud sheet by Fresnel's law, from 2 % looking
+straight down to nearly all of it at a grazing angle. The lamps' and
+headlights' highlights stay on top of the mirror, so they shine in the
+puddles at night. Near the camera, rings spread where drops land, on the
+road, the pavements and the car roofs alike. The weather's shading lives in a
+second program (`scene_wet.frag`): the extra code makes the shader slower even
+where it is skipped, so dry weather under a clear sky uses the smaller one.
+
+**Life in the rain.** People put up umbrellas one after another as it starts
+and walk up to 10 % faster. Drivers drive 15 % slower and keep gaps 35 %
+longer, and switch their headlights on. In the driver view the wipers sweep
+the lower part of the view (the view sits at the top of the windscreen, so
+they sweep a pane just in front of the eyes, from pivots under the bonnet's
+rear edge).
 
 ---
 
@@ -487,7 +556,10 @@ keeping to the right, and cross at the 54 zebra crossings (`Pedestrians.cpp`).
   On the approach to a zebra, drivers who can stop comfortably let waiting
   people over. After 7 s a waiting driver stops giving way and the people
   let it go first. That patience only runs while the driver's own light would
-  let it go, so a car standing at red never keeps anyone from walking. Every route over a crossing has a place to wait on its
+  let it go, so a car standing at red never keeps anyone from walking.
+  Someone who has already waited 45 s lets it go first only if it could
+  really go now: a car still waiting for a gap in a roundabout keeps nobody
+  back, or a stream of such cars could. Every route over a crossing has a place to wait on its
   approach lane, where the traffic behind can see it.
 * **The figure (`Mannequin.cpp`):** a mannequin of Bezier-revolution parts on a
   small skeleton. Its motion is authored as keyframed curves (idle, walk, jog,
@@ -498,8 +570,7 @@ keeping to the right, and cross at the 54 zebra crossings (`Pedestrians.cpp`).
   two-bone IK on the ground under each foot, so people step up and down kerbs.
 * **Drawing (`PedestrianRenderer.cpp`):** one instanced draw call per body
   shape (13 for the whole crowd). Far away, poses are refreshed every second or
-  fourth frame. Umbrellas are built but stay closed until the rain of Phase 9
-  (`--umbrellas` opens them for a capture).
+  fourth frame. Umbrellas go up in the rain.
 * **You on foot** are drawn as the same figure.
 
 ## The vehicles
@@ -555,13 +626,25 @@ These command-line modes run without opening a window:
 OpenGLMiniProject.exe --self-test
 OpenGLMiniProject.exe --plot
 OpenGLMiniProject.exe --soak 30 1 [--cars 36] [--pedestrians 80] [--stop-limit 60] [--trace [T]] [--trace-people]
-                      [--trace-crossing C FROM TO]
+                      [--trace-crossing C FROM TO] [--weather rain]
 OpenGLMiniProject.exe --motion-test
 OpenGLMiniProject.exe --light-test
 OpenGLMiniProject.exe --player-test
 OpenGLMiniProject.exe --walk-test
 OpenGLMiniProject.exe --sun-test
+OpenGLMiniProject.exe --weather-test
 ```
+
+`--weather-test` checks the weather. `K` must step Clear → Cloudy → Rain →
+Clear. Every change (and a `K` pressed half-way through one) is replayed at
+60 Hz at Morning, Evening and Night: it must take 10 s, and from one frame to
+the next the light may change by at most 0.03, the sky and ambient by 0.01,
+the exposure by 0.005, and the cover and the rain by 0.01. The clouds must be
+at least 60 % gathered when the rain starts, and at most 40 % cleared when it
+stops. Rain at noon must dim the sunlight to under 40 % and raise the sky's
+light. Last, two minutes of rain and six of clear sky: the streets must be wet
+after 30–70 s, the puddles full later, and afterwards the puddles must be the
+last to dry.
 
 `--sun-test` checks the sky. At each preset the sun (or moon) must stand at
 the right height with shadows pointing the right way, and the lamps must be
@@ -617,7 +700,8 @@ truck and car bodies drawn every metre through a turn.
 tests every pair of real vehicle outlines (oriented boxes, separating-axis test)
 every step. It passes when there are no overlaps, no car stood still longer than
 the stop limit (60 s), no junction carries more than 35 % of all traffic, and
-every line bus stopped at a stop at least once a minute. With people (80 by
+every line bus stopped at a stop at least once a minute. `--weather rain`
+runs it all in the rain (slower drivers, longer gaps, faster walkers). With people (80 by
 default) it also tests every person against every vehicle body each step (there
 must be no touch), counts how long anyone stood waiting (at most 90 s), and
 checks nobody ever stepped out against the lights.
@@ -650,10 +734,14 @@ without judder.
 `--capture out.png` renders a fixed view and saves it, and reports frame timing:
 average, 99th percentile, worst frame, frames over 25 ms, GPU time, and for each
 slow frame whether the time went into our own work or into the buffer swap.
-Options: `--view 0..25 --time H --glide H --shadows high|low|off --shading 0..2
+Options: `--view 0..26 --time H --glide H --shadows high|low|off --shading 0..2
+--weather clear|cloudy|rain --wet W --weather-to clear|cloudy|rain
 --no-hud --frames N --size 1920x1080 --fullscreen --scale 0.67 --full-rate
---graph --warm S --umbrellas`. `--glide H` starts the sun gliding to H with the
+--graph --warm S`. `--glide H` starts the sun gliding to H with the
 first frame, and `--warm S` runs the city for S seconds before the first frame.
+`--weather` sets the sky at once (rain: streets soaked, umbrellas up), `--wet W`
+sets how wet the streets are (0..1), and `--weather-to` starts a blend with the
+first frame.
 The views are
 0 the central crossroads, 1 street level, 2 roundabout R1 and its fountain, 3 the
 whole city, 4 the T-junctions G and ST, 5 straight down, 6 roundabout R2,
@@ -664,7 +752,8 @@ the front and from behind, 12 a bus at its stop with its doors open, 14 and
 plaza and pond, 17 the petrol station, 18 a shopping street, 19 houses and
 flats, 20 X0's south crossing and its far walk light, 21 the zebra over G's
 east arm, 22 the crossing of R1's west arm and its island, 23 following a
-person, 24 through their eyes and 25 people waiting at X0's north crossing.
+person, 24 through their eyes, 25 people waiting at X0's north crossing and
+26 the sky over the city, looking north from the ring road.
 At start-up the program prints how long the traffic, the city and the meshes
 took to build.
 
@@ -698,14 +787,19 @@ took to build.
    sweep round; street lamps, neon, billboards and headlights at night, and
    the spot-light cone on the billboard at the central crossroads. `F2` turns
    the shadows off and on again.
-11. **Shading comparison** (`1` / `2` / `3`) — flat, Gouraud and Phong, best seen on
+11. **Weather** (`K`, the weather buttons) — from street level at Afternoon:
+   Clear to Cloudy (clouds gather and their shadows drift over the street),
+   then Rain (headlights on, umbrellas up, the road darkening, puddles filling
+   and rings where drops land). Then Night in the rain: rain glittering under
+   the lamps, lamps shining in the puddles, and the wipers from the driver view.
+12. **Shading comparison** (`1` / `2` / `3`) — flat, Gouraud and Phong, best seen on
    the curved fountain, the lamp posts and the tree trunks.
 
 ---
 
 ## Deliberately not included
 
-Weather and rain, imported models and physics are not part of this version;
-`ENHANCEMENT_PLAN.md` lists the phases that add weather.
+Storms, fog, imported models and physics are not part of this version;
+`ENHANCEMENT_PLAN.md` lists what comes next (the Enhanced mode).
 The scene is authored geometry throughout: there is no model file anywhere in
 this project.

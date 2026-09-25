@@ -13,6 +13,7 @@
 #include "Simulation.h"
 #include "Texture.h"
 #include "VehicleRenderer.h"
+#include "Weather.h"
 #include "World.h"
 
 #include <glm/mat4x4.hpp>
@@ -46,6 +47,7 @@ struct SceneFrame
     const std::vector<PedestrianPose>* pedestrians = nullptr;
     const std::vector<WalkerLook>* looks = nullptr;
     const DayNight* dayNight = nullptr;
+    const Weather* weather = nullptr;
     int shadingMode = 2;
     bool driverView = false;
     std::size_t selectedVehicleIndex = 0;
@@ -75,7 +77,14 @@ public:
 
 private:
     const World& world_;
+    // The city's surfaces, dry, and with the weather (cloud shadows, wet
+    // streets and puddles). The dry one is smaller and faster, and is used
+    // whenever the weather has nothing to add.
     Shader sceneShader_;
+    Shader wetShader_;
+    bool programsWarmed_ = false;
+    // Draws the city with one of the two programs.
+    void renderCity(const SceneFrame& frame, const Shader& program);
     // The depth-only shader of the shadow maps, and whichever of the two
     // the drawing code below is feeding (they share the draw functions).
     Shader shadowShader_;
@@ -187,6 +196,12 @@ private:
     void drawCasters(const SceneFrame& frame);
     void collectVehicles(const SceneFrame& frame, const glm::mat4& viewProjection, const glm::vec3& shadowStep);
     void collectHeadlights(const SceneFrame& frame);
+    // Whether vehicles drive with their headlights on: after dusk, and in
+    // the rain even by day.
+    static bool headlightsWanted(const SceneFrame& frame);
+    // The wipers seen from a driver's seat in the rain, sweeping a pane in
+    // front of the eyes of the car heading `yawDegrees`.
+    void collectWipers(const SceneFrame& frame, float yawDegrees);
 
     // Buildings, shops, trees, paving and street furniture, baked.
     PropRenderer props_;

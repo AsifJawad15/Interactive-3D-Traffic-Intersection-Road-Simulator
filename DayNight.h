@@ -93,6 +93,18 @@ public:
     // Camera exposure. It rises at night, the way eyes adapt to the dark.
     float exposure() const;
 
+    // The weather's say in the light (Weather.h): how overcast the sky is
+    // (0..1: the sun dims, the ambient lifts and greys, the sky greys) and
+    // how hard it rains (the haze thickens a little).
+    void setWeather(float overcast, float rain);
+    float overcast() const { return overcast_; }
+
+    // The light on the clouds: the sun's, which reaches them at 1.5 km a
+    // little before sunrise and after sunset, or the moon's; and the unit
+    // vector towards whichever lights them.
+    glm::vec3 cloudLight() const;
+    glm::vec3 cloudLightVector() const;
+
     // Plain colour for glClear, kept for code that still wants one.
     glm::vec3 skyColor() const;
 
@@ -108,6 +120,9 @@ private:
     float glideTo_ = 0.0f;
     float glideClock_ = 0.0f;
     float glideSeconds_ = 0.0f;
+
+    float overcast_ = 0.0f;
+    float rain_ = 0.0f;
 
     void glideTo(float target, float seconds);
     float targetTime() const;

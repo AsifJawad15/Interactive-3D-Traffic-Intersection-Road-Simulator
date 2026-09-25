@@ -89,7 +89,10 @@ struct Vehicle
     float rearReach = 2.5f;
     float frontReach = 2.5f;
 
-    // Intelligent Driver Model parameters of this vehicle.
+    // Intelligent Driver Model parameters of this vehicle. The speed and the
+    // headway are its dry-road ones scaled for the weather each step.
+    float dryMaximumSpeed = 8.0f;
+    float dryTimeHeadway = 1.1f;
     float maximumSpeed = 8.0f;
     float maximumAcceleration = 1.6f;
     float comfortableBraking = 2.2f;
@@ -232,6 +235,9 @@ public:
     // car in front, and does not enter a junction they are standing in.
     void setGuests(const std::vector<Guest>& guests) { guests_ = guests; }
 
+    // Rain (0..1): drivers slow down and keep longer gaps on a wet road.
+    void setRain(float amount);
+
     // Every active AI body as it stands now, for the player's collisions.
     void bodies(std::vector<OrientedBox>& out) const;
 
@@ -251,9 +257,14 @@ public:
     // And as far as the traffic goes: no vehicle is on it or already turning
     // onto it, and every vehicle heading for it can still stop comfortably
     // before it (or is held at its line until it is clear).
-    bool crossingClear(std::size_t crossing) const { return crossingBlocker(crossing) == nullptr; }
+    // `peopleWaitedLong`: someone at the kerb has already waited a long time
+    // (see crossingBlocker).
+    bool crossingClear(std::size_t crossing, bool peopleWaitedLong = false) const
+    {
+        return crossingBlocker(crossing, nullptr, peopleWaitedLong) == nullptr;
+    }
     // The vehicle that keeps the crossing from being clear, and why.
-    const Vehicle* crossingBlocker(std::size_t crossing, const char** reason = nullptr) const;
+    const Vehicle* crossingBlocker(std::size_t crossing, const char** reason = nullptr, bool peopleWaitedLong = false) const;
     // One line on a crossing: its junction's phase, the walk light, who waits
     // and crosses, and what keeps it from being clear (--trace-crossing).
     std::string crossingReport(std::size_t crossing) const;

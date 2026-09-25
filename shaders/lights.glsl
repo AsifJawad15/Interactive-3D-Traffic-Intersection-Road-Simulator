@@ -78,3 +78,39 @@ void addSpotLights(vec3 position, vec3 normal, vec3 viewDirection, float shinine
         specular += color * pow(max(dot(viewDirection, reflection), 0.0), shininess) * attenuation * 0.45;
     }
 }
+
+// How brightly the lamps and the headlights light a raindrop at `position`:
+// a drop has no side facing away, so there is no angle term, only the
+// distance (and the cone, for a headlight).
+vec3 lightGlow(vec3 position)
+{
+    vec3 glow = vec3(0.0);
+    for (int index = 0; index < uPointCount.x; ++index)
+    {
+        vec3 toLight = uPointPositionRange[index].xyz - position;
+        float distanceToLight = length(toLight);
+        float range = uPointPositionRange[index].w;
+        if (distanceToLight >= range)
+            continue;
+        float x = distanceToLight / range;
+        float window = clamp(1.0 - x * x * x * x, 0.0, 1.0);
+        glow += uPointColorFade[index].rgb * window * window /
+                (1.0 + 0.09 * distanceToLight + 0.032 * distanceToLight * distanceToLight);
+    }
+    for (int index = 0; index < uConeCount.x; ++index)
+    {
+        vec3 toLight = uConePositionRange[index].xyz - position;
+        float distanceToLight = length(toLight);
+        float range = uConePositionRange[index].w;
+        if (distanceToLight >= range)
+            continue;
+        float theta = dot(-toLight / max(distanceToLight, 1e-4), uConeDirectionOuter[index].xyz);
+        float outer = uConeDirectionOuter[index].w;
+        float cone = clamp((theta - outer) / max(uConeColorInner[index].w - outer, 1e-4), 0.0, 1.0);
+        float x = distanceToLight / range;
+        float window = clamp(1.0 - x * x * x * x, 0.0, 1.0);
+        glow += uConeColorInner[index].rgb * cone * cone * window * window /
+                (1.0 + 0.014 * distanceToLight + 0.0007 * distanceToLight * distanceToLight);
+    }
+    return glow;
+}

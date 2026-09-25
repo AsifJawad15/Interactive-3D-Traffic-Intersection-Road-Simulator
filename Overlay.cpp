@@ -141,7 +141,7 @@ void Overlay::render(
             "1 / 2 / 3 FLAT / GOURAUD / PHONG",
             "O  [  ]   NEXT TIME PRESET / HOUR -1, +1",
             "T / Y / N AUTO DAY / SET DAY / SET NIGHT",
-            "L         TOGGLE LIGHTS",
+            "K / L     WEATHER / TOGGLE LIGHTS",
             "F2        SHADOWS HIGH / LOW / OFF",
             "F5 F6 F7  GRAPH / RESOLUTION / PACING",
             "F11       FULLSCREEN",
@@ -168,6 +168,7 @@ void Overlay::render(
     drawMinimap(extras, width, height);
     drawPlayerPanel(extras, width, height);
     drawTimePanel(extras, timeText, width, height);
+    drawWeatherPanel(extras, width, height);
 
     glDisable(GL_BLEND);
     glEnable(GL_DEPTH_TEST);
@@ -497,6 +498,44 @@ void Overlay::drawTimePanel(const HudExtras& extras, const std::string& timeText
         const float textWidth = static_cast<float>(stb_easy_font_width(const_cast<char*>(name))) * scale;
         drawText(x + 0.5f * (TimeButtons::buttonWidth - textWidth), y0 + 9.0f, scale, name,
                  current && extras.onPreset ? glm::vec4{0.05f, 0.04f, 0.02f, 1.0f} : glm::vec4{0.92f, 0.94f, 0.98f, 1.0f},
+                 screenWidth, screenHeight);
+    }
+}
+
+void Overlay::drawWeatherPanel(const HudExtras& extras, int screenWidth, int screenHeight)
+{
+    if (extras.weatherNames == nullptr || extras.weatherCount <= 0)
+        return;
+
+    // Under the time buttons: the weather's buttons, the one it is in (or
+    // blending to) lit, and how wet the streets are.
+    const int count = extras.weatherCount;
+    const float x0 = WeatherButtons::left(screenWidth, count);
+    const float y0 = WeatherButtons::top + TimeButtons::header;
+    const float panelWidth = count * TimeButtons::buttonWidth + (count - 1) * TimeButtons::gap + 20.0f;
+    drawRectangle(x0 - 10.0f, WeatherButtons::top, panelWidth, TimeButtons::header + TimeButtons::buttonHeight + 10.0f,
+                  {0.015f, 0.025f, 0.045f, 0.88f}, screenWidth, screenHeight);
+
+    std::array<char, 64> line {};
+    std::snprintf(line.data(), line.size(), "WEATHER   WET %d%%  PUDDLES %d%%",
+                  static_cast<int>(std::lround(extras.wetness * 100.0f)),
+                  static_cast<int>(std::lround(extras.puddles * 100.0f)));
+    drawText(x0, WeatherButtons::top + 8.0f, 1.1f, line.data(), {0.45f, 0.85f, 1.0f, 1.0f}, screenWidth, screenHeight);
+
+    for (int index = 0; index < count; ++index)
+    {
+        const float x = x0 + index * (TimeButtons::buttonWidth + TimeButtons::gap);
+        const bool current = index == extras.weather;
+        const bool settled = current && !extras.weatherBlending;
+        const glm::vec4 fill = current ? (settled ? glm::vec4{0.25f, 0.62f, 0.90f, 0.95f}
+                                                  : glm::vec4{0.14f, 0.32f, 0.48f, 0.95f})
+                                       : glm::vec4{0.10f, 0.16f, 0.24f, 0.95f};
+        drawRectangle(x, y0, TimeButtons::buttonWidth, TimeButtons::buttonHeight, fill, screenWidth, screenHeight);
+        const char* name = extras.weatherNames[index];
+        const float scale = 1.15f;
+        const float textWidth = static_cast<float>(stb_easy_font_width(const_cast<char*>(name))) * scale;
+        drawText(x + 0.5f * (TimeButtons::buttonWidth - textWidth), y0 + 9.0f, scale, name,
+                 settled ? glm::vec4{0.02f, 0.04f, 0.07f, 1.0f} : glm::vec4{0.92f, 0.94f, 0.98f, 1.0f},
                  screenWidth, screenHeight);
     }
 }

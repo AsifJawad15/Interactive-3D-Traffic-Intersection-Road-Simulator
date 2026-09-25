@@ -5,6 +5,7 @@
 #include "Sky.h"
 
 #include <glm/geometric.hpp>
+#include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_inverse.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -158,6 +159,7 @@ namespace
 Scene::Scene(const TrafficSystem& traffic, const World& world)
     : world_(world),
       sceneShader_("shaders/scene.vert", "shaders/scene.frag"),
+      wetShader_("shaders/scene.vert", "shaders/scene_wet.frag"),
       shadowShader_("shaders/shadow.vert", "shaders/shadow.frag"),
       cube_(Mesh::makeCube()),
       beveledCube_(Mesh::makeBeveledCube(0.09f)),
@@ -196,12 +198,15 @@ Scene::Scene(const TrafficSystem& traffic, const World& world)
       roads_(traffic),
       props_(world, vehicleLooks_)
 {
-    sceneShader_.use();
-    sceneShader_.setInt("uDiffuseTexture", 0);
-    sceneShader_.setInt("uSpecularTexture", 1);
-    sceneShader_.setInt("uShadowNear", 2);
-    sceneShader_.setInt("uShadowCity", 3);
-    LightManager::attach(sceneShader_.id());
+    for (const Shader* shader : {&sceneShader_, &wetShader_})
+    {
+        shader->use();
+        shader->setInt("uDiffuseTexture", 0);
+        shader->setInt("uSpecularTexture", 1);
+        shader->setInt("uShadowNear", 2);
+        shader->setInt("uShadowCity", 3);
+        LightManager::attach(shader->id());
+    }
     shadowShader_.use();
     shadowShader_.setInt("uDiffuseTexture", 0);
 
@@ -420,9 +425,29 @@ void Scene::drawCasters(const SceneFrame& frame)
 
 void Scene::render(const SceneFrame& frame)
 {
+    // The weather's program only while it has something to show: cloud
+    // shadows, or streets still wet. Both grow from nothing, so the change
+    // of program is never seen. The hidden warm-up frame draws with both,
+    // so neither is prepared by the driver in the middle of the run.
+    const Weather* weather = frame.weather;
+    const bool weatherShown = weather != nullptr &&
+                              (weather->cloudShadow() > 0.0f || weather->wetness() > 0.0f || weather->puddles() > 0.0f);
+    if (!programsWarmed_)
+    {
+        programsWarmed_ = true;
+        renderCity(frame, weatherShown ? sceneShader_ : wetShader_);
+    }
+    renderCity(frame, weatherShown ? wetShader_ : sceneShader_);
+    shader_ = &sceneShader_;
+}
+
+void Scene::renderCity(const SceneFrame& frame, const Shader& program)
+{
     const DayNight& dayNight = *frame.dayNight;
     const TrafficSystem& traffic = *frame.traffic;
+    const Weather* weather = frame.weather;
 
+    shader_ = &program;
     shader_->use();
     shader_->setFloat("uTime", frame.elapsedSeconds);
     shader_->setMat4("uView", frame.view);
@@ -441,6 +466,18 @@ void Scene::render(const SceneFrame& frame)
     shader_->setFloat("uHaze", 0.0f);
     shader_->setFloat("uInstanced", 0.0f);
 
+    // The weather: cloud shadows, the wet, the puddles and the rings where
+    // drops land. The puddles mirror a cloud sheet lit by the sky.
+    applyCloudUniforms(*shader_, weather != nullptr ? *weather : Weather {});
+    shader_->setFloat("uCloudShadow", weather != nullptr ? weather->cloudShadow() : 0.0f);
+    shader_->setFloat("uWetness", weather != nullptr ? weather->wetness() : 0.0f);
+    shader_->setFloat("uPuddles", weather != nullptr ? weather->puddles() : 0.0f);
+    shader_->setFloat("uRain", weather != nullptr ? weather->rain() : 0.0f);
+    shader_->setFloat("uRainClock", std::fmod(frame.elapsedSeconds, 1000.0f));
+    shader_->setFloat("uPuddleSurface", 0.0f);
+    const float overcast = dayNight.overcast();
+    shader_->setVec3("uCloudTone", (dayNight.skyAmbient() * 0.9f + dayNight.cloudLight() * 0.3f) * (1.0f - 0.45f * overcast));
+
     // The shadow maps on texture units 2 and 3 (bound even when shadows are
     // off, since the shader's depth-test samplers must always have a depth
     // texture behind them). Moonlight shadows are softer.
@@ -454,8 +491,9 @@ void Scene::render(const SceneFrame& frame)
     shader_->setVec4("uShadowTexel", {shadowMap_.nearTexelMetres(), shadowMap_.cityTexelMetres(),
                                       1.0f / static_cast<float>(ShadowMap::nearSize),
                                       1.0f / static_cast<float>(ShadowMap::citySize)});
-    shader_->setVec4("uShadowSettings", {static_cast<float>(shadowMapsInUse_), dayNight.moonlit() ? 2.2f : 1.0f,
-                                         1.0f, 0.0f});
+    // Moonlight shadows are softer, and so are shadows under a grey sky.
+    shader_->setVec4("uShadowSettings", {static_cast<float>(shadowMapsInUse_),
+                                         (dayNight.moonlit() ? 2.2f : 1.0f) * (1.0f + 1.5f * overcast), 1.0f, 0.0f});
 
     // The Lab 3 spot light: the small lamp on the arm of the billboard at the
     // central crossroads, aimed at the middle of the picture. Its cut-off
@@ -506,7 +544,7 @@ void Scene::collectHeadlights(const SceneFrame& frame)
     // lamps together), a little below level, from the front of the body.
     // The budget then lights the road with the eight that matter most.
     headlights_.clear();
-    if (!frame.dayNight->streetLampsOn())
+    if (!headlightsWanted(frame))
         return;
     const auto add = [this](VehicleKind kind, const glm::vec3& position, float yawDegrees, bool yours)
     {
@@ -539,8 +577,7 @@ void Scene::collectVehicles(const SceneFrame& frame, const glm::mat4& viewProjec
     // reaches into it. A vehicle whose whole body is outside the view is
     // only drawn into the shadow maps; the one you ride in shows only what
     // its driver sees, but its whole body still casts a shadow.
-    const bool night = frame.dayNight->streetLampsOn();
-    const VehicleLamps lamps {night, frame.elapsedSeconds};
+    const VehicleLamps lamps {headlightsWanted(frame), frame.elapsedSeconds};
     vehicleParts_.clear();
     partGroups_.clear();
     const auto group = [this](const glm::vec3& centre, float radius, bool seen, bool castsShadow, auto&& fill)
@@ -613,6 +650,7 @@ void Scene::collectVehicles(const SceneFrame& frame, const glm::mat4& viewProjec
             vehicleLooks_.collectDriverView(ridden.kind, ridden.position, ridden.yawDegrees, ridden.color, true,
                                             vehicleParts_);
         });
+        collectWipers(frame, ridden.yawDegrees);
     }
 
     // Your car, a yellow hatchback: from outside, or just its bonnet in the
@@ -639,7 +677,78 @@ void Scene::collectVehicles(const SceneFrame& frame, const glm::mat4& viewProjec
             vehicleLooks_.collectDriverView(VehicleKind::Hatchback, player.carPosition, player.carYawDegrees,
                                             playerColor, false, vehicleParts_);
         });
+        collectWipers(frame, player.carYawDegrees);
     }
+}
+
+bool Scene::headlightsWanted(const SceneFrame& frame)
+{
+    return frame.dayNight->streetLampsOn() || (frame.weather != nullptr && frame.weather->rain() > 0.25f);
+}
+
+void Scene::collectWipers(const SceneFrame& frame, float yawDegrees)
+{
+    if (frame.weather == nullptr || frame.weather->rain() < 0.02f)
+        return;
+    // The driver's view sits at the top of the windscreen, so the real glass
+    // would only be seen edge-on. The wipers sweep a pane just in front of
+    // the eyes instead, raked back like a windscreen, from pivots hidden
+    // under the rear edge of the bonnet. Both blades move together: up and
+    // back in 1.1 s, then a pause that shortens as the rain gets heavier.
+    const float rain = frame.weather->rain();
+    const float period = glm::mix(3.2f, 1.35f, rain);
+    constexpr float sweepSeconds = 1.1f;
+    const float inCycle = std::fmod(frame.elapsedSeconds, period);
+    const float sweep = inCycle < sweepSeconds ? inCycle / sweepSeconds : 0.0f;
+    const float angle = glm::radians(112.0f) * (0.5f - 0.5f * std::cos(glm::two_pi<float>() * sweep));
+
+    const float yaw = glm::radians(yawDegrees);
+    const glm::vec3 forward {std::sin(yaw), 0.0f, std::cos(yaw)};
+    const glm::vec3 right {std::cos(yaw), 0.0f, -std::sin(yaw)};
+    const glm::vec3 up {0.0f, 1.0f, 0.0f};
+    const float rake = glm::radians(32.0f);
+    const glm::vec3 paneUp = up * std::cos(rake) - forward * std::sin(rake);
+    const glm::vec3 paneNormal = glm::normalize(glm::cross(paneUp, right));
+    const glm::vec3 paneCentre = frame.cameraPosition + forward * 0.6f - up * 0.3f;
+
+    const auto group = [this](const glm::vec3& centre, auto&& fill)
+    {
+        PartGroup part;
+        part.begin = vehicleParts_.size();
+        fill();
+        part.end = vehicleParts_.size();
+        part.centre = centre;
+        part.radius = 1.0f;
+        part.seen = true;
+        part.casts = false;
+        partGroups_.push_back(part);
+    };
+    group(paneCentre, [&]
+    {
+        struct Blade
+        {
+            float across;
+            float length;
+        };
+        for (const Blade blade : {Blade {-0.50f, 0.75f}, Blade {0.12f, 0.68f}})
+        {
+            const glm::vec3 pivot = paneCentre + right * blade.across - paneUp * 0.45f;
+            const glm::vec3 along = right * std::cos(angle) + paneUp * std::sin(angle);
+            const glm::vec3 side = glm::normalize(glm::cross(paneNormal, along));
+            // The arm, then the rubber blade over its outer part.
+            const auto bar = [&](float from, float to, float width, float depth, const glm::vec3& color)
+            {
+                glm::mat4 model(1.0f);
+                model[0] = glm::vec4(along * (to - from), 0.0f);
+                model[1] = glm::vec4(paneNormal * depth, 0.0f);
+                model[2] = glm::vec4(side * width, 0.0f);
+                model[3] = glm::vec4(pivot + along * (0.5f * (from + to)) + paneNormal * depth, 1.0f);
+                vehicleParts_.push_back({&cube_, model, color, 20.0f, glm::vec3(0.0f), true});
+            };
+            bar(0.0f, blade.length * 0.95f, 0.007f, 0.006f, {0.05f, 0.05f, 0.055f});
+            bar(blade.length * 0.30f, blade.length, 0.011f, 0.010f, {0.02f, 0.02f, 0.022f});
+        }
+    });
 }
 
 void Scene::collectPeople(const SceneFrame& frame, const glm::mat4& viewProjection, const glm::vec3& shadowStep)
@@ -759,9 +868,12 @@ void Scene::drawRoads()
     // of the light, not the 4 % of the image. Texture coordinates were baked
     // in world metres, so the uv scale is 1.
     const glm::mat4 identity(1.0f);
+    // Puddles gather on the carriageway and the pavements.
+    shader_->setFloat("uPuddleSurface", 1.0f);
     drawMesh(roads_.asphalt(), identity, {1.28f, 1.28f, 1.30f}, asphalt_, {1.0f, 1.0f}, 8.0f, glm::vec3{0.0f});
     drawMesh(roads_.kerbs(), identity, {0.70f, 0.70f, 0.72f}, sidewalk_, {1.0f, 1.0f}, 12.0f, glm::vec3{0.0f});
     drawMesh(roads_.sidewalks(), identity, {0.92f, 0.92f, 0.92f}, sidewalk_, {1.0f, 1.0f}, 12.0f, glm::vec3{0.0f});
+    shader_->setFloat("uPuddleSurface", 0.0f);
     drawMesh(roads_.lawns(), identity, {0.60f, 0.80f, 0.55f}, grass_, {1.0f, 1.0f}, 6.0f, glm::vec3{0.0f}, &matte_);
 
     // Paint lies 12 mm above the asphalt; a polygon offset keeps it winning
@@ -833,8 +945,10 @@ void Scene::drawCity(bool illuminated, float darkness)
         // 1.5 cm above that; polygon offset keeps each on top from far away.
         glEnable(GL_POLYGON_OFFSET_FILL);
         glPolygonOffset(-1.0f, -2.0f);
+        shader_->setFloat("uPuddleSurface", 1.0f);
         drawMesh(props_.paving(), identity, {0.88f, 0.87f, 0.84f}, sidewalk_, {1.0f, 1.0f}, 12.0f, glm::vec3{0.0f});
         drawMesh(props_.asphalt(), identity, {1.2f, 1.2f, 1.22f}, asphalt_, {1.0f, 1.0f}, 8.0f, glm::vec3{0.0f});
+        shader_->setFloat("uPuddleSurface", 0.0f);
         glPolygonOffset(-2.0f, -4.0f);
         drawMesh(props_.bayPaint(), identity, {0.96f, 0.96f, 0.90f}, white_, {1.0f, 1.0f}, 4.0f, glm::vec3{0.0f});
         glDisable(GL_POLYGON_OFFSET_FILL);

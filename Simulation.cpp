@@ -113,7 +113,9 @@ namespace
     {
         if (distance <= 0.0f)
             return 0.0f;
-        speed = std::min(speed, topSpeed);
+        // A vehicle still faster than its top speed (it was lowered for the
+        // rain a moment ago) may keep that speed: never judge it slower.
+        topSpeed = std::max(topSpeed, speed);
         const float timeToTop = (topSpeed - speed) / acceleration;
         const float distanceToTop = speed * timeToTop + 0.5f * acceleration * timeToTop * timeToTop;
         if (distance <= distanceToTop)
@@ -215,10 +217,12 @@ void TrafficSystem::reset()
         vehicle.rearReach = rearReach_[sizeClass];
         vehicle.frontReach = frontReach_[sizeClass];
         // A little spread in cruising speed, so traffic does not move in step.
-        vehicle.maximumSpeed = spec.cruiseSpeed + (static_cast<float>(index % 3) - 1.0f) * 0.35f;
+        vehicle.dryMaximumSpeed = spec.cruiseSpeed + (static_cast<float>(index % 3) - 1.0f) * 0.35f;
+        vehicle.maximumSpeed = vehicle.dryMaximumSpeed;
         vehicle.maximumAcceleration = spec.acceleration;
         vehicle.comfortableBraking = spec.braking;
-        vehicle.timeHeadway = spec.timeHeadway;
+        vehicle.dryTimeHeadway = spec.timeHeadway;
+        vehicle.timeHeadway = vehicle.dryTimeHeadway;
         vehicle.lineBus = mix[index] == VehicleKind::Bus && !busLine_.empty();
         vehicle.claims.reserve(48);
         vehicles_.push_back(vehicle);
@@ -421,6 +425,19 @@ void TrafficSystem::interpolatePoses(float alpha, std::vector<VehiclePose>& pose
 // ---------------------------------------------------------------------------
 // Simulation step
 // ---------------------------------------------------------------------------
+
+void TrafficSystem::setRain(float amount)
+{
+    // In full rain: 15 % slower, and gaps 35 % longer. Every rule that asks
+    // how soon a vehicle could arrive reads the same top speed, so the
+    // junction claims stay safe while the weather changes.
+    const float rain = glm::clamp(amount, 0.0f, 1.0f);
+    for (Vehicle& vehicle : vehicles_)
+    {
+        vehicle.maximumSpeed = vehicle.dryMaximumSpeed * (1.0f - 0.15f * rain);
+        vehicle.timeHeadway = vehicle.dryTimeHeadway * (1.0f + 0.35f * rain);
+    }
+}
 
 void TrafficSystem::update(float dt)
 {
@@ -1309,7 +1326,7 @@ bool TrafficSystem::pedestriansHold(const Vehicle& vehicle) const
     return false;
 }
 
-const Vehicle* TrafficSystem::crossingBlocker(std::size_t crossing, const char** reason) const
+const Vehicle* TrafficSystem::crossingBlocker(std::size_t crossing, const char** reason, bool peopleWaitedLong) const
 {
     const auto blocked = [reason](const Vehicle& vehicle, const char* why)
     {
@@ -1362,8 +1379,18 @@ const Vehicle* TrafficSystem::crossingBlocker(std::size_t crossing, const char**
                     const float firmStop = vehicle.currentSpeed * vehicle.currentSpeed / (2.6f * vehicle.comfortableBraking);
                     if (pass == 0 && toLine < firmStop && movementPermitted(vehicle))
                         return blocked(vehicle, "too close to its line to stop");
+                    // For someone who has waited long themselves, its turn
+                    // only counts while it would really be let in: a car
+                    // still waiting for its own gap (a roundabout's
+                    // circulating traffic) does not keep them off, or a
+                    // stream of such cars, each waiting its turn at the line
+                    // in turn, could hold them back for good.
                     if (pass == 0 && longWait && toLine < 2.0f && movementPermitted(vehicle))
-                        return blocked(vehicle, "has waited its turn");
+                    {
+                        const auto index = static_cast<std::size_t>(&vehicle - vehicles_.data());
+                        if (!peopleWaitedLong || commitBlocker(index, findLeader(index), false) == nullptr)
+                            return blocked(vehicle, "has waited its turn");
+                    }
                     continue;
                 }
 

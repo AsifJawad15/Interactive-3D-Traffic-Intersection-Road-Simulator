@@ -1,6 +1,7 @@
 ﻿# Enhancement Plan: OpenGLMiniProject → Open-World Smart City Traffic Simulator
 
-> Status: **Phases 0 to 8 complete and verified. Next: Phase 9 (weather: clouds and light rain).** Written 2026-09-23.
+> Status: **Phases 0 to 9 complete and verified. Next: Phase 10 (Enhanced mode and the corner button).** Written 2026-09-23.
+> **Revised 2026-09-25 (Phase 9):** the weather buttons came with `K`. The "splashes" are rings drawn in the scene shader where drops land, on any upward surface near the camera, instead of sprites. The scene shader is built twice (dry, and with the weather), because the weather code slowed it even when unused. The rain soaks found a pedestrian starvation case at roundabout exits, fixed in `crossingBlocker`.
 > **Revised 2026-09-25 (Phase 8):** the shadows are two maps, a near one that follows the camera and one over the whole city (Low keeps only the city map), so `F2` cycles High, Low and Off. Long glides (night to noon) take up to 4.5 s instead of 3, and the cursor rules and clickable buttons came in now with the time buttons instead of in Phase 10.
 > **Revised 2026-09-25 (Phase 7):** the `G` key (advance every signal) is removed, as you asked. As agreed, the walking motion is authored as keyframed clips in code instead of BVH motion-capture files, and umbrellas are built but stay closed until Phase 9.
 > **Revised 2026-09-24 (Phase 6):** a seeded city generator lines every street with buildings in six styles (164 in all, more than the 30–40 first planned, so no stretch looks empty). Windows are drawn by the fragment shader. Trees and props are baked meshes with vertex colours rather than instanced.
@@ -35,7 +36,79 @@
 | 6. City dressing | ✅ Done and verified | 2026-09-24 | `enhancement/phase-6-city` |
 | 7. Pedestrians | ✅ Done and verified | 2026-09-25 | `enhancement/phase-7-pedestrians` |
 | 8. Sun, moon, time presets and shadows | ✅ Done and verified | 2026-09-25 | `enhancement/phase-8-sun-shadows` |
-| 9 to 11 | Not started | | |
+| 9. Weather: clouds and light rain | ✅ Done and verified | 2026-09-25 | `enhancement/phase-9-weather` |
+| 10 and 11 | Not started | | |
+
+### ✅ Checkpoint 9: weather, clouds and light rain (2026-09-25)
+
+**What changed**
+- **The weather (`Weather.*`):** Clear, Cloudy and Rain, cycled with `K` or chosen with three clickable buttons under the time buttons.
+  - Every value blends to the new state over 10 s, eased, from wherever it is (so `K` pressed mid-blend never jumps).
+  - Going towards rain the clouds gather first (the rain starts at about 35 % of the blend); going away from it the rain stops first.
+  - Wetness builds over about 40 s of rain and dries over 2 minutes. Puddles fill over about 90 s and dry last, over 4 minutes.
+  - The wind carries the clouds east-north-east (9, 13 and 17 m/s for the three states) and slants the rain.
+- **The light (`DayNight::setWeather`):** overcast dims the sun and moon to a fifth, lifts the sky's ambient and greys it, greys the sky itself, fades the sun's glow and raises the exposure a little. Rain thickens the horizon haze a little (never fog). Street lamps come on a little earlier under a grey sky. Shadows get softer under cloud.
+- **Clouds (`shaders/clouds.glsl`, `sky.frag`):** a sheet 1.5 km up, value-noise fbm (6 octaves near, 4 far) with features about 500 m across. A second sample towards the light gives bright sun-facing edges, dark thick middles and a silver lining near the sun. Their light is `DayNight::cloudLight()`: the sun's (pink at Evening, since the clouds still catch it after sunset) or the moon's (blue-grey at night). They hide the sun, moon and stars and thin into the haze.
+- **Cloud shadows:** each lit point looks up at the same sheet along the light, so a shadow lies under its cloud and drifts with it. Their edge is firmer than the cloud's soft outline. Only under broken cloud; none under Clear (not worth the cost for a few wisps) or an overcast sky (the sun is dimmed everywhere instead).
+- **Rain (`Rain.*`, `shaders/rain.vert/.frag`):** up to 5,000 instanced streaks (one draw call, the count follows the rain) in a 36 × 20 × 36 m box round the camera. Each drop's place is fixed in the world and wraps round the box. Streaks lean with the wind, are at least most of a pixel wide (fainter when widened), and are lit per drop by the sky and by the lamps, neon and headlights (`lightGlow` in `lights.glsl`), so rain glitters under lights. Additive, depth-tested, drawn after the scene.
+- **The wet world (`shaders/scene_body.glsl`):**
+  - Wet surfaces are darker and glossier, more so facing the sky, and only as far as the material's specular map allows (grass and leaves stay dull).
+  - Puddles on the roads and paving (a noise mask whose level falls as they fill): nearly black, flat, mirroring the sky and cloud sheet by Schlick's Fresnel (2 % straight down, nearly all at a grazing angle), with the lamps' and headlights' highlights kept on top.
+  - Rings where drops land (the plan's "splashes"), drawn in the shader on every surface facing up within 20 m: road, pavements and car roofs alike.
+  - Gouraud keeps its dry highlight strength (a per-vertex highlight cannot be sharpened; scaling it blew the road out to white).
+- **Two scene programs:** the weather code made `scene.frag` 1.3–1.9 ms slower at the evening view even with every branch skipped (a bigger shader runs fewer pixels at once). The shader is now `scene_body.glsl`, built twice: `scene.frag` (dry) and `scene_wet.frag` (`#define WET_WORLD`). The wet program is used only while there are cloud shadows, wet streets or puddles, which all grow from nothing, so the switch cannot be seen. The hidden warm-up frame draws with both.
+- **Behaviour:**
+  - People put up umbrellas one after another as the rain sets in and walk up to 10 % faster (`PedestrianSystem::setRain`).
+  - Drivers are 15 % slower with 35 % longer gaps (`TrafficSystem::setRain`). `earliestArrival` now never judges a car slower than it is going, so a top speed lowered for the rain cannot make a junction decision unsafe (identical results in dry weather).
+  - Headlights are on in the rain by day too.
+  - Wipers in both driver views: the view sits at the top of the windscreen, so the blades sweep a raked pane just in front of the eyes from pivots under the bonnet's rear edge (1.1 s sweep, pauses shorten as the rain gets heavier).
+- **A pedestrian fix found by the rain soaks:** at a roundabout exit, a car waiting at the entry for a gap had "waited its turn", so the walker let it go first although it could not go; a stream of such cars held one person back for 110 s. Now someone who has waited 45 s lets a car go first only if it could really be let in now (`crossingBlocker`). Applied to everyone, the rule pushed some car stops over 60 s, so it is kept for long waits only.
+- **HUD:** the weather row (header with wetness and puddles, the state blending to shown dimmed); the help line `K / L WEATHER / TOGGLE LIGHTS` (the panel still fits 720p).
+- **Capture flags:** `--weather clear|cloudy|rain`, `--wet W`, `--weather-to KIND`, view 26 (the sky over the city). `--umbrellas` is gone (`--weather rain` opens them). Soak: `--weather rain`.
+
+**New files:** `Weather.h/.cpp`, `Rain.h/.cpp`, `shaders/clouds.glsl`, `shaders/rain.vert`, `shaders/rain.frag`, `shaders/scene_body.glsl`, `shaders/scene_wet.frag`.
+**Edited:** `DayNight.*`, `Sky.*`, `Scene.*`, `Simulation.*`, `Pedestrians.*`, `Overlay.*`, `main.cpp`, `shaders/sky.frag`, `shaders/scene.frag` (now the dry wrapper), `shaders/lights.glsl`, `README.md` and both project files.
+
+**Verification**
+- **Build:** Release x64, no errors, no warnings.
+- **`--weather-test` (new):** PASS, 25 checks.
+  - `K` cycles CLEAR → CLOUDY → RAIN → CLEAR.
+  - All six changes and a `K` pressed 4 s into Cloudy → Rain, at 07:00, 18:30 and 22:00: each takes 10.0 s (14.0 s with the second press). Largest steps per 60 Hz frame: light 0.0038 (limit 0.03), sky 0.0008 (0.01), exposure 0.0009 (0.005), cover 0.0030, rain 0.0042 (0.01).
+  - The clouds are 62 % of the way in when the rain starts and 36 % cleared when it stops (limits 60 % and 40 %).
+  - Noon in the rain: sunlight 0.31 of clear, the sky's light 1.20 of clear.
+  - Two minutes of rain: wet after 41 s, puddles full after 96 s; after it, dry after 120 s, puddles gone after 204 s.
+- **`--sun-test`, `--self-test`, `--light-test`, `--motion-test`, `--walk-test`, `--player-test`:** all PASS, with the same figures as Checkpoint 8.
+- **30-minute soaks, seeds 1 to 16, clear and in the rain:** 32 of 32 pass, 0 overlaps, 0 vehicle-person touches, 0 starts against the lights.
+
+  | | Longest stop (limit 60 s) | Longest wait (limit 90 s) | Routes driven |
+  |---|---|---|---|
+  | Clear | 54.1 s (as Checkpoint 8) | 75.3 s (was 80.4 s; only seed 9 changed) | 2766–2830 |
+  | Rain | 50.4 s | 72.0 s | 2496–2562 (about 9 % fewer: slower drivers) |
+
+- **Captures:** the sky in each state at 15:30, and Cloudy at 18:30 and 22:00; cloud-shadow patches from above; street level in the rain (dark near road, sky sheen further off, rings); the city from view 4 with puddles on the roads and pavements; night rain in a shopping street and at X0 in all three shading modes (streaks glittering under lamps, headlight pools on the wet road); the wipers from your driver's seat; the HUD mid-blend at 720p.
+- **1080p, 80 people, city run for 60 s first, 400 measured frames per view:**
+
+  | View | Weather | FPS | 99th percentile | Worst | GPU |
+  |---|---|---|---|---|---|
+  | Whole city, noon | Cloudy | 72 | 14.7 ms | 15.0 ms | 5.6 ms |
+  | Whole city, night | Rain | 72 | 14.8 ms | 16.3 ms | 5.6 ms |
+  | Shopping street, night | Rain | 72 | 15.1 ms | 18.6 ms | 6.8 ms |
+  | Street level, noon | Rain | 72 | 15.0 ms | 32.4 ms | 5.2 ms |
+  | Your driver's seat, noon | Rain | 72 | 14.9 ms | 18.7 ms | 5.5 ms |
+  | The park, afternoon | Cloudy | 72 | 15.3 ms | 33.7 ms | 5.3 ms |
+  | X0 crossing, morning | Cloudy | 72 | 15.1 ms | 28.0 ms | 5.4 ms |
+  | G and ST, evening | Clear | 72 | 15.0 ms | 22.5 ms | 7.8 ms |
+  | G and ST, evening | Cloudy | 72 | 14.7 ms | 16.8 ms | 9.8 ms |
+  | G and ST, evening | Rain | 72 | 14.9 ms | 15.3 ms | 9.5 ms |
+
+  - What the weather costs: about 2 ms at the heaviest view (the long evening shadows), 7.8 → 9.5–9.8 ms, and less elsewhere. Clear weather costs what it did in Phase 8 (the dry program: 7.4–7.8 ms here, with ±0.6 ms between runs).
+  - Single slow frames of 28–34 ms in 3 of 10 runs; wherever they were broken down in this phase they were waiting in the buffer swap, as in Checkpoint 8.
+  - The one-time stall after launch is 80–112 ms, 1.5–2.8 s after launch (Checkpoint 8: 66–101 ms).
+
+**Still to note**
+- The worst case is now about 9.8 ms of GPU time. Phase 10's Enhanced mode (up to 3 ms) would bring it to about 12.8 ms of the 13.9 ms frame, so Enhanced should skip its most expensive effect (or run at the lower quality) at Evening in the rain, or the weather's cost should come down first.
+- Puddles mirror the sky only; neon and lamps in them come with Phase 10's screen-space reflections, as planned.
+- The rain soaks run with 9 % fewer routes driven, as expected with slower drivers; their longest stop (50.4 s) is shorter than in clear weather.
 
 ### ✅ Checkpoint 8: sun, moon, time presets and shadows (2026-09-25)
 
@@ -1124,7 +1197,9 @@ Each new `.cpp`, `.h` and shader file is registered in `OpenGLMiniProject.vcxpro
   - No acne, no peter-panning, and no swimming while the camera moves.
   - Streets are well lit at night.
 
-### Phase 9: Weather: clouds and light rain
+### Phase 9: Weather: clouds and light rain ✅ DONE (see Checkpoint 9)
+- **As built (2026-09-25):** everything below, plus weather buttons. Splashes are rings in the scene shader; the scene shader is built in a dry and a wet version; `Rain.*` is `Rain.h/.cpp` with `shaders/rain.vert/.frag`, and the clouds are in `shaders/clouds.glsl`, shared by the sky and the scene.
+
 Built in this order, each step checked with captures before the next:
 1. **Weather state machine and `K` key:** Clear, Cloudy and Rain, with smooth blended parameters and a HUD readout.
 2. **Clouds:** the cloud layer in `sky.frag` (fbm noise, wind drift, coverage, sun-side lighting, time-of-day colour). Overcast dims the sun and lifts the ambient, and cloud shadows drift over the ground.

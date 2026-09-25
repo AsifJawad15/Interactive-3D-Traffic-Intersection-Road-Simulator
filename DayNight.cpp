@@ -15,6 +15,14 @@ namespace
         return first * (1.0f - amount) + second * amount;
     }
 
+    // The same brightness with its colour taken out (a touch cool, like the
+    // light under a grey sky), `amount` of the way.
+    glm::vec3 greyed(const glm::vec3& color, float amount)
+    {
+        const float luminance = glm::dot(color, glm::vec3 {0.2126f, 0.7152f, 0.0722f});
+        return mixColor(color, luminance * glm::vec3 {0.96f, 1.0f, 1.05f}, amount);
+    }
+
     // The sun is brighter than any lamp; in linear light a clear-sky sun is
     // several times stronger than the ambient sky.
     constexpr float sunIntensity = 1.6f;
@@ -316,7 +324,14 @@ bool DayNight::streetLampsOn() const
 {
     // On when the sun is lower than about 7 degrees: the Evening preset
     // (18:30) already has its lamps and neon lit.
-    return lampOverride_ ? manualLampsOn_ : daylightAmount() < 0.68f;
+    // Under a grey sky they come on a little earlier.
+    return lampOverride_ ? manualLampsOn_ : daylightAmount() < 0.68f + 0.14f * overcast_;
+}
+
+void DayNight::setWeather(float overcast, float rain)
+{
+    overcast_ = glm::clamp(overcast, 0.0f, 1.0f);
+    rain_ = glm::clamp(rain, 0.0f, 1.0f);
 }
 
 glm::vec3 DayNight::sunLight() const
@@ -330,7 +345,32 @@ glm::vec3 DayNight::sunLight() const
     const float strength = glm::mix(0.55f, 1.0f, glm::smoothstep(0.05f, 0.40f, height));
     const glm::vec3 dayColor {0.96f, 0.94f, 0.86f};
     const glm::vec3 sunsetColor {1.0f, 0.45f, 0.18f};
-    return mixColor(dayColor, sunsetColor, warmth * 0.75f) * (visible * strength * sunIntensity);
+    // An overcast sky lets through only a fifth of it.
+    const float through = 1.0f - 0.8f * overcast_;
+    return mixColor(dayColor, sunsetColor, warmth * 0.75f) * (visible * strength * sunIntensity * through);
+}
+
+glm::vec3 DayNight::cloudLight() const
+{
+    // The clouds float 1.5 km up, so they still catch the sun a little
+    // after it has set for the street (pink and orange), and turn a dim
+    // blue-grey under the moon.
+    const float height = sunHeight();
+    const float visible = glm::smoothstep(-0.07f, 0.06f, height);
+    const float warmth = 1.0f - glm::smoothstep(0.02f, 0.45f, height);
+    const float strength = glm::mix(0.6f, 1.0f, glm::smoothstep(0.05f, 0.40f, height));
+    const glm::vec3 dayColor {0.96f, 0.94f, 0.88f};
+    const glm::vec3 sunsetColor {1.0f, 0.42f, 0.22f};
+    const glm::vec3 sun = mixColor(dayColor, sunsetColor, warmth * 0.85f) * (visible * strength * sunIntensity);
+    const float afterDusk = 1.0f - glm::smoothstep(-0.14f, -0.05f, height);
+    const float risen = glm::smoothstep(-0.05f, 0.20f, moonVector().y);
+    const glm::vec3 moon = glm::vec3 {0.10f, 0.12f, 0.19f} * (afterDusk * risen);
+    return sun + moon;
+}
+
+glm::vec3 DayNight::cloudLightVector() const
+{
+    return sunHeight() > -0.07f ? sunVector() : moonVector();
 }
 
 glm::vec3 DayNight::moonLight() const
@@ -339,7 +379,7 @@ glm::vec3 DayNight::moonLight() const
     // grows as the moon climbs.
     const float afterDusk = 1.0f - glm::smoothstep(-0.14f, moonTakesOver - 0.02f, sunHeight());
     const float risen = glm::smoothstep(0.0f, 0.20f, moonVector().y);
-    return glm::vec3 {0.075f, 0.095f, 0.16f} * (afterDusk * risen);
+    return glm::vec3 {0.075f, 0.095f, 0.16f} * (afterDusk * risen * (1.0f - 0.8f * overcast_));
 }
 
 bool DayNight::moonlit() const
@@ -366,14 +406,18 @@ glm::vec3 DayNight::skyAmbient() const
     const glm::vec3 night {0.020f, 0.028f, 0.055f};
     const glm::vec3 day {0.28f, 0.34f, 0.44f};
     const glm::vec3 dusk {0.06f, 0.03f, 0.02f};
-    return mixColor(night, day, daylightAmount()) + dusk * twilightAmount();
+    const glm::vec3 clear = mixColor(night, day, daylightAmount()) + dusk * twilightAmount();
+    // Under cloud the whole sky glows evenly grey: the light the sun loses
+    // comes back in part as soft light from everywhere above.
+    return greyed(clear, 0.75f * overcast_) * (1.0f + 0.3f * overcast_ * daylightAmount());
 }
 
 glm::vec3 DayNight::groundAmbient() const
 {
     const glm::vec3 night {0.008f, 0.008f, 0.012f};
     const glm::vec3 day {0.15f, 0.13f, 0.10f};
-    return mixColor(night, day, daylightAmount());
+    // Less sun on the ground, less bounced back up.
+    return greyed(mixColor(night, day, daylightAmount()), 0.5f * overcast_) * (1.0f - 0.35f * overcast_);
 }
 
 glm::vec3 DayNight::skyZenithColor() const
@@ -381,7 +425,9 @@ glm::vec3 DayNight::skyZenithColor() const
     const glm::vec3 night {0.0015f, 0.0025f, 0.008f};
     const glm::vec3 day {0.045f, 0.13f, 0.46f};
     const glm::vec3 dusk {0.09f, 0.07f, 0.16f};
-    return mixColor(night, day, daylightAmount()) + dusk * (twilightAmount() * 0.5f);
+    const glm::vec3 clear = mixColor(night, day, daylightAmount()) + dusk * (twilightAmount() * 0.5f);
+    // An overcast sky is nearly as bright overhead as at the horizon.
+    return mixColor(clear, skyHorizonColor() * 0.82f, 0.9f * overcast_);
 }
 
 glm::vec3 DayNight::skyHorizonColor() const
@@ -389,14 +435,15 @@ glm::vec3 DayNight::skyHorizonColor() const
     const glm::vec3 night {0.010f, 0.014f, 0.028f};
     const glm::vec3 day {0.34f, 0.47f, 0.66f};
     const glm::vec3 sunset {0.85f, 0.36f, 0.12f};
-    return mixColor(mixColor(night, day, daylightAmount()), sunset, twilightAmount() * 0.55f);
+    const glm::vec3 clear = mixColor(mixColor(night, day, daylightAmount()), sunset, twilightAmount() * 0.55f);
+    return greyed(clear, 0.85f * overcast_) * (1.0f - 0.25f * overcast_);
 }
 
 glm::vec3 DayNight::sunGlowColor() const
 {
     const float daylight = daylightAmount();
     const float warmth = 1.0f - glm::smoothstep(0.20f, 0.72f, daylight);
-    return mixColor({1.0f, 0.85f, 0.60f}, {1.2f, 0.45f, 0.15f}, warmth) * (daylight * 0.9f);
+    return mixColor({1.0f, 0.85f, 0.60f}, {1.2f, 0.45f, 0.15f}, warmth) * (daylight * 0.9f * (1.0f - 0.9f * overcast_));
 }
 
 glm::vec3 DayNight::sunDiscColor() const
@@ -419,8 +466,8 @@ float DayNight::starVisibility() const
 
 float DayNight::fogDensity() const
 {
-    // A little extra haze at dawn and dusk.
-    return 0.0032f + 0.0010f * twilightAmount();
+    // A little extra haze at dawn and dusk, and in the rain (never fog).
+    return 0.0032f + 0.0010f * twilightAmount() + 0.0024f * rain_;
 }
 
 float DayNight::fogFalloff() const
@@ -430,7 +477,8 @@ float DayNight::fogFalloff() const
 
 float DayNight::exposure() const
 {
-    return glm::mix(1.8f, 1.0f, daylightAmount());
+    // Eyes open up a little under a grey sky too.
+    return glm::mix(1.8f, 1.0f, daylightAmount()) * (1.0f + 0.3f * overcast_ * daylightAmount());
 }
 
 glm::vec3 DayNight::skyColor() const

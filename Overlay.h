@@ -76,6 +76,15 @@ struct HudExtras
     float shadowMs = 0.0f;
     int headlights = 0;
     bool moonlight = false;
+
+    // The weather, for its corner buttons: the state it is in or blending
+    // to (0 Clear, 1 Cloudy, 2 Rain), the names, and how wet the city is.
+    int weather = 0;
+    bool weatherBlending = false;
+    const char* const* weatherNames = nullptr;
+    int weatherCount = 0;
+    float wetness = 0.0f;
+    float puddles = 0.0f;
 };
 
 // The clickable time buttons in the top-right corner, as laid out on a
@@ -100,6 +109,25 @@ struct TimeButtons
             return -1;
         const int index = static_cast<int>((x - x0) / (buttonWidth + gap));
         if (index >= count || x - x0 - index * (buttonWidth + gap) > buttonWidth)
+            return -1;
+        return index;
+    }
+};
+
+// The weather buttons, a second row under the time buttons, right-aligned
+// with them.
+struct WeatherButtons
+{
+    static constexpr float top = TimeButtons::top + TimeButtons::header + TimeButtons::buttonHeight + 18.0f;
+    static float left(int screenWidth, int count) { return TimeButtons::left(screenWidth, count); }
+    static int at(float x, float y, int screenWidth, int count)
+    {
+        const float x0 = left(screenWidth, count);
+        const float y0 = top + TimeButtons::header;
+        if (y < y0 || y > y0 + TimeButtons::buttonHeight || x < x0)
+            return -1;
+        const int index = static_cast<int>((x - x0) / (TimeButtons::buttonWidth + TimeButtons::gap));
+        if (index >= count || x - x0 - index * (TimeButtons::buttonWidth + TimeButtons::gap) > TimeButtons::buttonWidth)
             return -1;
         return index;
     }
@@ -145,6 +173,7 @@ private:
     void drawMinimap(const HudExtras& extras, int screenWidth, int screenHeight);
     void drawPlayerPanel(const HudExtras& extras, int screenWidth, int screenHeight);
     void drawTimePanel(const HudExtras& extras, const std::string& timeText, int screenWidth, int screenHeight);
+    void drawWeatherPanel(const HudExtras& extras, int screenWidth, int screenHeight);
     void appendRectangle(float x, float y, float width, float height);
     void drawVertices(const glm::vec4& color, int screenWidth, int screenHeight);
 };
