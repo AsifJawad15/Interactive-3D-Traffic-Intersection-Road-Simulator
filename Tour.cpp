@@ -169,10 +169,18 @@ namespace
     }
 }
 
-Tour::Tour(const World& world, std::size_t vehicleCount, std::size_t pedestrianCount) : world_(world)
+Tour::Tour(const World& world, std::size_t vehicleCount, std::size_t pedestrianCount, bool peopleClip)
+    : world_(world), peopleClip_(peopleClip)
 {
     scout(vehicleCount, pedestrianCount);
 
+    if (peopleClip_)
+    {
+        // The clip's own timeline starts at its first frame.
+        caption(0.4f, clipLength - 0.4f, "People at the Crossings",
+                "Waiting at the kerb for WALK, then crossing on the zebra");
+        return;
+    }
     caption(cityStart + 0.6f, driveStart - 0.6f, "A Smart 3D City",
             "Roads, buildings, vehicles and people, all built from 3D transformed shapes");
     caption(driveStart + 0.6f, 36.0f, "Driving My Car",
@@ -188,6 +196,16 @@ Tour::Tour(const World& world, std::size_t vehicleCount, std::size_t pedestrianC
     caption(rayStart + 0.5f, 104.4f, "Ray Tracing", "Switched on from the panel, with a confirmation");
     caption(105.0f, length - 1.4f, "Ray-Traced Reflections",
             "Street lamps, signals and headlights mirrored in the wet road");
+}
+
+int Tour::frameCount() const
+{
+    return static_cast<int>(std::lround((peopleClip_ ? peopleStart + clipLength : length) * framesPerSecond));
+}
+
+bool Tour::records(float videoSeconds) const
+{
+    return !peopleClip_ || videoSeconds >= peopleStart - 0.5f / framesPerSecond;
 }
 
 void Tour::caption(float start, float end, const std::string& title, const std::string& subtitle)
@@ -220,6 +238,8 @@ void Tour::scout(std::size_t vehicleCount, std::size_t pedestrianCount)
     const std::size_t crossings = traffic.crossings().size();
     std::vector<std::vector<glm::vec3>> tracks(vehicles);   // x, z, speed
     std::vector<std::vector<int>> onBand(crossings);
+    std::vector<std::vector<int>> waitingAt(crossings);
+    std::vector<std::vector<char>> walk(crossings);   // the WALK light is on
     for (int sample = 0; sample < samples; ++sample)
     {
         for (int index = 0; index < stepsPerSample; ++index)
@@ -231,7 +251,11 @@ void Tour::scout(std::size_t vehicleCount, std::size_t pedestrianCount)
         }
         const std::vector<CrossingState>& states = traffic.crossingStates();
         for (std::size_t index = 0; index < crossings; ++index)
-            onBand[index].push_back(index < states.size() ? states[index].onBand + states[index].waiting : 0);
+        {
+            onBand[index].push_back(index < states.size() ? states[index].onBand : 0);
+            waitingAt[index].push_back(index < states.size() ? states[index].waiting : 0);
+            walk[index].push_back(traffic.walkLight(index) == WalkLight::Walk ? 1 : 0);
+        }
     }
     const auto timeOf = [](int sample) { return static_cast<float>(sample + 1) * sampleSeconds; };
     const auto sampleOf = [](float seconds) { return std::max(0, static_cast<int>(seconds / sampleSeconds) - 1); };
@@ -346,7 +370,10 @@ void Tour::scout(std::size_t vehicleCount, std::size_t pedestrianCount)
                   std::to_string(drivenVehicle_) + " anyway.\n";
     }
 
-    // The people's part: the signalised crossing with the most people on it.
+    // The people's part: the signalised crossing with the most people
+    // walking over it. (Counting the people waiting at it as well chose a
+    // crossing whose WALK only came after the part had ended: all-red and
+    // the other road's left-turn arrow filled the whole part.)
     const int from = sampleOf(warmSeconds_ + peopleStart + 0.5f);
     const int to = std::min(samples - 1, sampleOf(warmSeconds_ + shadingStart - 0.5f));
     int mostPeople = -1;
@@ -365,9 +392,56 @@ void Tour::scout(std::size_t vehicleCount, std::size_t pedestrianCount)
     }
     char line[160];
     const Crossing& chosen = traffic.crossings()[crossing_];
-    std::snprintf(line, sizeof line, "Tour: people cross at crossing %zu (junction %zu, arm %d), %.1f people at or on it on average.\n",
+    std::snprintf(line, sizeof line, "Tour: people cross at crossing %zu (junction %zu, arm %d), %.1f people walking on it on average.\n",
                   crossing_, chosen.junction, chosen.arm,
                   static_cast<float>(mostPeople) / static_cast<float>(std::max(1, to - from + 1)));
+    report_ += line;
+
+    if (!peopleClip_)
+        return;
+
+    // The clip: the moment a WALK light turns on with the most people
+    // waiting for it, and then the most people on the zebra over the next
+    // 8 s. The city then runs until clipLead seconds before it.
+    const int window = static_cast<int>(8.0f / sampleSeconds);
+    const int earliest = sampleOf(peopleStart + clipLead) + 1;
+    int bestSample = -1;
+    int bestWaiting = 0;
+    int bestWalking = 0;
+    for (std::size_t index = 0; index < crossings; ++index)
+    {
+        if (!traffic.crossings()[index].signalised)
+            continue;
+        for (int sample = earliest; sample + window < samples; ++sample)
+        {
+            const auto at = static_cast<std::size_t>(sample);
+            if (!walk[index][at] || walk[index][at - 1])
+                continue;
+            const int waitingThen = waitingAt[index][at - 1];
+            int walking = 0;
+            for (int later = sample; later < sample + window; ++later)
+                walking += onBand[index][static_cast<std::size_t>(later)];
+            if (waitingThen * 100 + walking > bestWaiting * 100 + bestWalking)
+            {
+                bestSample = sample;
+                bestWaiting = waitingThen;
+                bestWalking = walking;
+                crossing_ = index;
+            }
+        }
+    }
+    if (bestSample < 0)
+    {
+        report_ += "Tour: no WALK light turned on in the whole run; the clip shows the crossing above.\n";
+        return;
+    }
+    warmSeconds_ = timeOf(bestSample) - clipLead - peopleStart;
+    const Crossing& clipCrossing = traffic.crossings()[crossing_];
+    std::snprintf(line, sizeof line,
+                  "Tour clip: crossing %zu (junction %zu, arm %d): WALK at %.1f s of city time with %d people waiting, "
+                  "%.1f on the zebra on average over the next 8 s.\n",
+                  crossing_, clipCrossing.junction, clipCrossing.arm, timeOf(bestSample), bestWaiting,
+                  static_cast<float>(bestWalking) / static_cast<float>(window));
     report_ += line;
 }
 
@@ -381,6 +455,9 @@ void Tour::direct(int frame, Camera& camera, const PlayerView& player, const Tra
     float brightness = smooth(progress(t, 0.0f, 0.8f)) * (1.0f - smooth(progress(t, length - 1.4f, length - 0.1f)));
     for (float cut : cuts)
         brightness *= smooth(std::abs(t - cut) / dipSeconds);
+    if (peopleClip_)
+        brightness = smooth(progress(t, peopleStart, peopleStart + 0.4f)) *
+                     (1.0f - smooth(progress(t, peopleStart + clipLength - 0.5f, peopleStart + clipLength)));
     controls.brightness = brightness;
     controls.hud = t >= cityStart;
     controls.cursorShown = false;
@@ -395,6 +472,10 @@ void Tour::direct(int frame, Camera& camera, const PlayerView& player, const Tra
 
     const float w = static_cast<float>(width);
     const float h = static_cast<float>(height);
+
+    // The clip records nothing before the people's part.
+    if (peopleClip_ && t < peopleStart)
+        return;
 
     if (t < cityStart)
     {
@@ -459,7 +540,7 @@ void Tour::direct(int frame, Camera& camera, const PlayerView& player, const Tra
         return;
     }
 
-    if (t < shadingStart)
+    if (t < shadingStart || peopleClip_)
     {
         // People crossing: from the sidewalk beside the crossing, looking
         // across the band, easing in a little.
@@ -467,8 +548,18 @@ void Tour::direct(int frame, Camera& camera, const PlayerView& player, const Tra
         if (camera.onPlayer())
             camera.togglePlayer(player);
         const Crossing& crossing = traffic.crossings()[crossing_];
-        const float s = smooth(progress(t, peopleStart, shadingStart));
+        const float s = smooth(progress(t, peopleStart, peopleClip_ ? peopleStart + clipLength : shadingStart));
         const glm::vec2 middle = crossing.point(0.5f * (crossing.from + crossing.to), 0.0f);
+        if (peopleClip_)
+        {
+            // Over the middle of the road, back along the arm and above the
+            // tallest vehicle: no street tree stands between the camera and
+            // the zebra, and both kerbs are in view.
+            const float across = 0.5f * (crossing.from + crossing.to);
+            const glm::vec2 stand = crossing.point(across, glm::mix(17.0f, 14.0f, s));
+            camera.lookFrom({stand.x, glm::mix(6.5f, 5.8f, s), stand.y}, {middle.x, 0.5f, middle.y});
+            return;
+        }
         const glm::vec2 stand = crossing.point(crossing.to + 1.2f, glm::mix(13.0f, 11.0f, s));
         camera.lookFrom({stand.x, 4.6f, stand.y}, {middle.x, 0.6f, middle.y});
         return;

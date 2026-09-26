@@ -3,3 +3,4 @@
 *.captions.tsv
 captions.filter
 text/
+people_captions.filter

@@ -893,6 +893,7 @@ by the program itself or by a script, so it can be rebuilt after any change.
 | `report/logs/` | The final test runs: every self-test, and the 32 soaks (seeds 1–16, clear and rain) | see *Verification* |
 | `slides/Smart_City_Digital_Traffic_Signals.pptx` | 10 slides: title, demo video, features, 3D transformations, illumination model, shading, textures and Bezier surfaces, day–night and weather, ray tracing, thank you. All text is editable; the speaker notes hold what to say | `python delivery/slides/build_slides.py` (`pip install python-pptx`) |
 | `video/demo.mp4` | The 2-minute 1080p demo video | `python delivery/video/make_video.py` (`pip install imageio-ffmpeg`, about 3 minutes) |
+| `video/people_crossing.mp4` | A 10.5 s clip of people waiting for WALK and crossing the zebra at the central crossroads, to cut in over the video's people part (50–58 s) | `python delivery/video/make_people_clip.py` (about 1 minute) |
 | `figures/jpg/` | The figures used by the report and the slides | `sh delivery/figures/capture_all.sh`, the tour stills (below), then `python delivery/figures/make_figures.py` |
 
 The PPTX (about 120 MB, the video is inside it) and the MP4 are not in git;
@@ -910,7 +911,15 @@ and the sun or moon's colour and height at each preset).
 pipes every frame to ffmpeg; each frame advances the city exactly 1/30 s, so
 the video is smooth whatever the PC's speed. Your car in it is steered by the
 city's own AI driver (`Player::followVehicle`), so it stops at red and keeps
-to its lane. `--tour-stills DIR T1,T2,...` saves only those moments as PNGs
+to its lane. The people's part shows the signalised crossing with the most people
+walking over it. People walk only while their WALK light is on: during the
+parallel green, never during the all-red or the other road's left-turn arrow
+(whose cars turn across the zebra), so a red light for the cars beside them
+does not by itself mean it is their turn. `--tour-people clip.mp4` records
+only a 10.5 s clip: the scout run finds the moment a WALK light turns on
+with the most people waiting and then walking, and the camera looks down on
+that zebra from above the middle of the road.
+`--tour-stills DIR T1,T2,...` saves only those moments as PNGs
 (the report's tour figures are `8,16,26,30,44,54,60,63,66.5,72,80,88,103,108,112,116`).
 
 ---

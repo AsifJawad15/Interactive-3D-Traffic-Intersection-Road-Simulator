@@ -77,10 +77,13 @@ namespace
 
     // The demo video: --tour VIDEO.mp4 writes the whole tour through ffmpeg
     // (--ffmpeg PATH, else ffmpeg on the PATH), with VIDEO.mp4.captions.tsv
-    // beside it; --tour-stills DIR T1,T2,... only saves those moments as PNGs.
+    // beside it; --tour-stills DIR T1,T2,... only saves those moments as PNGs;
+    // --tour-people VIDEO.mp4 records only a short clip of people waiting for
+    // WALK and crossing, at the best moment the scout run finds.
     struct TourOptions
     {
         std::string video;
+        bool peopleClip = false;
         std::string stillsDirectory;
         std::vector<float> stills;
         std::string ffmpeg = "ffmpeg";
@@ -1882,6 +1885,11 @@ int main(int argc, char** argv)
         const bool hasValue = index + 1 < argc;
         if (argument == "--tour" && hasValue)
             tourOptions.video = argv[++index];
+        else if (argument == "--tour-people" && hasValue)
+        {
+            tourOptions.video = argv[++index];
+            tourOptions.peopleClip = true;
+        }
         else if (argument == "--tour-stills" && index + 2 < argc)
         {
             tourOptions.stillsDirectory = argv[++index];
@@ -2152,7 +2160,7 @@ int main(int argc, char** argv)
         if (tourOptions.enabled())
         {
             const auto scoutStart = std::chrono::steady_clock::now();
-            tour = std::make_unique<Tour>(world, vehicleCount, pedestrianCount);
+            tour = std::make_unique<Tour>(world, vehicleCount, pedestrianCount, tourOptions.peopleClip);
             std::printf("%sScouting took %.1f s\n", tour->report().c_str(), secondsSince(scoutStart));
             const int warmSteps = static_cast<int>(std::lround(tour->warmSeconds() / Tour::simulationStep));
             for (int index = 0; index < warmSteps; ++index)
@@ -2502,7 +2510,8 @@ int main(int argc, char** argv)
                 const float videoSeconds = static_cast<float>(tourFrame) / Tour::framesPerSecond;
                 const bool still = nextStill < tourOptions.stills.size() &&
                                    videoSeconds + 0.5f / Tour::framesPerSecond >= tourOptions.stills[nextStill];
-                const bool drawn = !tourOptions.video.empty() || still;
+                const bool recorded = !tourOptions.video.empty() && tour->records(videoSeconds);
+                const bool drawn = recorded || still;
                 if (drawn)
                 {
                     renderFrame(1.0f, tour->warmSeconds() + videoSeconds);
@@ -2518,7 +2527,7 @@ int main(int argc, char** argv)
                     std::cout << (saveFramebufferPng(path, width, height) ? "Saved " : "Could not save ") << path << '\n';
                     ++nextStill;
                 }
-                if (!tourOptions.video.empty())
+                if (recorded)
                 {
                     if (tourPipe == nullptr)
                     {
@@ -2544,7 +2553,8 @@ int main(int argc, char** argv)
                     }
                     std::fwrite(tourPixels.data(), 1, tourPixels.size(), tourPipe);
                     if (tourFrame % 150 == 0)
-                        std::printf("  %3.0f s of %.0f\n", videoSeconds, Tour::length);
+                        std::printf("  %3.0f s of %.0f\n", videoSeconds,
+                                    static_cast<float>(tour->frameCount()) / Tour::framesPerSecond);
                 }
 
                 ++tourFrame;

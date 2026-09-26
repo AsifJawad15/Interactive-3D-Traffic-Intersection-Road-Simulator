@@ -58,7 +58,13 @@ public:
     static constexpr float simulationStep = 1.0f / 60.0f;
     static constexpr float length = 120.0f;
 
-    Tour(const World& world, std::size_t vehicleCount, std::size_t pedestrianCount);
+    // The short clip of people crossing (--tour-people): it records only
+    // this long, from the people's part on, at the moment and crossing where
+    // the most people wait for WALK and then walk over.
+    static constexpr float clipLength = 10.5f;
+    static constexpr float clipLead = 2.5f;   // waiting at the kerb before WALK
+
+    Tour(const World& world, std::size_t vehicleCount, std::size_t pedestrianCount, bool peopleClip = false);
 
     // One step of the city as the video runs it: no guests, because your
     // car is the AI car it replaces.
@@ -66,7 +72,10 @@ public:
 
     float warmSeconds() const { return warmSeconds_; }
     std::size_t drivenVehicle() const { return drivenVehicle_; }
-    int frameCount() const { return static_cast<int>(length * framesPerSecond); }
+    int frameCount() const;
+    // Whether the frame at this video time goes into the video (the clip
+    // skips everything before the people's part).
+    bool records(float videoSeconds) const;
     const std::string& report() const { return report_; }
 
     // Before the camera update and the drawing of frame `frame`.
@@ -81,6 +90,7 @@ private:
     float warmSeconds_ = 20.0f;
     std::size_t drivenVehicle_ = 0;
     std::size_t crossing_ = 0;       // where the people cross in their part
+    bool peopleClip_ = false;
     glm::vec2 roundabout_ {100.0f, 0.0f};   // the one your car drives through
     std::string report_;
 
