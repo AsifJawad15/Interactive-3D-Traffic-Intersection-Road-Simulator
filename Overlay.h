@@ -218,7 +218,16 @@ public:
         bool showHelp,
         const HudExtras& extras);
 
+    // The demo video (--tour) leaves out the status panel on the left and
+    // keeps the map and the buttons; and draws a mouse pointer, with a ring
+    // for a click (`press` 0..1 through the click, 0 for none).
+    void setStatusPanel(bool shown) { statusPanel_ = shown; }
+    void drawCursor(float x, float y, float press, int width, int height);
+
 private:
+    bool statusPanel_ = true;
+    void drawCorners(const HudExtras& extras, const std::string& timeText, const PerformanceInfo& performance,
+                     int width, int height);
     Shader shader_;
     GLuint vao_ = 0;
     GLuint vbo_ = 0;

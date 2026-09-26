@@ -3,6 +3,7 @@
 
 #include "Camera.h"
 #include "DayNight.h"
+#include "Dimensions.h"
 #include "Enhanced.h"
 #include "FrameStats.h"
 #include "Framebuffer.h"
@@ -17,6 +18,7 @@
 #include "Sky.h"
 #include "Screenshot.h"
 #include "Simulation.h"
+#include "Tour.h"
 #include "Weather.h"
 #include "World.h"
 
@@ -31,6 +33,8 @@
 #include <cstring>
 #include <exception>
 #include <iostream>
+#include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -69,6 +73,18 @@ namespace
         ShadowQuality shadows = ShadowQuality::High;   // --shadows high|low|off
         bool enhanced = false;        // --enhanced: ray tracing (Enhanced mode) on
         bool confirm = false;         // --confirm: the ray-tracing question open on screen
+    };
+
+    // The demo video: --tour VIDEO.mp4 writes the whole tour through ffmpeg
+    // (--ffmpeg PATH, else ffmpeg on the PATH), with VIDEO.mp4.captions.tsv
+    // beside it; --tour-stills DIR T1,T2,... only saves those moments as PNGs.
+    struct TourOptions
+    {
+        std::string video;
+        std::string stillsDirectory;
+        std::vector<float> stills;
+        std::string ffmpeg = "ffmpeg";
+        bool enabled() const { return !video.empty() || !stills.empty(); }
     };
 
     // Views 11 to 13 stage vehicles instead of showing the traffic. 11 and 13
@@ -1841,6 +1857,12 @@ int main(int argc, char** argv)
 
     for (int index = 1; index < argc; ++index)
     {
+        if (std::strcmp(argv[index], "--dimensions") == 0)
+            return printDimensions();
+    }
+
+    for (int index = 1; index < argc; ++index)
+    {
         if (std::strcmp(argv[index], "--plot") != 0)
             continue;
 
@@ -1852,12 +1874,28 @@ int main(int argc, char** argv)
     }
 
     CaptureOptions capture;
+    TourOptions tourOptions;
     bool startFullscreen = false;
     for (int index = 1; index < argc; ++index)
     {
         const std::string argument = argv[index];
         const bool hasValue = index + 1 < argc;
-        if (argument == "--capture" && hasValue)
+        if (argument == "--tour" && hasValue)
+            tourOptions.video = argv[++index];
+        else if (argument == "--tour-stills" && index + 2 < argc)
+        {
+            tourOptions.stillsDirectory = argv[++index];
+            const std::string list = argv[++index];
+            for (std::size_t at = 0; at < list.size();)
+            {
+                const std::size_t comma = std::min(list.find(',', at), list.size());
+                tourOptions.stills.push_back(static_cast<float>(std::atof(list.substr(at, comma - at).c_str())));
+                at = comma + 1;
+            }
+        }
+        else if (argument == "--ffmpeg" && hasValue)
+            tourOptions.ffmpeg = argv[++index];
+        else if (argument == "--capture" && hasValue)
         {
             capture.enabled = true;
             capture.path = argv[++index];
@@ -1939,7 +1977,15 @@ int main(int argc, char** argv)
     int workWidth = 1920;
     int workHeight = 1080;
     glfwGetMonitorWorkarea(glfwGetPrimaryMonitor(), &workX, &workY, &workWidth, &workHeight);
-    if (capture.enabled)
+    if (tourOptions.enabled())
+    {
+        // Without a title bar the window may be exactly as large as a
+        // 1080p screen; with one, Windows shrinks it to fit.
+        windowWidth = 1920;
+        windowHeight = 1080;
+        glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+    }
+    else if (capture.enabled)
     {
         windowWidth = capture.width;
         windowHeight = capture.height;
@@ -1954,7 +2000,7 @@ int main(int argc, char** argv)
     GLFWwindow* window = glfwCreateWindow(
         windowWidth,
         windowHeight,
-        "Interactive 3D Traffic Intersection Simulator",
+        "3D Smart City with Digital Traffic Signals",
         nullptr,
         nullptr);
 
@@ -2093,6 +2139,37 @@ int main(int argc, char** argv)
                 pedestrians.update(simulationStep, traffic);
             }
         }
+
+        // The demo video: choose the car your car replaces, run the city
+        // until the script's first frame, and hand the look of each frame
+        // to the script (the status panel stays out of the picture).
+        std::unique_ptr<Tour> tour;
+        TourControls tourControls;
+        int tourFrame = 0;
+        FILE* tourPipe = nullptr;
+        std::vector<unsigned char> tourPixels;
+        std::size_t nextStill = 0;
+        if (tourOptions.enabled())
+        {
+            const auto scoutStart = std::chrono::steady_clock::now();
+            tour = std::make_unique<Tour>(world, vehicleCount, pedestrianCount);
+            std::printf("%sScouting took %.1f s\n", tour->report().c_str(), secondsSince(scoutStart));
+            const int warmSteps = static_cast<int>(std::lround(tour->warmSeconds() / Tour::simulationStep));
+            for (int index = 0; index < warmSteps; ++index)
+            {
+                Tour::step(traffic, pedestrians);
+                player.followVehicle(traffic.vehicles()[tour->drivenVehicle()], Tour::simulationStep);
+            }
+            std::sort(tourOptions.stills.begin(), tourOptions.stills.end());
+            state.ignoreMouse = true;
+            state.showHelp = false;
+            state.shadows = ShadowQuality::High;
+            scaler.setMode(ResolutionMode::Native);
+            overlay.setStatusPanel(false);
+            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+            glfwSwapInterval(0);
+        }
+
         // The weather's say in the light, the drivers and the people.
         const auto applyWeather = [&]
         {
@@ -2229,7 +2306,7 @@ int main(int argc, char** argv)
                 outputWidth, outputHeight, dayNight.exposure());
 
             // 4. The HUD is drawn last, straight onto the tone-mapped image.
-            if (!capture.hideHud)
+            if (!capture.hideHud && state.hudShown)
             {
                 PerformanceInfo performance;
                 performance.fps = frameStats.fps();
@@ -2268,7 +2345,7 @@ int main(int argc, char** argv)
                     eastWestColors[index] = signalColor(traffic.signalFor(signalJunctions[index], ArmEast));
                 }
                 HudExtras extras;
-                extras.onPlayer = camera.onPlayer();
+                extras.onPlayer = camera.onPlayer() || (tour && tourControls.playerPanel);
                 extras.walking = playerView.walking;
                 extras.speedKmh = playerView.carSpeed * 3.6f;
                 constexpr float messageSeconds = 3.0f;
@@ -2390,6 +2467,109 @@ int main(int argc, char** argv)
         double previousTime = glfwGetTime();
         while (glfwWindowShouldClose(window) == GLFW_FALSE)
         {
+            if (tour)
+            {
+                // One frame of the demo video: exactly two simulation steps
+                // (1/30 s of city time), whatever the drawing costs.
+                glfwPollEvents();
+                constexpr float frameSeconds = 1.0f / Tour::framesPerSecond;
+                const std::size_t driven = tour->drivenVehicle();
+                for (int index = 0; index < Tour::stepsPerFrame; ++index)
+                {
+                    Tour::step(traffic, pedestrians);
+                    player.followVehicle(traffic.vehicles()[driven], Tour::simulationStep);
+                }
+                traffic.interpolatePoses(1.0f, poses);
+                if (driven < poses.size())
+                    poses[driven].active = false;   // your car is drawn in its place
+                pedestrians.interpolate(1.0f, pedestrianPoses);
+                playerView = player.view(1.0f);
+
+                glfwGetFramebufferSize(window, &state.framebufferWidth, &state.framebufferHeight);
+                const int width = state.framebufferWidth;
+                const int height = state.framebufferHeight;
+                tour->direct(tourFrame, camera, playerView, traffic, dayNight, weather, width, height, tourControls);
+                state.shadingMode = tourControls.shadingMode;
+                state.enhanced = tourControls.enhanced;
+                state.confirmOpen = tourControls.confirmOpen;
+                state.confirmHover = tourControls.confirmHover;
+                state.hudShown = tourControls.hud;
+                dayNight.animate(frameSeconds);
+                weather.update(frameSeconds);
+                applyWeather();
+                camera.update(frameSeconds, poses, playerView, pedestrianPoses);
+
+                const float videoSeconds = static_cast<float>(tourFrame) / Tour::framesPerSecond;
+                const bool still = nextStill < tourOptions.stills.size() &&
+                                   videoSeconds + 0.5f / Tour::framesPerSecond >= tourOptions.stills[nextStill];
+                const bool drawn = !tourOptions.video.empty() || still;
+                if (drawn)
+                {
+                    renderFrame(1.0f, tour->warmSeconds() + videoSeconds);
+                    if (tourControls.cursorShown && tourControls.hud)
+                        overlay.drawCursor(tourControls.cursor.x, tourControls.cursor.y, tourControls.cursorPress,
+                                           width, height);
+                }
+                if (still)
+                {
+                    char name[64];
+                    std::snprintf(name, sizeof name, "/tour_%06.2f.png", tourOptions.stills[nextStill]);
+                    const std::string path = tourOptions.stillsDirectory + name;
+                    std::cout << (saveFramebufferPng(path, width, height) ? "Saved " : "Could not save ") << path << '\n';
+                    ++nextStill;
+                }
+                if (!tourOptions.video.empty())
+                {
+                    if (tourPipe == nullptr)
+                    {
+                        // cmd.exe drops the outer quotes, so the whole line is
+                        // quoted once more.
+                        const std::string command = "\"\"" + tourOptions.ffmpeg + "\" -y -loglevel error -f rawvideo -pix_fmt rgb24 -s " +
+                                                    std::to_string(width) + "x" + std::to_string(height) +
+                                                    " -framerate 30 -i - -vf vflip,scale=1920:1080 -c:v libx264 -preset medium -crf 15 "
+                                                    "-pix_fmt yuv420p \"" + tourOptions.video + "\"\"";
+                        tourPipe = _popen(command.c_str(), "wb");
+                        if (tourPipe == nullptr)
+                            throw std::runtime_error("Could not start ffmpeg: " + command);
+                        std::printf("Recording %dx%d at 30 FPS into %s\n", width, height, tourOptions.video.c_str());
+                    }
+                    tourPixels.resize(static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 3u);
+                    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+                    glReadPixels(0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE, tourPixels.data());
+                    if (tourControls.brightness < 0.999f)
+                    {
+                        const int scale = static_cast<int>(std::lround(tourControls.brightness * 256.0f));
+                        for (unsigned char& value : tourPixels)
+                            value = static_cast<unsigned char>((value * scale) >> 8);
+                    }
+                    std::fwrite(tourPixels.data(), 1, tourPixels.size(), tourPipe);
+                    if (tourFrame % 150 == 0)
+                        std::printf("  %3.0f s of %.0f\n", videoSeconds, Tour::length);
+                }
+
+                ++tourFrame;
+                const bool stillsDone = tourOptions.video.empty() && nextStill >= tourOptions.stills.size();
+                if (tourFrame >= tour->frameCount() || stillsDone)
+                {
+                    if (tourPipe != nullptr)
+                    {
+                        const int result = _pclose(tourPipe);
+                        tourPipe = nullptr;
+                        const std::string captionsPath = tourOptions.video + ".captions.tsv";
+                        const bool written = tour->writeCaptions(captionsPath);
+                        std::printf("%s %s, captions in %s\n", result == 0 ? "Wrote" : "ffmpeg FAILED on",
+                                    tourOptions.video.c_str(), written ? captionsPath.c_str() : "(could not write)");
+                        exitCode = result == 0 && written ? EXIT_SUCCESS : EXIT_FAILURE;
+                    }
+                    glfwSetWindowShouldClose(window, GLFW_TRUE);
+                }
+                // Only a drawn frame is shown: swapping in an undrawn one
+                // (while skipping to the next still) would flicker.
+                if (drawn)
+                    glfwSwapBuffers(window);
+                continue;
+            }
+
             const double currentTime = glfwGetTime();
             const float frameSeconds = static_cast<float>(currentTime - previousTime);
             previousTime = currentTime;

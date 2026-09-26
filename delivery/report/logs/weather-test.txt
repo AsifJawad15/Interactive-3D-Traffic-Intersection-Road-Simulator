@@ -1,0 +1,25 @@
+K cycles CLEAR -> CLOUDY -> RAIN -> CLEAR | PASS
+07.00 CLEAR -> CLOUDY           10.02 s | per frame: light 0.0006 sky 0.0001 exposure 0.0001 cover 0.0009 rain 0.0000 | cover as rain starts -0.00, stops -0.00 | ends CLOUDY | PASS
+07.00 CLOUDY -> RAIN            10.02 s | per frame: light 0.0029 sky 0.0006 exposure 0.0007 cover 0.0018 rain 0.0038 | cover as rain starts 0.81, stops -0.00 | ends RAIN | PASS
+07.00 RAIN -> CLEAR             10.02 s | per frame: light 0.0035 sky 0.0007 exposure 0.0008 cover 0.0028 rain 0.0042 | cover as rain starts -0.00, stops 0.70 | ends CLEAR | PASS
+07.00 CLEAR -> RAIN             10.02 s | per frame: light 0.0038 sky 0.0008 exposure 0.0009 cover 0.0030 rain 0.0038 | cover as rain starts 0.68, stops -0.00 | ends RAIN | PASS
+07.00 RAIN -> CLOUDY            10.02 s | per frame: light 0.0027 sky 0.0006 exposure 0.0006 cover 0.0017 rain 0.0042 | cover as rain starts -0.00, stops 0.82 | ends CLOUDY | PASS
+07.00 CLOUDY -> CLEAR           10.02 s | per frame: light 0.0006 sky 0.0001 exposure 0.0001 cover 0.0009 rain 0.0000 | cover as rain starts -0.00, stops -0.00 | ends CLEAR | PASS
+07.00 CLOUDY -> RAIN, K at 4 s  14.02 s | per frame: light 0.0029 sky 0.0006 exposure 0.0007 cover 0.0021 rain 0.0011 | cover as rain starts -0.00, stops -0.00 | ends CLEAR | PASS
+18.50 CLEAR -> CLOUDY           10.02 s | per frame: light 0.0005 sky 0.0002 exposure 0.0001 cover 0.0009 rain 0.0000 | cover as rain starts -0.00, stops -0.00 | ends CLOUDY | PASS
+18.50 CLOUDY -> RAIN            10.02 s | per frame: light 0.0021 sky 0.0005 exposure 0.0006 cover 0.0018 rain 0.0038 | cover as rain starts 0.81, stops -0.00 | ends RAIN | PASS
+18.50 RAIN -> CLEAR             10.02 s | per frame: light 0.0026 sky 0.0007 exposure 0.0007 cover 0.0028 rain 0.0042 | cover as rain starts -0.00, stops 0.70 | ends CLEAR | PASS
+18.50 CLEAR -> RAIN             10.02 s | per frame: light 0.0028 sky 0.0007 exposure 0.0008 cover 0.0030 rain 0.0038 | cover as rain starts 0.68, stops -0.00 | ends RAIN | PASS
+18.50 RAIN -> CLOUDY            10.02 s | per frame: light 0.0020 sky 0.0005 exposure 0.0005 cover 0.0017 rain 0.0042 | cover as rain starts -0.00, stops 0.82 | ends CLOUDY | PASS
+18.50 CLOUDY -> CLEAR           10.02 s | per frame: light 0.0005 sky 0.0002 exposure 0.0001 cover 0.0009 rain 0.0000 | cover as rain starts -0.00, stops -0.00 | ends CLEAR | PASS
+18.50 CLOUDY -> RAIN, K at 4 s  14.02 s | per frame: light 0.0021 sky 0.0005 exposure 0.0006 cover 0.0021 rain 0.0011 | cover as rain starts -0.00, stops -0.00 | ends CLEAR | PASS
+22.00 CLEAR -> CLOUDY           10.02 s | per frame: light 0.0001 sky 0.0000 exposure 0.0000 cover 0.0009 rain 0.0000 | cover as rain starts -0.00, stops -0.00 | ends CLOUDY | PASS
+22.00 CLOUDY -> RAIN            10.02 s | per frame: light 0.0004 sky 0.0000 exposure 0.0000 cover 0.0018 rain 0.0038 | cover as rain starts 0.81, stops -0.00 | ends RAIN | PASS
+22.00 RAIN -> CLEAR             10.02 s | per frame: light 0.0005 sky 0.0001 exposure 0.0000 cover 0.0028 rain 0.0042 | cover as rain starts -0.00, stops 0.70 | ends CLEAR | PASS
+22.00 CLEAR -> RAIN             10.02 s | per frame: light 0.0005 sky 0.0001 exposure 0.0000 cover 0.0030 rain 0.0038 | cover as rain starts 0.68, stops -0.00 | ends RAIN | PASS
+22.00 RAIN -> CLOUDY            10.02 s | per frame: light 0.0004 sky 0.0000 exposure 0.0000 cover 0.0017 rain 0.0042 | cover as rain starts -0.00, stops 0.82 | ends CLOUDY | PASS
+22.00 CLOUDY -> CLEAR           10.02 s | per frame: light 0.0001 sky 0.0000 exposure 0.0000 cover 0.0009 rain 0.0000 | cover as rain starts -0.00, stops -0.00 | ends CLEAR | PASS
+22.00 CLOUDY -> RAIN, K at 4 s  14.02 s | per frame: light 0.0004 sky 0.0000 exposure 0.0000 cover 0.0021 rain 0.0011 | cover as rain starts -0.00, stops -0.00 | ends CLEAR | PASS
+noon in the rain: sunlight 0.31 of clear, sky light 1.20 of clear | PASS
+in the rain: wet after 41 s, puddles full after 96 s | after it: dry after 120 s, puddles gone after 204 s | PASS
+WEATHER TEST PASSED

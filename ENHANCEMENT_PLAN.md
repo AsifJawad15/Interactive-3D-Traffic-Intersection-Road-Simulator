@@ -1,6 +1,6 @@
 ﻿# Enhancement Plan: OpenGLMiniProject → Open-World Smart City Traffic Simulator
 
-> Status: **Phases 0 to 10 complete and verified. Next: Phase 11 (delivery).** Written 2026-09-23.
+> Status: **Phases 0 to 11 complete and verified (delivery: report, slides, demo video).** Written 2026-09-23.
 > **Revised 2026-09-25 (Phase 10):** Enhanced mode is presented as "ray tracing (partial)". As you asked, the button (and `F3`) opens a question in the middle of the screen, "RAY TRACING ON?", with Yes and No. The button sits in a third row under the weather's rather than above the time buttons. How much of each pixel is a mirror goes in the HDR colour's spare alpha channel, and normals come from the depth buffer, so there is no second render target. The soft shadows are two more scene programs, used only while it is on. It costs about 1 ms, not 3, so nothing had to be cut at Evening in the rain.
 > **Revised 2026-09-25 (Phase 9):** the weather buttons came with `K`. The "splashes" are rings drawn in the scene shader where drops land, on any upward surface near the camera, instead of sprites. The scene shader is built twice (dry, and with the weather), because the weather code slowed it even when unused. The rain soaks found a pedestrian starvation case at roundabout exits, fixed in `crossingBlocker`.
 > **Revised 2026-09-25 (Phase 8):** the shadows are two maps, a near one that follows the camera and one over the whole city (Low keeps only the city map), so `F2` cycles High, Low and Off. Long glides (night to noon) take up to 4.5 s instead of 3, and the cursor rules and clickable buttons came in now with the time buttons instead of in Phase 10.
@@ -39,7 +39,25 @@
 | 8. Sun, moon, time presets and shadows | ✅ Done and verified | 2026-09-25 | `enhancement/phase-8-sun-shadows` |
 | 9. Weather: clouds and light rain | ✅ Done and verified | 2026-09-25 | `enhancement/phase-9-weather` |
 | 10. Enhanced mode (partial ray tracing) | ✅ Done and verified | 2026-09-25 | `enhancement/phase-10-enhanced` |
-| 11. Delivery | Not started | | |
+| 11. Delivery | ✅ Done and verified | 2026-09-26 | `enhancement/phase-11-delivery` |
+
+### ✅ Checkpoint 11: delivery — report, slides and demo video (2026-09-26)
+
+**Project title:** "3D Smart City with Digital Traffic Signals" (window title, HUD panel, README, report, slides, video). The first billboard still reads "GRAPHICS LAB | CSE 4102".
+
+**What was built** (all in `delivery/`, each rebuilt by the program or a script)
+- **Demo video** (`video/make_video.py` → `demo.mp4`, 2:00, 1080p30): `--tour` (`Tour.cpp`) plays a scripted camera and clicks and pipes every frame to ffmpeg, 1/30 s of city time per frame. Your car is driven by the city's AI driver (`Player::followVehicle`), chosen by a deterministic scout run so it meets a red light. ffmpeg adds the title card and captions. `--tour-stills DIR T1,T2` saves single moments.
+- **`--dimensions`** (`Dimensions.cpp`): prints every object's size from the program's own tables (vehicles, roads, buildings by style, trees by species, furniture, signals, people, camera, lights and the sun at each preset). Saved as `report/dimensions.txt`.
+- **Screenshots:** `figures/capture_all.sh` (41 views with `--capture`), 16 tour stills, `figures/make_figures.py` → 53 JPEG figures (13 MB) in `figures/jpg`.
+- **Report** (`report/report.tex` → `report.pdf`, 23 pages): the lab topics with worked calculations (projection matrix, route rotation, turn radii by tangency, roundabout entry, wheel rotation, tractrix, attenuation table, spot cones, the sun's height and shadow lengths at each preset, Gouraud vs Phong highlight, Bezier point, IDM, Fresnel, ray-march reach), an annotated figure of all four light types, the dimension tables, the test and frame-rate tables, a user guide and a gallery.
+- **Slides** (`slides/build_slides.py` → 10-slide `.pptx`, 16:9, all text editable, video embedded on slide 2, speaker notes as the viva script). Lab topic names only on the slides; detail in the notes.
+
+**Verification**
+- Build: Release x64, no errors.
+- `--self-test`, `--sun-test`, `--weather-test`, `--light-test`, `--motion-test`, `--walk-test`, `--player-test`: all PASS (logs in `delivery/report/logs`).
+- **Final soaks, 30 min, seeds 1–16, clear and rain:** 32 of 32 PASS, 0 overlaps, 0 vehicle–person touches, 0 starts against the lights. Clear: longest stop 54.1 s, longest wait 75.3 s, 2766–2830 routes. Rain: 50.4 s, 72.0 s, 2496–2562 routes. Identical to Checkpoint 9 (the simulation was not changed).
+- The report builds with no errors or overfull boxes; every page was rendered and checked. The slides were rendered through PowerPoint and checked. Frame-rate figures are the Checkpoint 9/10 measurements (the renderer was not changed).
+- **Git:** the MP4, the PPTX (120 MB with the video) and the full-size PNGs stay out of git; the scripts, JPEG figures, report source, PDF and logs are committed.
 
 ### ✅ Checkpoint 10: ray tracing (Enhanced mode) and its question (2026-09-25)
 

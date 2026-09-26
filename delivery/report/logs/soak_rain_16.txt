@@ -1,0 +1,3 @@
+CITY seed 16    cars 36   30.0 min | overlaps 0 | closest gap 0.95 m | longest stop  37.5 s | routes driven  2544 | bus stops  78 | busiest ST2 8% | 20.5 s wall | PASS
+     people  80 | crossings made  1203 | vehicle-person overlaps 0 | closest vehicle 0.50 m | longest wait  45.4 s | hard stops at crossings 0 | starts against the lights 0
+     longest wait: person 6, crossing, crossing 18 at R2 E, at (26.9, -91.9), 45 s at 439 s

@@ -64,6 +64,12 @@ void Overlay::render(
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
+    if (!statusPanel_)
+    {
+        drawCorners(extras, timeText, performance, width, height);
+        return;
+    }
+
     // The key list folds away with H so it does not cover the scene during a
     // demonstration; the status lines always stay.
     const float panelHeight = showHelp ? 724.0f : 215.0f;
@@ -73,7 +79,7 @@ void Overlay::render(
     std::array<char, 128> line {};
     const float left = 26.0f;
     float y = 27.0f;
-    drawText(left, y, 1.55f, "3D SMART TRAFFIC CITY", {1.0f, 0.82f, 0.08f, 1.0f}, width, height);
+    drawText(left, y, 1.55f, "3D SMART CITY WITH DIGITAL TRAFFIC SIGNALS", {1.0f, 0.82f, 0.08f, 1.0f}, width, height);
     y += 34.0f;
 
     std::snprintf(line.data(), line.size(), "STATUS: %-7s   CARS: %zu   OVERLAPS: %zu   FPS: %.0f",
@@ -164,6 +170,12 @@ void Overlay::render(
         drawText(left, y, 1.08f, "H   SHOW CONTROLS", {0.58f, 0.70f, 0.78f, 1.0f}, width, height);
     }
 
+    drawCorners(extras, timeText, performance, width, height);
+}
+
+void Overlay::drawCorners(const HudExtras& extras, const std::string& timeText, const PerformanceInfo& performance,
+                          int width, int height)
+{
     if (performance.showGraph)
         drawFrameGraph(performance, width, height);
     drawMinimap(extras, width, height);
@@ -173,6 +185,59 @@ void Overlay::render(
     drawEnhancedPanel(extras, width, height);
     if (extras.confirmOpen)
         drawConfirmDialog(extras, width, height);
+
+    glDisable(GL_BLEND);
+    glEnable(GL_DEPTH_TEST);
+}
+
+void Overlay::drawCursor(float x, float y, float press, int width, int height)
+{
+    glDisable(GL_DEPTH_TEST);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    // A click: a ring that grows and fades round the tip.
+    if (press > 0.0f)
+    {
+        const float radius = 10.0f + 26.0f * press;
+        const float thickness = 3.0f;
+        vertices_.clear();
+        constexpr int segments = 40;
+        for (int index = 0; index < segments; ++index)
+        {
+            const float a0 = 6.2831853f * static_cast<float>(index) / segments;
+            const float a1 = 6.2831853f * static_cast<float>(index + 1) / segments;
+            const glm::vec2 inner0 = glm::vec2 {x, y} + (radius - thickness) * glm::vec2 {std::cos(a0), std::sin(a0)};
+            const glm::vec2 inner1 = glm::vec2 {x, y} + (radius - thickness) * glm::vec2 {std::cos(a1), std::sin(a1)};
+            const glm::vec2 outer0 = glm::vec2 {x, y} + radius * glm::vec2 {std::cos(a0), std::sin(a0)};
+            const glm::vec2 outer1 = glm::vec2 {x, y} + radius * glm::vec2 {std::cos(a1), std::sin(a1)};
+            vertices_.insert(vertices_.end(), {inner0, outer0, outer1, inner0, outer1, inner1});
+        }
+        drawVertices({1.0f, 0.86f, 0.2f, 1.0f - press}, width, height);
+    }
+
+    // The arrow: a black outline under a white body, tip at (x, y).
+    const auto arrow = [this, x, y](float grow)
+    {
+        const std::array<glm::vec2, 7> shape = {{
+            {0.0f, 0.0f}, {0.0f, 25.0f}, {6.0f, 19.5f}, {10.5f, 29.0f}, {14.5f, 27.0f}, {10.0f, 18.0f}, {18.0f, 18.0f}}};
+        glm::vec2 centre {0.0f};
+        for (const glm::vec2& point : shape)
+            centre += point / 7.0f;
+        const auto at = [&](int index)
+        {
+            const glm::vec2 point = shape[static_cast<std::size_t>(index)];
+            return glm::vec2 {x, y} + point + glm::normalize(point - centre + glm::vec2 {1.0e-3f}) * grow;
+        };
+        vertices_.clear();
+        // Fan from the tip across the left edge, then the tail.
+        vertices_.insert(vertices_.end(), {at(0), at(1), at(2), at(0), at(2), at(5), at(0), at(5), at(6),
+                                           at(2), at(3), at(4), at(2), at(4), at(5)});
+    };
+    arrow(2.0f);
+    drawVertices({0.0f, 0.0f, 0.0f, 0.95f}, width, height);
+    arrow(0.0f);
+    drawVertices({1.0f, 1.0f, 1.0f, 1.0f}, width, height);
 
     glDisable(GL_BLEND);
     glEnable(GL_DEPTH_TEST);

@@ -1,0 +1,3 @@
+144 Hz display | judder without interpolation 1.997 | with interpolation 0.0007 | PASS
+ 60 Hz display | judder without interpolation 1.076 | with interpolation 0.0013 | PASS
+ 75 Hz display | judder without interpolation 0.521 | with interpolation 0.0010 | PASS

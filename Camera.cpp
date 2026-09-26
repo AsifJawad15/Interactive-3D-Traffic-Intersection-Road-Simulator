@@ -382,6 +382,13 @@ void Camera::setFreePose(const glm::vec3& position, float yawDegrees, float pitc
     saveFreeCamera();
 }
 
+void Camera::lookFrom(const glm::vec3& position, const glm::vec3& target)
+{
+    const glm::vec3 look = glm::normalize(target - position);
+    setFreePose(position, glm::degrees(std::atan2(look.z, look.x)),
+                glm::degrees(std::asin(glm::clamp(look.y, -1.0f, 1.0f))));
+}
+
 glm::mat4 Camera::viewMatrix() const
 {
     return glm::lookAt(position_, position_ + front_, viewUp_);

@@ -1,0 +1,9 @@
+# Large build outputs, rebuilt by the scripts in this folder
+slides/*.pptx
+figures/shots/
+figures/tour/
+report/*.aux
+report/*.log
+report/*.toc
+report/*.out
+report/build.log

@@ -2,6 +2,7 @@
 
 #include "Mannequin.h"
 #include "Route.h"
+#include "Simulation.h"
 
 #include <glm/common.hpp>
 #include <glm/geometric.hpp>
@@ -191,6 +192,27 @@ void Player::step(float dt, const PlayerInput& input, const std::vector<Oriented
     stepCar(dt, walking_ ? PlayerInput {} : input, traffic);
     if (walking_)
         stepWalker(dt, input, traffic);
+}
+
+void Player::followVehicle(const Vehicle& vehicle, float dt)
+{
+    previousCar_ = car_;
+    previousWalker_ = walker_;
+    messageAge_ += dt;
+    walking_ = false;
+
+    CarState& car = car_;
+    const float lastYaw = car.yawDegrees;
+    car.position = {vehicle.position.x, vehicle.position.z};
+    car.yawDegrees = vehicle.yawDegrees;
+    car.steerDegrees = vehicle.steerAngleDegrees;
+    car.longitudinalAcceleration = (vehicle.currentSpeed - car.speed) / dt;
+    car.speed = vehicle.currentSpeed;
+    const float turned = std::fmod(car.yawDegrees - lastYaw + 540.0f, 360.0f) - 180.0f;
+    car.lateralAcceleration = car.speed * glm::radians(turned) / dt;
+    const float ground = world_.surfaceHeight(car.position);
+    car.height += (ground - car.height) * std::min(1.0f, dt * 14.0f);
+    car.wheelDegrees = std::fmod(car.wheelDegrees + glm::degrees(car.speed * dt / wheelRadius), 360.0f);
 }
 
 void Player::stepCar(float dt, const PlayerInput& input, const std::vector<OrientedBox>& traffic)

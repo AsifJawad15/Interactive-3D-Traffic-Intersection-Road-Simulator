@@ -1,0 +1,16 @@
+MORNING   07:00 | sun   12.1 deg up, bearing  87.0 | shadows point to 267.0,  4.65 m per metre of height | lamps off | PASS
+NOON      12:00 | sun   59.3 deg up, bearing 165.4 | shadows point to 345.4,  0.59 m per metre of height | lamps off | PASS
+AFTERNOON 15:30 | sun   40.2 deg up, bearing 245.7 | shadows point to  65.7,  1.18 m per metre of height | lamps off | PASS
+EVENING   18:30 | sun    6.4 deg up, bearing 277.7 | shadows point to  97.7,  8.90 m per metre of height | lamps on  | PASS
+NIGHT     22:00 | moon  24.9 deg up, bearing 129.8 | shadows point to 309.8,  2.15 m per metre of height | lamps on  | PASS
+glide O MORNING -> NOON         3.02 s | largest turn 1.50 deg/frame | largest colour step 0.0130 | at the sun/moon switch 0.0000 | ends 12:00 | PASS
+glide O NOON -> AFTERNOON       3.02 s | largest turn 0.43 deg/frame | largest colour step 0.0000 | at the sun/moon switch 0.0000 | ends 15:30 | PASS
+glide O AFTERNOON -> EVENING    3.02 s | largest turn 0.95 deg/frame | largest colour step 0.0145 | at the sun/moon switch 0.0000 | ends 18:30 | PASS
+glide O EVENING -> NIGHT        3.02 s | largest turn 1.06 deg/frame | largest colour step 0.0144 | at the sun/moon switch 0.0000 | ends 22:00 | PASS
+glide O NIGHT -> MORNING        3.48 s | largest turn 2.29 deg/frame | largest colour step 0.0202 | at the sun/moon switch 0.0024 | ends 07:00 | PASS
+glide [ 12:00 -> 11:00          1.22 s | largest turn 0.31 deg/frame | largest colour step 0.0000 | at the sun/moon switch 0.0000 | ends 11:00 | PASS
+glide ] 18:30 -> 19:30          1.22 s | largest turn 0.22 deg/frame | largest colour step 0.0253 | at the sun/moon switch 0.0000 | ends 19:30 | PASS
+glide click NOON at 22:00       4.50 s | largest turn 2.46 deg/frame | largest colour step 0.0248 | at the sun/moon switch 0.0003 | ends 12:00 | PASS
+automatic day: 2 sun/moon switches, light 0.0000 at them, largest colour step 0.0114 a frame | PASS
+near shadow map on a moving camera: 302326 samples, largest drift within a texel 0.00024 texel | PASS
+SUN TEST PASSED

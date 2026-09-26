@@ -1,0 +1,4 @@
+head-on crash at boost speed     | hit at 47.2 km/h | deepest 0.000 m | slid   0.0 m after contact | PASS
+35 degree crash, slides along    | hit at 47.8 km/h | deepest -0.000 m | slid   3.6 m after contact | PASS
+walking into a wall at 45 deg    | deepest 0.000 m | slid   7.2 m along the wall | PASS
+ring road with 36 AI cars        | 1.50 laps in 240 s | AI into player 0 | overlaps left 0 | bumped the world 0 | longest stop 0 s | judder seat 0.0003 chase 0.0003 | PASS

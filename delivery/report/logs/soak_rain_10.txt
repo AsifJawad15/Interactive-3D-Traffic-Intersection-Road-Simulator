@@ -1,0 +1,2 @@
+CITY seed 10    cars 36   30.0 min | overlaps 0 | closest gap 1.08 m | longest stop  40.8 s | routes driven  2514 | bus stops  79 | busiest G7 8% | 23.6 s wall | PASS
+     people  80 | crossings made  1248 | vehicle-person overlaps 0 | closest vehicle 0.49 m | longest wait  43.2 s | hard stops at crossings 0 | starts against the lights 0

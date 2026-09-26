@@ -63,6 +63,10 @@ public:
     // Places the free camera at an exact pose. Used by --capture so that the
     // same view can be rendered before and after a change.
     void setFreePose(const glm::vec3& position, float yawDegrees, float pitchDegrees);
+    // The free camera at `position`, looking at `target` (the demo video's
+    // scripted camera moves).
+    void lookFrom(const glm::vec3& position, const glm::vec3& target);
+    const glm::vec3& front() const { return front_; }
 
     glm::mat4 viewMatrix() const;
     glm::mat4 projectionMatrix(float aspectRatio) const;

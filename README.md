@@ -1,6 +1,11 @@
-﻿# 3D Smart Traffic City
+﻿# 3D Smart City with Digital Traffic Signals
 
 An interactive city traffic simulation in modern OpenGL.
+
+**Delivery:** the printed report is [`delivery/report/report.pdf`](delivery/report/report.pdf)
+(23 pages, with worked calculations, every object's dimensions and the test
+results); the 10 slides and the 2-minute demo video are rebuilt from the
+scripts in `delivery/` (see *Delivery* below).
 
 **CSE 4102 — Computer Graphics and Image Processing Laboratory**
 Asif Jawad · Roll 2107007 · Section A
@@ -704,6 +709,7 @@ OpenGLMiniProject.exe --player-test
 OpenGLMiniProject.exe --walk-test
 OpenGLMiniProject.exe --sun-test
 OpenGLMiniProject.exe --weather-test
+OpenGLMiniProject.exe --dimensions
 ```
 
 `--weather-test` checks the weather. `K` must step Clear → Cloudy → Rain →
@@ -875,9 +881,43 @@ took to build.
 
 ---
 
+## Delivery
+
+Everything for the project show lives in `delivery/`, and all of it is made
+by the program itself or by a script, so it can be rebuilt after any change.
+
+| File | What | How to rebuild |
+| --- | --- | --- |
+| `report/report.pdf` | The printed report (23 pages): each lab topic with worked calculations, the four light types and their values, the objects' dimensions, ray tracing, test and frame-rate results, a screenshot gallery | `pdflatex report.tex` twice, in `delivery/report` (MiKTeX) |
+| `report/dimensions.txt` | Every object's size, printed from the program's own tables | `OpenGLMiniProject.exe --dimensions` |
+| `report/logs/` | The final test runs: every self-test, and the 32 soaks (seeds 1–16, clear and rain) | see *Verification* |
+| `slides/Smart_City_Digital_Traffic_Signals.pptx` | 10 slides: title, demo video, features, 3D transformations, illumination model, shading, textures and Bezier surfaces, day–night and weather, ray tracing, thank you. All text is editable; the speaker notes hold what to say | `python delivery/slides/build_slides.py` (`pip install python-pptx`) |
+| `video/demo.mp4` | The 2-minute 1080p demo video | `python delivery/video/make_video.py` (`pip install imageio-ffmpeg`, about 3 minutes) |
+| `figures/jpg/` | The figures used by the report and the slides | `sh delivery/figures/capture_all.sh`, the tour stills (below), then `python delivery/figures/make_figures.py` |
+
+The PPTX (about 120 MB, the video is inside it) and the MP4 are not in git;
+the full-size PNG screenshots are not either, only the JPEG figures made
+from them.
+
+**`--dimensions`** prints the size of every kind of object: the 11 vehicle
+kinds (length, width, height, wheelbase, wheel radius, speeds), the road and
+junction constants, the buildings by style (count, footprint, height,
+storeys), the trees by species, the street furniture, signals and signs,
+people, the camera, and the lights (point-light attenuation, spot cut-offs,
+and the sun or moon's colour and height at each preset).
+
+**`--tour video.mp4`** plays the scripted two-minute tour (`Tour.cpp`) and
+pipes every frame to ffmpeg; each frame advances the city exactly 1/30 s, so
+the video is smooth whatever the PC's speed. Your car in it is steered by the
+city's own AI driver (`Player::followVehicle`), so it stops at red and keeps
+to its lane. `--tour-stills DIR T1,T2,...` saves only those moments as PNGs
+(the report's tour figures are `8,16,26,30,44,54,60,63,66.5,72,80,88,103,108,112,116`).
+
+---
+
 ## Deliberately not included
 
 Storms, fog, imported models, physics and full (hardware) ray tracing are not
-part of this version; `ENHANCEMENT_PLAN.md` lists what comes next (delivery).
+part of this version.
 The scene is authored geometry throughout: there is no model file anywhere in
 this project.

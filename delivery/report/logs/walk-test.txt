@@ -1,0 +1,9 @@
+walking at 0.8 m/s             | feet slide 1.08% of the distance | sink 0.000 m | float 0.000 m | reach miss 0.000 m | fastest foot  3.6 m/s | PASS
+walking at 1.2 m/s             | feet slide 0.91% of the distance | sink 0.000 m | float 0.000 m | reach miss 0.000 m | fastest foot  5.4 m/s | PASS
+walking at 1.5 m/s             | feet slide 0.79% of the distance | sink 0.000 m | float 0.000 m | reach miss 0.000 m | fastest foot  6.8 m/s | PASS
+walk-jog blend at 2.0 m/s      | feet slide 0.69% of the distance | sink 0.000 m | float 0.000 m | reach miss 0.000 m | fastest foot  8.9 m/s | PASS
+walk-jog blend at 2.4 m/s      | feet slide 0.60% of the distance | sink 0.000 m | float 0.000 m | reach miss 0.000 m | fastest foot  7.8 m/s | PASS
+jogging at 3.0 m/s             | feet slide 0.54% of the distance | sink 0.000 m | float 0.000 m | reach miss 0.000 m | fastest foot  8.6 m/s | PASS
+down a kerb at 1.4 m/s         | feet slide 0.86% of the distance | sink 0.000 m | float 0.000 m | reach miss 0.000 m | fastest foot  6.9 m/s | PASS
+up a kerb at 1.4 m/s           | feet slide 0.86% of the distance | sink 0.000 m | float 0.000 m | reach miss 0.000 m | fastest foot  6.8 m/s | PASS
+standing to jogging in 8 s     | feet slide 0.92% of the distance | sink 0.000 m | float 0.008 m | reach miss 0.000 m | fastest foot  9.1 m/s | PASS

@@ -1,0 +1,5 @@
+# Build outputs of make_video.py (large; rebuilt from the program)
+*.mp4
+*.captions.tsv
+captions.filter
+text/

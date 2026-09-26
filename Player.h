@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+struct Vehicle;
+
 // The player: one car you can drive, and yourself on foot. Both move in the
 // same fixed 1/60 s steps as the traffic and are drawn blended between the
 // last two steps, exactly like the AI cars, so they are as smooth.
@@ -66,6 +68,11 @@ public:
     // One fixed step. `traffic` holds the AI bodies as they stand after this
     // step's traffic update; the player is pushed out of any it runs into.
     void step(float dt, const PlayerInput& input, const std::vector<OrientedBox>& traffic);
+
+    // Autopilot for the demo video (--tour): instead of a step, the car takes
+    // the place of an AI car that has just been stepped, so it drives that
+    // car's route and obeys the signals, roundabouts and crossings as it does.
+    void followVehicle(const Vehicle& vehicle, float dt);
 
     // Blended pose for drawing (alpha as in TrafficSystem::interpolatePoses).
     PlayerView view(float alpha) const;

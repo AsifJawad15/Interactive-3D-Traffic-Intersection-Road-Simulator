@@ -1,0 +1,81 @@
+Object dimensions (metres unless stated; x across, y up, z along)
+
+Vehicles (VehicleTypes.cpp; wheel radius from VehicleRenderer.cpp)
+  kind        class  length  width height wheelbase wheel r cruise km/h   accel   brake
+  sedan       car      4.70   1.84   1.45      2.75    0.33          31    1.60    2.20
+  hatchback   car      4.06   1.80   1.48      2.75    0.32          30    1.60    2.20
+  SUV         car      4.80   1.88   1.74      2.75    0.38          30    1.50    2.20
+  taxi        car      4.70   1.84   1.45      2.75    0.33          32    1.70    2.30
+  police car  car      4.84   1.88   1.48      2.75    0.33          32    1.80    2.40
+  van         van      5.20   1.88   2.25      2.90    0.36          29    1.30    2.00
+  pickup      van      5.40   1.88   1.82      2.90    0.38          30    1.40    2.10
+  ambulance   van      5.50   1.88   2.60      2.90    0.37          32    1.40    2.10
+  box truck   truck    7.90   2.30   3.30      3.40    0.48          27    1.00    1.80
+  bus         bus     12.00   2.54   3.15      5.90    0.50          27    0.95    1.70
+  motorbike   car      2.10   0.80   1.55      1.40    0.31          34    2.20    2.60
+  size-class planning outlines (half length x half width): car 2.45 x 0.94, van 2.75 x 0.94, truck 3.95 x 1.15, bus 6.00 x 1.27
+
+Roads and junctions (RoadNetwork.h)
+  city grid spacing 100, city 400 x 400, walkable square 600 x 600
+  lane width 3.50, two lanes each way (centres 1.75 and 5.25 from the centreline), road 14.0 kerb to kerb
+  sidewalk width 4.5, kerb height 0.15 (road surface y 0.06, sidewalk y 0.21)
+  kerb corner radius 5.0, zebra band 12.6 - 15.4 from the junction centre, stop line at 16.0
+  bend radius (centreline) 20.0
+  roundabout: island radius 9.5, circulating lane radius 13.0, outer kerb radius 17.0, entry/exit arcs 8.0, zebra 25.0 - 28.0
+  junctions: 19 (2 signalised crossroads, 3 signalised T-junction, 7 give-way T-junction, 2 roundabout, 5 bend)
+  roads: 28, zebra crossings: 54
+
+Buildings (WorldCity.cpp) (164)
+  style         count  front width   depth         height        storeys storey height
+  shop row         43    7.0 -  21.9   9.0 -  12.0   4.8 -  14.7  1 - 4    3.3 m
+  flats            39   14.0 -  19.9  11.1 -  12.9   9.9 -  19.2  3 - 6    3.1 m
+  office tower     20   16.2 -  21.6  15.4 -  18.6  27.0 -  48.6  7 - 13   3.6 m
+  hotel             4   22.7 -  26.3  12.0 -  13.2  24.3 -  30.7  7 - 9    3.2 m
+  house            51    9.0 -  10.5   8.0 -   9.4   2.9 -   5.8  1 - 2    2.9 m
+  warehouse         7   24.6 -  33.7  16.3 -  21.1   7.6 -   7.6  1 - 1    7.0 m
+
+Skyline towers beyond the city (90)
+  style         count  front width   depth         height        storeys storey height
+  skyline          90   18.3 -  40.0  18.3 -  39.9  17.6 -  78.8  5 - 23   3.4 m
+  shop fronts: 103 (43 with neon signs), 5.8 - 10.0 wide
+  neon signs: 47, letters 0.62 - 1.40 high
+
+Trees (TreeGenerator.cpp; natural size x the placed scale)
+  species    count  height          crown radius   
+  broadleaf    171    5.9 -   8.1     3.4 -   5.6
+  conifer       72    7.5 -  10.4     2.5 -   3.3
+  palm          12    6.1 -   7.4     3.2 -   4.0
+
+Street furniture and signs
+  bench           30
+  bin             22
+  planter         40
+  bollard          4
+  50 km/h sign    12
+  picnic table     3
+  street lamps 182 + park and car-park lamps 12: Bezier post 5.60 high (radius 0.17 at the foot), head 0.75 x 0.28 x 0.75 at 5.75, light at 5.58
+  signal heads 17: pole 0.13 x 4.50 x 0.13, housing 0.72 x 1.85 x 0.55 centred at 4.45, three lenses 0.38 across, arrow box 0.46 x 0.46 x 0.50
+  walk signals 34, give-way signs 15, road signs 4 (plate 0.90 x 0.90 at 2.15)
+  billboards 8: panel 6.0 x 3.0, underside 2.6 above the ground; spot lamp cone 30 / 42 degrees
+  bus shelters 4: 3.6 long x 1.5 deep x 2.5 high
+  crates 6: 1.05 cube; parked cars 49
+  pond: 25.0 x 16.0 (radii 12.5, 8.0)
+  petrol station canopy: 16.0 x 10.0, 5.2 high
+
+People (Mannequin.h, Pedestrians.cpp)
+  height 1.56 - 1.90 (proportions of a 1.75 figure, scaled); thigh 0.455, shin 0.445, torso 0.44, upper arm 0.29, forearm 0.26; you on foot 1.78, eyes at 1.65
+
+Camera (Camera.cpp)
+  field of view 55 deg (free, top, chase), 68 in a car, 62 on foot; near plane 0.1 - 6 (rises with height), far plane 1200
+
+Lights
+  point lights (lamps): colour (1.65, 0.92, 0.36), attenuation 1 / (1 + 0.09 d + 0.032 d^2), reach 22
+  spot lights: billboard lamp 30 / 42 deg; headlights 10 / 26 deg, reach 42
+  emissive strength 3.0; at most 32 point lights and 8 spot lights per frame
+  directional light at each preset (clear sky):
+  preset       time light        colour                   elevation
+  Morning      7.0h sun          (1.17, 0.81, 0.59)         12 deg
+  Noon        12.0h sun          (1.54, 1.50, 1.38)         59 deg
+  Afternoon   15.5h sun          (1.54, 1.50, 1.38)         40 deg
+  Evening     18.5h sun          (0.93, 0.56, 0.35)          6 deg
+  Night       22.0h moon         (0.08, 0.09, 0.16)         25 deg

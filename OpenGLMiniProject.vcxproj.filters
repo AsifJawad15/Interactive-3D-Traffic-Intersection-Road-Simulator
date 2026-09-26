@@ -42,6 +42,12 @@
     <ClCompile Include="Weather.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Tour.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Dimensions.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="Rain.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -132,6 +138,8 @@
     <ClInclude Include="Route.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Scene.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="ShadowMap.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Tour.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="Dimensions.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Weather.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Rain.h"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="Enhanced.h"><Filter>Header Files</Filter></ClInclude>

@@ -1,0 +1,6 @@
+All 16282 network, route, body, conflict, signal and bus line checks passed (19 junctions, 252 routes, 1614 conflict zones, 54 crossings, trucks on 113 routes, bus line of 4 legs).
+4 bus shelters: all on the sidewalk and clear of every other thing
+City: 164 buildings, 117 inside the ring road and 47 in the row outside it (43 shop rows, 39 flats, 20 offices, 4 hotels, 51 houses, 7 warehouses), and 90 on the skyline
+      103 shop fronts (43 with neon), 47 neon signs, 255 trees (171 broadleaf, 72 conifer, 12 palm), 111 props, 49 parked cars, 12 extra lamps
+City dressing: everything on the lawn and clear of the buildings and the road
+All 575 sidewalk checks passed (22 walking lines, 11912 m in all, round 11 sidewalks; 54 crossings with 640 waiting places; every sidewalk reachable).

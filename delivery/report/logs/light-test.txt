@@ -1,0 +1,1 @@
+236 lights, 109008 frames (budget full in 0%) | largest change of one light in one frame 0.011 at (105, 1.7, -98) | frames over 0.10: 0 | PASS
